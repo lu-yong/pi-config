@@ -104,6 +104,15 @@
 | `improve-codebase-architecture` | 改进代码库架构 |
 | `setup-matt-pocock-skills` | 设置 Matt Pocock 技能 |
 
+## 项目级技能（`.pi/skills/`）
+
+这些是仅在本仓库生效的自定义技能，不会被其他项目加载：
+
+| 技能名称 | 用途 |
+|---|---|
+| `readme-check` | 代码变更后检查 README 是否漂移，确认后同步更新，再调用 commit-changes 提交 |
+| `commit-changes` | 暂存并提交当前所有修改，自动生成 Conventional Commits 格式的提交信息 |
+
 ## TUI 配置
 
 ### open-tui（`agent/open-tui.json`）
