@@ -25,5 +25,8 @@
     "rainRows": 3,
     "rainTickMs": 130,
     "maxRainDrops": 25
+  },
+  "compaction": {
+    "enabled": false
   }
 }

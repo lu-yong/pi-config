@@ -1,6 +1,7 @@
 # 敏感信息 - API 密钥和认证凭据
 agent/auth.json
 agent/models.json
+agent/models-store.json
 web-search.json
 
 # 会话记录 - 个人聊天历史
