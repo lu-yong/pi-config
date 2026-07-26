@@ -47,6 +47,20 @@
   - `gpt-5.6-terra` — GPT-5.6 Terra，支持推理，272K 上下文
   - `gpt-5.6-sol` — GPT-5.6 Sol，支持推理，272K 上下文
 
+### readonly-mode
+- **文件**: `agent/extensions/readonly-mode/index.ts`
+- **功能**: 只读模式 — 限制 agent 只能使用 read-only 工具（read、安全的 bash 命令），
+  阻止 edit/write/破坏性 bash 操作。适用于代码审查、实现方案讨论、架构探索等场景。
+- **使用方式**:
+  - CLI: `pi --readonly`
+  - 命令: `/readonly`（切换开关）；`/readonly <prompt>`（一键进入并提问）
+  - 快捷键: `Ctrl+Alt+R`（切换开关）
+- **防护层次**:
+  1. 系统提示注入 — 告知 LLM 遵守只读规则
+  2. `tool_call` 事件拦截 — 直接 block edit/write
+  3. bash 命令白名单安全检查 — 允许 `ls`/`grep`/`cat`/`git log` 等，拦截 `rm`/`sed`/`sudo`/重定向等
+  4. Session entry 持久化 — 跨 `/resume` 和 `/tree` 导航保持状态
+
 ## 模型提供商（Providers）
 
 ### 已启用的模型（`settings.json` 中 `enabledModels`）

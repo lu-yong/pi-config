@@ -28,5 +28,8 @@
   },
   "compaction": {
     "enabled": false
-  }
+  },
+  "extensions": [
+    "+extensions/readonly-mode/index.ts"
+  ]
 }
