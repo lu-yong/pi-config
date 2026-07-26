@@ -144,4 +144,11 @@
 
 ---
 
-> ⚠️ **注意**: 敏感文件（auth.json, models.json, web-search.json 含 API 密钥）和会话记录已在 `.gitignore` 中排除，不会提交到版本控制。
+> ⚠️ **注意**: 以下敏感文件已在 `.gitignore` 中排除，不会提交到版本控制：
+> - `agent/auth.json` — DeepSeek API Key
+> - `agent/models.json` — 自定义 Provider API Key
+> - `agent/models-store.json` — 模型商店缓存
+> - `agent/trust.json` — 信任配置
+> - `web-search.json` — 搜索服务 API Key
+> - `agent/sessions/` — 个人会话历史
+> - `agent/npm/node_modules/`、`agent/npm/package-lock.json` — npm 依赖（可还原）
