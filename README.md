@@ -40,7 +40,7 @@
 - **功能**: 通过 Micu AI 注册模型提供商
 - **配置**:
   - Base URL: `https://www.micuapi.ai/v1`
-  - API: `openai-completions` 格式
+  - API: `openai-responses` 格式
   - API Key: 通过环境变量 `$MICU_API_KEY` 注入
 - **注册的模型**:
   - `gpt-5.6-luna` — GPT-5.6 Luna，支持推理，272K 上下文
