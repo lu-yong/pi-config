@@ -21,9 +21,14 @@
 - **用途**: 文件浏览器插件，用于在 TUI 中浏览和管理文件
 - **版本**: ^0.2.0
 
+### 4. `pi-interactive-shell`
+- **来源**: `npm:pi-interactive-shell`
+- **用途**: 通过可观察的终端 overlay 启动和管理 Pi 子 agent，支持 dispatch、hands-free、monitor 和后台会话
+- **版本**: 0.13.0
+
 ## 扩展（Extensions）
 
-位于 `agent/extensions/` 目录下，使用 pi SDK 注册的自定义 Provider：
+位于 `agent/extensions/` 目录下，使用 pi SDK 注册的自定义扩展：
 
 ### anyrouter-provider
 - **文件**: `agent/extensions/anyrouter-provider/index.ts`
@@ -101,6 +106,7 @@
 | `ask-matt` | 向 Matt 提问 |
 | `grill-me` | 自我质询 |
 | `grill-with-docs` | 带文档的质询 |
+| `impl-with-spawn` | 通过 `interactive_shell` 编排 Pi 子 agent 完成实现、修复和审查 |
 | `improve-codebase-architecture` | 改进代码库架构 |
 | `setup-matt-pocock-skills` | 设置 Matt Pocock 技能 |
 
@@ -112,6 +118,32 @@
 |---|---|
 | `readme-check` | 代码变更后检查 README 是否漂移，确认后同步更新，再调用 commit-changes 提交 |
 | `commit-changes` | 暂存并提交当前所有修改，自动生成 Conventional Commits 格式的提交信息 |
+
+## 子 Agent 管理
+
+### pi-interactive-shell（`agent/interactive-shell.json`）
+- **默认 agent**: 仅使用 `pi`
+- **启动快捷键**: `Alt+Shift+P`
+- **默认委派模式**: `dispatch` + `background: true`，任务完成后由通知唤醒主 agent，无需轮询
+- **监督模式**: 需要用户观察或干预时使用 `hands-free`
+- **并行规则**: 仅并行无依赖、只读或文件所有权互不重叠的子任务
+- **工作树**: 默认不创建独立 Git worktree
+
+### 模型路由
+
+子 agent 按以下顺序选择第一个已配置且可用的模型；仅在不可用、运行失败或结果仍不充分时升级到下一级：
+
+1. `deepseek/deepseek-v4-flash`
+2. `deepseek/deepseek-v4-pro`
+3. `micu/gpt-5.6-terra`
+4. `micu/gpt-5.6-sol`
+
+动态路由使用 `pi --model <provider/model>` 启动子 agent，因为 structured spawn 不支持逐次指定 Pi 模型。父会话处于只读模式时，所有子 agent 都追加 `--readonly`，不得绕过父会话限制。
+
+### 编排入口
+- `impl-with-spawn` skill：拆解实现、修复和审查任务，按依赖层串行或安全并行派发
+- `/explore-codebase [主题]`：派出 2-4 个只读 Pi 子 agent 并行探索后汇总
+- `agent/APPEND_SYSTEM.md`：规定阻塞型/TUI 命令使用 `interactive_shell`，并清理临时后台会话
 
 ## TUI 配置
 

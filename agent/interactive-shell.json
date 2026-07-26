@@ -1,0 +1,17 @@
+{
+  "spawn": {
+    "defaultAgent": "pi",
+    "shortcut": "alt+shift+p",
+    "commands": {
+      "pi": "pi"
+    },
+    "defaultArgs": {
+      "pi": []
+    },
+    "worktree": false
+  },
+  "handsFreeQuietThreshold": 8000,
+  "handsFreeUpdateInterval": 60000,
+  "autoExitGracePeriod": 15000,
+  "minQueryIntervalSeconds": 60
+}

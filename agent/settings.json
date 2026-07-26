@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.82.1",
   "theme": "dark",
   "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-v4-pro",
+  "defaultModel": "deepseek-v4-flash",
   "enabledModels": [
     "anyrouter/gpt-5.6-sol",
     "deepseek/deepseek-v4-pro",
@@ -16,7 +16,8 @@
   "packages": [
     "npm:pi-web-access",
     "npm:pi-open-tui",
-    "npm:@tmustier/pi-files-widget"
+    "npm:@tmustier/pi-files-widget",
+    "npm:pi-interactive-shell"
   ],
   "pi-tokyo-night": {
     "panel": true,
