@@ -6,7 +6,7 @@ export default function (pi: ExtensionAPI) {
     // Update the baseUrl to match Micu's actual API endpoint
     baseUrl: "https://www.micuapi.ai/v1",
     apiKey: "$MICU_API_KEY",
-    api: "openai-completions",
+    api: "openai-responses",
     models: [
       {
         id: "gpt-5.6-luna",
