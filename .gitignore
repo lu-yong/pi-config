@@ -1,0 +1,11 @@
+# 敏感信息 - API 密钥和认证凭据
+agent/auth.json
+agent/models.json
+web-search.json
+
+# 会话记录 - 个人聊天历史
+agent/sessions/
+
+# npm 依赖（可还原）
+agent/npm/node_modules/
+agent/npm/package-lock.json
