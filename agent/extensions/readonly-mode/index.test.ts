@@ -96,7 +96,7 @@ test('Pi adapter applies toggle effects in order', async () => {
   await commandHandler?.('review this', ctx);
 
   assert.deepEqual(calls, [
-    ['status', 'readonly-mode', 'readonly'],
+    ['status', 'readonly-mode', '🛡️ readonly'],
     ['persist', 'readonly-mode', { readonlyMode: true }],
     [
       'notify',

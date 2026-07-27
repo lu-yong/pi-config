@@ -30,7 +30,7 @@ describe('read-only enforcement', () => {
     const enforcement = createReadonlyEnforcement();
 
     assert.deepEqual(enforcement.handle({ type: 'toggle', prompt: 'review this' }), [
-      { type: 'set-status', text: 'readonly' },
+      { type: 'set-status', text: '🛡️ readonly' },
       { type: 'persist', data: { readonlyMode: true } },
       {
         type: 'notify',
@@ -208,7 +208,7 @@ describe('read-only enforcement', () => {
         entries: [savedState(false)],
       }),
       [
-        { type: 'set-status', text: 'readonly' },
+        { type: 'set-status', text: '🛡️ readonly' },
         { type: 'persist', data: { readonlyMode: true } },
       ],
     );

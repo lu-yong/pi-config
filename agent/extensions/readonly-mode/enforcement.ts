@@ -187,7 +187,7 @@ class Enforcement implements ReadonlyEnforcement {
     if (!this.enabled) this.flagOverrideActive = false;
 
     const effects: ReadonlyEffect[] = [
-      { type: 'set-status', text: this.enabled ? 'readonly' : undefined },
+      { type: 'set-status', text: this.enabled ? '🛡️ readonly' : undefined },
       { type: 'persist', data: { readonlyMode: this.enabled } },
       this.enabled
         ? {
@@ -245,7 +245,7 @@ class Enforcement implements ReadonlyEnforcement {
     this.enabled = readonlyFlag || saved || false;
 
     const effects: ReadonlyEffect[] = [
-      { type: 'set-status', text: this.enabled ? 'readonly' : undefined },
+      { type: 'set-status', text: this.enabled ? '🛡️ readonly' : undefined },
     ];
     if (readonlyFlag && saved !== true) {
       effects.push({ type: 'persist', data: { readonlyMode: true } });
@@ -256,7 +256,7 @@ class Enforcement implements ReadonlyEnforcement {
   private restoreBranch(entries: StateEntry[]): ReadonlyEffect[] {
     const saved = findSavedState(entries);
     this.enabled = this.flagOverrideActive || saved || false;
-    return [{ type: 'set-status', text: this.enabled ? 'readonly' : undefined }];
+    return [{ type: 'set-status', text: this.enabled ? '🛡️ readonly' : undefined }];
   }
 }
 
