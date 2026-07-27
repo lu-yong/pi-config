@@ -20,7 +20,9 @@ Use this strict priority order:
 
 Start with the first configured and available model. Move to the next model only when the prior model is unavailable, the run fails, or its result remains inadequate after one focused follow-up. Do not skip ahead unless the user explicitly requests a model.
 
-Structured spawn cannot select a different Pi model per call. For routed work, use a raw command with the full provider/model ID:
+CRITICAL: `command` and `spawn` are mutually exclusive. Provide exactly one, never both. If you use `command`, do not add `spawn`. If you use `spawn`, do not add `command`.
+
+Structured spawn cannot select a different Pi model per call. For routed work, use only `command` with the full provider/model ID:
 
 ```typescript
 interactive_shell({
