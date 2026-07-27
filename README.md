@@ -53,18 +53,24 @@
   - `gpt-5.6-sol` — GPT-5.6 Sol，支持推理，272K 上下文
 
 ### readonly-mode
-- **文件**: `agent/extensions/readonly-mode/index.ts`
-- **功能**: 只读模式 — 限制 agent 只能使用 read-only 工具（read、安全的 bash 命令），
-  阻止 edit/write/破坏性 bash 操作。适用于代码审查、实现方案讨论、架构探索等场景。
+- **文件**:
+  - `agent/extensions/readonly-mode/index.ts` — Pi 生命周期适配器，注册命令、快捷键、CLI flag 和事件处理器
+  - `agent/extensions/readonly-mode/enforcement.ts` — 只读策略模块，统一处理状态转换、恢复、命令判定、提示事实和阻止原因
+- **功能**: 本地核心工具只读模式。阻止 Pi 内置 `edit`/`write`，并对 `bash` 采用 fail-closed 检查；允许明确批准的读取命令、测试和静态检查。测试与静态检查可能生成正常缓存或临时产物，安装、构建、发布和任意脚本仍会被阻止。
+- **安全范围**: MCP、技能和其他自定义工具不在此模式的执行限制范围内，仍可能修改外部系统；该模式不是全局无副作用沙箱。
 - **使用方式**:
   - CLI: `pi --readonly`
   - 命令: `/readonly`（切换开关）；`/readonly <prompt>`（一键进入并提问）
   - 快捷键: `Ctrl+Alt+R`（切换开关）
 - **防护层次**:
-  1. 系统提示注入 — 告知 LLM 遵守只读规则
-  2. `tool_call` 事件拦截 — 直接 block edit/write
-  3. bash 命令白名单安全检查 — 允许 `ls`/`grep`/`cat`/`git log` 等，拦截 `rm`/`sed`/`sudo`/重定向等
-  4. Session entry 持久化 — 跨 `/resume` 和 `/tree` 导航保持状态
+  1. 系统提示注入 — 向 LLM 注入与实际执行策略一致的限制和范围
+  2. `tool_call` 事件拦截 — 直接 block `edit`/`write`，并校验 `bash` 输入
+  3. bash fail-closed 检查 — 逐段校验管道和组合命令，拒绝危险子命令、重定向、后台执行、命令替换和不可信执行路径
+  4. Session entry 持久化 — 从当前 active branch 恢复状态；显式 `--readonly` 优先于旧会话状态，用户仍可用 `/readonly` 退出
+- **测试**:
+  ```bash
+  node --test agent/extensions/readonly-mode/*.test.ts
+  ```
 
 ## 模型提供商（Providers）
 

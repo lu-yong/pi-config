@@ -1,126 +1,143 @@
 /**
  * Read-only mode extension for pi.
  *
- * Provides a lightweight toggle (/readonly, --readonly) that restricts
- * the agent to read-only tools — perfect for:
- *   - "Grill me" code reviews & deep-dive questioning
- *   - Implementation planning & design discussion
- *   - Architecture exploration & tech-debt analysis
- *   - General codebase navigation & learning
- *
- * Based on: https://github.com/azzgo/dotfiles/tree/main/pi/agent/extensions/readonly-mode
+ * Pi lifecycle hooks are adapters. Safety policy, state transitions, state
+ * restoration, prompt facts, and block reasons live in enforcement.ts.
  */
 
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { CONTEXT_ENTRY, READONLY_CMD, READONLY_FLAG, READONLY_SHORTCUT } from './constants.js';
-import { ReadonlyController } from './controller.js';
-import { getReadonlyInstructions } from './prompt.js';
-import type { StateEntry } from './state.js';
-import { isSafeCommand } from './utils.js';
+import {
+  createReadonlyEnforcement,
+  type ContextMessage,
+  type ReadonlyEffect,
+  type StateEntry,
+} from './enforcement.ts';
+
+const READONLY_FLAG = 'readonly';
+const READONLY_COMMAND = 'readonly';
+const READONLY_SHORTCUT = 'ctrl+alt+r';
+const STATE_ENTRY = 'readonly-mode';
+const CONTEXT_ENTRY = 'readonly-mode-context';
+const STATUS_KEY = 'readonly-mode';
 
 export default function readonlyMode(pi: ExtensionAPI): void {
-  const readonlyCtrl = new ReadonlyController(pi);
+  const enforcement = createReadonlyEnforcement();
 
-  // ── CLI flag ──────────────────────────────────────────────────
   pi.registerFlag(READONLY_FLAG, {
     description: 'Start in read-only mode (exploration, planning, code review)',
     type: 'boolean',
     default: false,
   });
 
-  function toggleReadonly(ctx: ExtensionContext): boolean {
-    if (readonlyCtrl.isEnabled()) {
-      readonlyCtrl.exit(ctx);
-      return false;
+  const applyEffects = (
+    effects: ReadonlyEffect[],
+    ctx?: ExtensionContext,
+  ): unknown => {
+    let eventResult: unknown;
+
+    for (const effect of effects) {
+      switch (effect.type) {
+        case 'set-status':
+          ctx?.ui.setStatus(STATUS_KEY, effect.text);
+          break;
+        case 'persist':
+          pi.appendEntry(STATE_ENTRY, effect.data);
+          break;
+        case 'notify':
+          ctx?.ui.notify(effect.message, effect.level);
+          break;
+        case 'send-user-message':
+          pi.sendUserMessage(effect.content);
+          break;
+        case 'block-tool':
+          eventResult = { block: true, reason: effect.reason };
+          break;
+        case 'inject-context':
+          eventResult = {
+            message: {
+              customType: CONTEXT_ENTRY,
+              content: effect.content,
+              display: false,
+            },
+          };
+          break;
+        case 'replace-context':
+          eventResult = { messages: effect.messages };
+          break;
+      }
     }
 
-    readonlyCtrl.enter(ctx);
-    return true;
-  }
+    return eventResult;
+  };
 
-  // ── Slash command ─────────────────────────────────────────────
-  pi.registerCommand(READONLY_CMD, {
+  pi.registerCommand(READONLY_COMMAND, {
     description: 'Toggle read-only mode',
     handler: async (args, ctx) => {
-      if (!toggleReadonly(ctx)) return;
-
-      const prompt = args?.trim();
-      if (prompt) {
-        pi.sendUserMessage(prompt);
-      }
+      applyEffects(
+        enforcement.handle({ type: 'toggle', prompt: args?.trim() || undefined }),
+        ctx,
+      );
     },
   });
 
-  // ── Keyboard shortcut ─────────────────────────────────────────
   pi.registerShortcut(READONLY_SHORTCUT, {
     description: 'Toggle read-only mode',
     handler: async (ctx) => {
-      toggleReadonly(ctx);
+      applyEffects(enforcement.handle({ type: 'toggle' }), ctx);
     },
   });
 
-  // ── Block destructive tool calls ──────────────────────────────
-  pi.on('tool_call', async (event) => {
-    if (!readonlyCtrl.isEnabled()) return;
-
-    if (event.toolName === 'edit' || event.toolName === 'write') {
-      return {
-        block: true,
-        reason:
-          'Read-only mode: file modifications are not allowed. Use /readonly to exit read-only mode first.',
-      };
-    }
-
-    if (event.toolName === 'bash') {
-      const command = (event.input as { command: string }).command;
-      if (!isSafeCommand(command)) {
-        return {
-          block: true,
-          reason: `Read-only mode: command blocked. Only read-only commands are allowed.\nCommand: ${command}\nUse /readonly to exit read-only mode first.`,
-        };
-      }
-    }
-  });
-
-  // ── Inject context message on each turn ───────────────────────
-  pi.on('before_agent_start', async () => {
-    if (!readonlyCtrl.isEnabled()) return;
-
-    return {
-      message: {
-        customType: CONTEXT_ENTRY,
-        content: getReadonlyInstructions(),
-        display: false,
-      },
-    };
-  });
-
-  // ── Filter out stale context entries when mode is off ─────────
-  pi.on('context', async (event) => {
-    if (readonlyCtrl.isEnabled()) return;
-
-    return {
-      messages: event.messages.filter((message) => {
-        const msg = message as typeof message & { customType?: string };
-        return msg.customType !== CONTEXT_ENTRY;
+  pi.on('tool_call', async (event, ctx) =>
+    applyEffects(
+      enforcement.handle({
+        type: 'tool-call',
+        toolName: event.toolName,
+        input: event.input,
       }),
-    };
-  });
+      ctx,
+    ) as { block: true; reason?: string } | undefined,
+  );
 
-  // ── Restore state on session start ────────────────────────────
+  pi.on('before_agent_start', async (_event, ctx) =>
+    applyEffects(enforcement.handle({ type: 'before-agent-start' }), ctx) as
+      | {
+          message: {
+            customType: string;
+            content: string;
+            display: boolean;
+          };
+        }
+      | undefined,
+  );
+
+  pi.on('context', async (event, ctx) =>
+    applyEffects(
+      enforcement.handle({
+        type: 'context',
+        messages: event.messages as ContextMessage[],
+      }),
+      ctx,
+    ) as { messages: typeof event.messages } | undefined,
+  );
+
   pi.on('session_start', async (_event, ctx) => {
-    if (pi.getFlag(READONLY_FLAG) === true) {
-      readonlyCtrl.enableFromFlag();
-    }
-
-    readonlyCtrl.restore(ctx, ctx.sessionManager.getEntries() as StateEntry[]);
+    applyEffects(
+      enforcement.handle({
+        type: 'restore',
+        readonlyFlag: pi.getFlag(READONLY_FLAG) === true,
+        entries: ctx.sessionManager.getBranch() as StateEntry[],
+      }),
+      ctx,
+    );
   });
 
-  // ── Reset & restore on tree navigation ────────────────────────
   pi.on('session_tree', async (_event, ctx) => {
-    readonlyCtrl.reset();
-    const entries = (ctx.sessionManager.getBranch?.() ??
-      ctx.sessionManager.getEntries()) as StateEntry[];
-    readonlyCtrl.restore(ctx, entries);
+    applyEffects(
+      enforcement.handle({
+        type: 'restore-branch',
+        entries: ctx.sessionManager.getBranch() as StateEntry[],
+      }),
+      ctx,
+    );
   });
 }
