@@ -72,6 +72,19 @@
   node --test agent/extensions/readonly-mode/*.test.ts
   ```
 
+### planning-files-runtime
+- **文件**: `agent/extensions/planning-files-runtime/`
+- **功能**: 在每个项目的 `.pi/planning/` 中持久化实施上下文，并在新会话、`resume` 或 `fork` 时重新读取并注入当前计划、发现、进度和目标状态。
+- **持久化内容**:
+  - `task_plan.md`、`findings.md`、`progress.md`：当前实施的计划、发现与进度
+  - `goal-design.md`、`tasks/`、`.goal-state.json`：跨运行的目标蓝图、任务卡和恢复状态
+- **使用方式**:
+  - `/plan-new`：初始化或归档后重置规划工作区
+  - `/plan-goal-set <目标>`：分阶段澄清并保存目标
+  - `/plan-goal-impl`：启动或恢复已提交目标的实施
+  - `/plan-update`：将当前工作与持久化规划重新对齐
+- **并发限制**: 同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
+
 ## 模型提供商（Providers）
 
 ### 已启用的模型（`settings.json` 中 `enabledModels`）
@@ -79,7 +92,7 @@
 |---|---|
 | `anyrouter/gpt-5.6-sol` | AnyRouter 扩展 |
 | `deepseek/deepseek-v4-pro` | OpenRouter |
-| `deepseek/deepseek-v4-flash` | OpenRouter（默认模型） |
+| `deepseek/deepseek-v4-flash` | OpenRouter |
 | `micu/gpt-5.6-sol` | Micu AI 扩展 |
 | `micu/gpt-5.6-luna` | Micu AI 扩展 |
 | `micu/gpt-5.6-terra` | Micu AI 扩展 |
@@ -176,9 +189,9 @@
 | 配置项 | 值 |
 |---|---|
 | 主题 | `dark` |
-| 默认 Provider | `deepseek` |
-| 默认模型 | `deepseek-v4-flash` |
-| 默认思考级别 | `high` |
+| 默认 Provider | `micu` |
+| 默认模型 | `gpt-5.6-terra` |
+| 默认思考级别 | `medium` |
 | pi 版本 | 0.82.1 |
 
 ### pi-tokyo-night 插件配置
