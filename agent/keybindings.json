@@ -1,4 +1,3 @@
 {
-  "app.model.select": ["ctrl+s"],
-  "command.readonly": ["ctrl+alt+r"]
+  "app.model.select": ["ctrl+s"]
 }

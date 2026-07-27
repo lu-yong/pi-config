@@ -11,8 +11,8 @@
  * Based on: https://github.com/azzgo/dotfiles/tree/main/pi/agent/extensions/readonly-mode
  */
 
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { CONTEXT_ENTRY, READONLY_CMD, READONLY_FLAG } from './constants.js';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { CONTEXT_ENTRY, READONLY_CMD, READONLY_FLAG, READONLY_SHORTCUT } from './constants.js';
 import { ReadonlyController } from './controller.js';
 import { getReadonlyInstructions } from './prompt.js';
 import type { StateEntry } from './state.js';
@@ -28,20 +28,34 @@ export default function readonlyMode(pi: ExtensionAPI): void {
     default: false,
   });
 
+  function toggleReadonly(ctx: ExtensionContext): boolean {
+    if (readonlyCtrl.isEnabled()) {
+      readonlyCtrl.exit(ctx);
+      return false;
+    }
+
+    readonlyCtrl.enter(ctx);
+    return true;
+  }
+
   // ── Slash command ─────────────────────────────────────────────
   pi.registerCommand(READONLY_CMD, {
     description: 'Toggle read-only mode',
     handler: async (args, ctx) => {
-      if (readonlyCtrl.isEnabled()) {
-        readonlyCtrl.exit(ctx);
-        return;
-      }
+      if (!toggleReadonly(ctx)) return;
 
-      readonlyCtrl.enter(ctx);
       const prompt = args?.trim();
       if (prompt) {
         pi.sendUserMessage(prompt);
       }
+    },
+  });
+
+  // ── Keyboard shortcut ─────────────────────────────────────────
+  pi.registerShortcut(READONLY_SHORTCUT, {
+    description: 'Toggle read-only mode',
+    handler: async (ctx) => {
+      toggleReadonly(ctx);
     },
   });
 
