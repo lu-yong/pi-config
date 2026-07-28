@@ -194,6 +194,13 @@
 | 默认思考级别 | `medium` |
 | pi 版本 | 0.82.1 |
 
+## 键位配置（`agent/keybindings.json`）
+
+| 快捷键 | 操作 |
+|---|---|
+| `Ctrl+S` | 打开模型选择器 |
+| `Alt+S` | 排队发送 follow-up 消息 |
+
 ### pi-tokyo-night 插件配置
 ```json
 {
