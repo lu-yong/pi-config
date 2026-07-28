@@ -32,13 +32,19 @@
 
 ### anyrouter-provider
 - **文件**: `agent/extensions/anyrouter-provider/index.ts`
-- **功能**: 通过 AnyRouter 中转服务注册模型提供商
-- **配置**:
+- **功能**: 通过 AnyRouter 中转服务注册模型提供商，支持两种 API 类型混用
+- **配置**（GPT 模型）:
   - Base URL: `https://anyrouter.top/v1`
   - API: `openai-responses` 格式
   - API Key: 通过环境变量 `$ANYROUTER_API_KEY` 注入
+- **配置**（Claude 模型）:
+  - Base URL: `https://anyrouter.top`（不带 /v1）
+  - API: `anthropic-messages` 格式
+  - API Key: 复用 `$ANYROUTER_API_KEY`
 - **注册的模型**:
   - `gpt-5.6-sol` — GPT-5.6 Sol，支持推理（thinking level: high），272K 上下文窗口，支持文本和图像输入
+  - `claude-fable-5` — Claude Fable 5，思考等级 low→xhigh，1M 上下文，128K 输出，支持文本和图像输入
+  - `claude-opus-5` — Claude Opus 5，思考等级 low→xhigh，1M 上下文，128K 输出，支持文本和图像输入
 
 ### micu-provider
 - **文件**: `agent/extensions/micu-provider/index.ts`
@@ -91,6 +97,8 @@
 | 模型 ID | 来源 |
 |---|---|
 | `anyrouter/gpt-5.6-sol` | AnyRouter 扩展 |
+| `anyrouter/claude-fable-5` | AnyRouter 扩展 |
+| `anyrouter/claude-opus-5` | AnyRouter 扩展 |
 | `deepseek/deepseek-v4-pro` | OpenRouter |
 | `deepseek/deepseek-v4-flash` | OpenRouter |
 | `micu/gpt-5.6-sol` | Micu AI 扩展 |

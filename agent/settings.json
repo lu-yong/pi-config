@@ -2,15 +2,16 @@
   "lastChangelogVersion": "0.82.1",
   "theme": "dark",
   "defaultProvider": "anyrouter",
-  "defaultModel": "gpt-5.6-sol",
+  "defaultModel": "claude-opus-5",
   "enabledModels": [
     "anyrouter/gpt-5.6-sol",
+    "anyrouter/claude-fable-5",
+    "anyrouter/claude-opus-5",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "micu/gpt-5.6-sol",
     "micu/gpt-5.6-luna",
-    "micu/gpt-5.6-terra",
-    "noname/gpt-5.6-sol"
+    "micu/gpt-5.6-terra"
   ],
   "defaultThinkingLevel": "high",
   "packages": [
