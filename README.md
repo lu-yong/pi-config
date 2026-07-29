@@ -49,6 +49,11 @@
 - **用途**: 通过可观察的终端 overlay 启动和管理 Pi 子 agent，支持 dispatch、hands-free、monitor 和后台会话
 - **版本**: 0.13.0
 
+### 5. `pi-hashline-edit-pro`
+- **来源**: `npm:pi-hashline-edit-pro`
+- **用途**: 通过 hash 锚点实现精确的行编辑，用基于哈希的完美定位替换内置编辑工具
+- **版本**: ^0.18.0
+
 ## 扩展（Extensions）
 
 位于 `agent/extensions/` 目录下，使用 pi SDK 注册的自定义扩展：
@@ -127,7 +132,6 @@
 | `micu/gpt-5.6-sol` | Micu AI 扩展 |
 | `micu/gpt-5.6-luna` | Micu AI 扩展 |
 | `micu/gpt-5.6-terra` | Micu AI 扩展 |
-| `noname/gpt-5.6-sol` | Noname 自定义提供商 |
 
 ## 安装的技能（Skills）
 
@@ -220,18 +224,19 @@
 | 配置项 | 值 |
 |---|---|
 | 主题 | `dark` |
-| 默认 Provider | `micu` |
-| 默认模型 | `gpt-5.6-terra` |
-| 默认思考级别 | `medium` |
+| 默认 Provider | `deepseek` |
+| 默认模型 | `deepseek-v4-flash` |
+| 默认思考级别 | `high` |
 | pi 版本 | 0.82.1 |
 
 ## 键位配置（`agent/keybindings.json`）
 
 | 快捷键 | 操作 |
 |---|---|
+| `Enter` | 发送当前消息 |
+| `Shift+Enter`、`Ctrl+J`、`Alt+Enter` | 在当前消息中换行 |
 | `Ctrl+S` | 打开模型选择器 |
 | `Alt+S` | 排队发送 follow-up 消息 |
-
 ### pi-tokyo-night 插件配置
 ```json
 {

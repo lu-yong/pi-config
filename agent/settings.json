@@ -1,8 +1,8 @@
 {
   "lastChangelogVersion": "0.82.1",
   "theme": "dark",
-  "defaultProvider": "anyrouter",
-  "defaultModel": "claude-opus-5",
+  "defaultProvider": "deepseek",
+  "defaultModel": "deepseek-v4-flash",
   "enabledModels": [
     "anyrouter/gpt-5.6-sol",
     "anyrouter/claude-fable-5",
@@ -18,7 +18,8 @@
     "npm:pi-web-access",
     "npm:pi-open-tui",
     "npm:@tmustier/pi-files-widget",
-    "npm:pi-interactive-shell"
+    "npm:pi-interactive-shell",
+    "npm:pi-hashline-edit-pro"
   ],
   "pi-tokyo-night": {
     "panel": true,
