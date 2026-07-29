@@ -11,6 +11,29 @@
 - **用途**: 为 pi agent 提供网络搜索和网页内容抓取能力（web_search、fetch_content 等工具）
 - **版本**: ^0.14.0
 
+### 网络搜索配置（`web-search.json`）
+
+`web-search.json` 配置 `pi-web-access` 的搜索行为。当前默认使用 Tavily，并在搜索后打开摘要审阅界面：
+
+```json
+{
+  "provider": "tavily",
+  "workflow": "summary-review"
+}
+```
+
+使用 Clash、Mihomo 等 TUN/fake-IP 代理时，公网域名可能会解析到合成保留地址段。可通过 `ssrf.allowRanges` 为该地址段添加最小范围的白名单，以便 `web_search` 和 `fetch_content` 通过 SSRF 地址校验：
+
+```json
+{
+  "ssrf": {
+    "allowRanges": ["198.18.0.0/15"]
+  }
+}
+```
+
+如需在此文件保存搜索服务 API Key，不应将密钥提交到版本控制；当前仓库中的配置不包含 API Key。
+
 ### 2. `pi-open-tui`
 - **来源**: `npm:pi-open-tui`
 - **用途**: 提供终端用户界面（TUI），支持在终端内交互式使用 pi
@@ -238,6 +261,5 @@
 > - `agent/models.json` — 自定义 Provider API Key
 > - `agent/models-store.json` — 模型商店缓存
 > - `agent/trust.json` — 信任配置
-> - `web-search.json` — 搜索服务 API Key
 > - `agent/sessions/` — 个人会话历史
 > - `agent/npm/node_modules/`、`agent/npm/package-lock.json` — npm 依赖（可还原）
