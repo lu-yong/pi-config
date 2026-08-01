@@ -1,5 +1,6 @@
 {
-  "app.model.select": ["ctrl+s"],
   "app.message.followUp": ["alt+s"],
-  "tui.input.newLine": ["shift+enter", "ctrl+j", "alt+enter"]
+  "tui.input.newLine": ["shift+enter", "ctrl+j", "alt+enter"],
+  "tui.select.up": ["up", "ctrl+k"],
+  "tui.select.down": ["down", "ctrl+j"]
 }
