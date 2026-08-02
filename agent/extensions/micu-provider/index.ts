@@ -14,7 +14,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         thinkingLevelMap: {
           off: "none",
-          minimal: "none",
+          minimal: null,
           low: "low",
           medium: "medium",
           high: "high",
@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         thinkingLevelMap: {
           off: "none",
-          minimal: "none",
+          minimal: null,
           low: "low",
           medium: "medium",
           high: "high",
@@ -50,7 +50,7 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         thinkingLevelMap: {
           off: "none",
-          minimal: "none",
+          minimal: null,
           low: "low",
           medium: "medium",
           high: "high",
