@@ -5,42 +5,32 @@ description: Delegate implementation, fixes, reviews, and multi-step coding work
 
 # Implement with Pi Subagents
 
-Decompose the user's goal, route each subtask to a Pi model, dispatch the work through `interactive_shell`, then verify and synthesize the results. Use Pi for every delegated coding task.
+Decompose the user's goal, route each subtask to Pi by default, or to another configured agent when the user explicitly requests it, dispatch the work through `interactive_shell`, then verify and synthesize the results.
 
-## Model Routing
+## Delegation Interface
 
-Use this strict priority order:
-
-| Priority | Model |
-|---|---|
-| 1 | `deepseek/deepseek-v4-flash` |
-| 2 | `deepseek/deepseek-v4-pro` |
-| 3 | `micu/gpt-5.6-terra` |
-| 4 | `micu/gpt-5.6-sol` |
-
-Start with the first configured and available model. Move to the next model only when the prior model is unavailable, the run fails, or its result remains inadequate after one focused follow-up. Do not skip ahead unless the user explicitly requests a model.
-
-CRITICAL: `command` and `spawn` are mutually exclusive. Provide exactly one, never both. If you use `command`, do not add `spawn`. If you use `spawn`, do not add `command`.
-
-Structured spawn cannot select a different Pi model per call. For routed work, use only `command` with the full provider/model ID:
+All delegated child sessions use structured `spawn`. Keep `worktree` disabled (`worktree: false`) for this workflow so child changes remain in the parent workspace.
 
 ```typescript
 interactive_shell({
-  command: 'pi --model deepseek/deepseek-v4-flash "<self-contained task prompt>"',
+  spawn: {
+    agent: "pi",
+    prompt: "<self-contained task prompt>",
+    worktree: false
+  },
   mode: "dispatch",
   background: true,
   reason: "<short subtask label>"
 })
 ```
 
-Shell-quote generated prompts correctly. Never place secrets or unnecessary credentials in a child prompt.
+Keep prompts self-contained. Never place secrets or unnecessary credentials in a child prompt.
 
 ## Read-Only Propagation
 
 When the parent session is in read-only mode:
 
 - delegate only exploration, planning, and review work
-- add `--readonly` to every child Pi command
 - repeat the no-write constraint in the child prompt
 - never use a subagent to bypass the parent session's write restrictions
 
@@ -48,12 +38,16 @@ Example:
 
 ```typescript
 interactive_shell({
-  command: 'pi --readonly --model deepseek/deepseek-v4-flash "Explore the authentication flow. Do not modify files."',
+  spawn: {
+    agent: "pi",
+    prompt: "Explore the authentication flow. Do not modify files."
+  },
   mode: "dispatch",
   background: true,
   reason: "Explore authentication flow"
 })
 ```
+The read-only example relies on the workflow-level `worktree: false` requirement above.
 
 ## Workflow
 
@@ -85,36 +79,38 @@ Default to headless dispatch for finite delegated tasks:
 
 ```typescript
 interactive_shell({
-  command: 'pi --model deepseek/deepseek-v4-flash "<task>"',
+  spawn: {
+    agent: "pi",
+    prompt: "<task>",
+    worktree: false
+  },
   mode: "dispatch",
   background: true,
   reason: "<subtask>"
 })
 ```
 
-Use foreground `dispatch` when the user should see the overlay. Use `hands-free` only when intervention or incremental guidance is expected. Dispatch completion notifications are automatic; do not poll dispatch sessions.
+Use foreground `dispatch` when the user should see the overlay but does not need ongoing guidance. Use `hands-free` when the user may want to monitor progress, intervene, or provide incremental guidance. Dispatch completion notifications are automatic; do not poll pending dispatch sessions.
 
 For independent subtasks, issue the `interactive_shell` calls together. Give every run a distinct `reason` and a self-contained prompt.
+Before dispatching a write-enabled task in a parent workspace with pre-existing changes, record the baseline status and diff for the task's assigned paths. Use that baseline when reviewing the result and preserve unrelated changes.
 
 ### 4. Review Results
 
 For every completed run:
 
 1. inspect the reported changes and important output
-2. review the actual diff instead of trusting the summary
+2. if the run was write-enabled, review the actual diff against the recorded baseline; for a read-only run, review the findings and verify that no files were modified
 3. run focused verification in the parent session
-4. retry with the next routed model if the run failed or remained inadequate
-5. clean up temporary background sessions
+4. retry with a focused follow-up if the run failed or remained inadequate
+5. after completion, clean up temporary background sessions created by the task
 
 A subagent completion is evidence, not proof. The parent agent remains responsible for correctness and integration.
 
 ### 5. Report
 
-Summarize:
-
-- which subtasks were delegated and to which models
+- which subtasks were delegated
 - files or behavior changed
 - verification performed
 - unresolved risks or failed runs
-
 Do not dump raw child transcripts unless the user requests them.
