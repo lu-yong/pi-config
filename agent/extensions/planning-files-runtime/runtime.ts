@@ -256,6 +256,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: "Goal commit rejected: objective, successCriteria, constraints, outOfScope, and blockerRule must all be non-empty." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			const goalDesignPath = getPaths(ctx.cwd).goalDesign;
@@ -263,6 +264,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: "Goal commit rejected: goal-design.md must exist and be non-empty. Complete the 4 drafting stages first." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			const current = readGoalState(ctx.cwd);
@@ -317,12 +319,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: "pause_plan_goal rejected: no active goal implementation is running." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			if (!reason) {
 				return {
 					content: [{ type: "text", text: "pause_plan_goal rejected: reason is required." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			const next: GoalOverlayState = {
@@ -364,12 +368,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: "complete_plan_goal rejected: no active goal implementation is running." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			if (!summary) {
 				return {
 					content: [{ type: "text", text: "complete_plan_goal rejected: summary is required." }],
 					isError: true,
+					details: undefined,
 				};
 			}
 			const next: GoalOverlayState = {

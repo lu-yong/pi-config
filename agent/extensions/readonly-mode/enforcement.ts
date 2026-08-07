@@ -6,6 +6,8 @@ export interface StateEntry {
 
 export type ContextMessage = object & {
   customType?: string;
+  role?: string;
+  content?: string;
 };
 
 export type ReadonlyEvent =
