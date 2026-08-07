@@ -9,24 +9,6 @@ export default function (pi: ExtensionAPI) {
     api: "openai-responses",
     models: [
       {
-        id: "gpt-5.6-luna",
-        name: "GPT-5.6 Luna",
-        reasoning: true,
-        thinkingLevelMap: {
-          off: "none",
-          minimal: null,
-          low: "low",
-          medium: "medium",
-          high: "high",
-          xhigh: "xhigh",
-          max: "max",
-        },
-        input: ["text", "image"],
-        cost: { input: 0.07, output: 0.42, cacheRead: 0.007, cacheWrite: 0.0087 },
-        contextWindow: 272000,
-        maxTokens: 16384,
-      },
-      {
         id: "gpt-5.6-terra",
         name: "GPT-5.6 Terra",
         reasoning: true,
@@ -41,8 +23,8 @@ export default function (pi: ExtensionAPI) {
         },
         input: ["text", "image"],
         cost: { input: 0.7, output: 4.2, cacheRead: 0.07, cacheWrite: 0.0875 },
-        contextWindow: 272000,
-        maxTokens: 16384,
+        contextWindow: 1050000,
+        maxTokens: 128000,
       },
       {
         id: "gpt-5.6-sol",
@@ -58,9 +40,19 @@ export default function (pi: ExtensionAPI) {
           max: "max",
         },
         input: ["text", "image"],
-        cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-        contextWindow: 272000,
-        maxTokens: 16384,
+        cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25,
+          tiers: [
+            {
+              inputTokensAbove: 272000,
+              input: 10,
+              output: 45,
+              cacheRead: 1,
+              cacheWrite: 12.5,
+            },
+          ],
+        },
+        contextWindow: 1050000,
+        maxTokens: 128000,
       },
     ],
   });
