@@ -90,6 +90,7 @@ provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 
 | 技能名称 | 用途 |
 |---|---|
 | `adb` | Android Debug Bridge 设备检查、AOSP/vendor bring-up、HAL 调试、日志收集、文件传输和设备操作 |
+| `code-review` | 从规格、规范/设计、安全/可靠性三个独立维度，对提交和工作区变更进行基于证据的代码审查，并明确测试覆盖 |
 | `commit-bu1-sdk-gerrit` | 按 BU1-SDK 规则提交 Nationalchip Gerrit review |
 | `domain-modeling` | 构建和完善项目领域模型、术语与决策记录 |
 | `grill-with-docs` | 结合文档通过质询完善计划或设计 |
