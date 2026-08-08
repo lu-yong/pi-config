@@ -149,7 +149,7 @@ const READONLY_INSTRUCTIONS = `[READ-ONLY MODE ACTIVE]
 You are in local read-only mode for exploration, planning, code review, and architecture analysis.
 
 Enforced core-tool restrictions:
-- Pi's built-in edit and write tools are blocked.
+- Pi's built-in edit, write, replace, and undo_last_replace tools are blocked.
 - Bash commands are fail-closed. Approved read commands, tests, and static checks are allowed; installs, builds, publishing, arbitrary scripts, redirection, background execution, and command substitution are blocked.
 - Every segment of a pipeline or compound command is checked independently.
 - Pi's built-in read, grep, find, and ls tools remain available.
@@ -195,7 +195,7 @@ class Enforcement implements ReadonlyEnforcement {
         ? {
             type: 'notify',
             level: 'info',
-            message: 'Read-only mode ON - edit/write blocked, bash restricted to approved commands',
+            message: 'Read-only mode ON - edit/write/replace blocked, bash restricted to approved commands',
           }
         : {
             type: 'notify',
@@ -214,7 +214,7 @@ class Enforcement implements ReadonlyEnforcement {
   private handleToolCall(toolName: string, input: unknown): ReadonlyEffect[] {
     if (!this.enabled) return [];
 
-    if (toolName === 'edit' || toolName === 'write') {
+    if (toolName === 'edit' || toolName === 'write' || toolName === 'replace' || toolName === 'undo_last_replace') {
       return [{ type: 'block-tool', reason: FILE_MUTATION_REASON }];
     }
 

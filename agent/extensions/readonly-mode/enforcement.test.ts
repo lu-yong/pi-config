@@ -35,7 +35,7 @@ describe('read-only enforcement', () => {
       {
         type: 'notify',
         level: 'info',
-        message: 'Read-only mode ON - edit/write blocked, bash restricted to approved commands',
+        message: 'Read-only mode ON - edit/write/replace blocked, bash restricted to approved commands',
       },
       { type: 'send-user-message', content: 'review this' },
     ]);
@@ -55,7 +55,7 @@ describe('read-only enforcement', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
-    for (const toolName of ['edit', 'write']) {
+    for (const toolName of ['edit', 'write', 'replace', 'undo_last_replace']) {
       assert.deepEqual(
         enforcement.handle({ type: 'tool-call', toolName, input: {} }),
         [

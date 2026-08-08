@@ -22,8 +22,8 @@ export default function (pi: ExtensionAPI) {
         },
         input: ["text", "image"],
         cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-        contextWindow: 272000,
-        maxTokens: 16384,
+        contextWindow: 1050000,
+        maxTokens: 128000,
       },
       // ── Claude models via anthropic-messages API ──
       {

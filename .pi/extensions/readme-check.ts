@@ -6,7 +6,7 @@ export default function (pi: ExtensionAPI) {
   let readmeModified = false;
 
   pi.on("tool_call", async (event, _ctx) => {
-    if (event.toolName === "write" || event.toolName === "edit") {
+    if (event.toolName === "write" || event.toolName === "edit" || event.toolName === "replace" || event.toolName === "undo_last_replace") {
       const path = (event.input as { path?: string }).path || "";
       if (/^readme(\.md)?$/i.test(path.split("/").pop() || "")) {
         readmeModified = true;

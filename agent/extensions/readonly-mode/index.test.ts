@@ -100,7 +100,7 @@ test('Pi adapter applies toggle effects in order', async () => {
     ['persist', 'readonly-mode', { readonlyMode: true }],
     [
       'notify',
-      'Read-only mode ON - edit/write blocked, bash restricted to approved commands',
+      'Read-only mode ON - edit/write/replace blocked, bash restricted to approved commands',
       'info',
     ],
     ['send-user-message', 'review this'],

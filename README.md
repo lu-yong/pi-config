@@ -4,16 +4,21 @@
 
 ## 安装的插件（Packages）
 
-通过 `settings.json` 中的 `packages` 字段安装的 npm 包：
+以下插件通过 `settings.json` 的 `packages` 字段安装；每个插件的完整安装命令如下：
 
-### 1. `pi-web-access`
-- **来源**: `npm:pi-web-access`
-- **用途**: 为 pi agent 提供网络搜索和网页内容抓取能力（web_search、fetch_content 等工具）
-- **版本**: ^0.14.0
+| 包 | 用途 | Pi 安装命令 |
+|---|---|---|
+| `pi-web-access` | 网络搜索与网页内容抓取 | `pi install npm:pi-web-access` |
+| `pi-open-tui` | 终端用户界面增强 | `pi install npm:pi-open-tui` |
+| `@tmustier/pi-files-widget` | TUI 文件浏览器 | `pi install npm:@tmustier/pi-files-widget` |
+| `pi-interactive-shell` | 通过 overlay 管理 Pi 子 agent，支持 dispatch、hands-free、monitor 和后台会话 | `pi install npm:pi-interactive-shell` |
+| `pi-hashline-edit-pro` | 使用 3 字符 hash 锚点执行安全、抗过期上下文的文件编辑 | `pi install npm:pi-hashline-edit-pro` |
+| `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
+| `@firstpick/pi-themes-bundle` | 提供多套熟悉的浅色和深色主题 | `pi install npm:@firstpick/pi-themes-bundle` |
 
 ### 网络搜索配置（`web-search.json`）
 
-`web-search.json` 配置 `pi-web-access` 的搜索行为。当前默认使用 Tavily，并在搜索后打开摘要审阅界面：
+`web-search.json` 当前默认使用 Tavily，并在搜索后打开摘要审阅界面：
 
 ```json
 {
@@ -22,147 +27,81 @@
 }
 ```
 
-使用 Clash、Mihomo 等 TUN/fake-IP 代理时，公网域名可能会解析到合成保留地址段。可通过 `ssrf.allowRanges` 为该地址段添加最小范围的白名单，以便 `web_search` 和 `fetch_content` 通过 SSRF 地址校验：
-
-```json
-{
-  "ssrf": {
-    "allowRanges": ["198.18.0.0/15"]
-  }
-}
-```
-
-如需在此文件保存搜索服务 API Key，不应将密钥提交到版本控制；当前仓库中的配置不包含 API Key。
-
-### 2. `pi-open-tui`
-- **来源**: `npm:pi-open-tui`
-- **用途**: 提供终端用户界面（TUI），支持在终端内交互式使用 pi
-- **版本**: ^0.2.7
-
-### 3. `@tmustier/pi-files-widget`
-- **来源**: `npm:@tmustier/pi-files-widget`
-- **用途**: 文件浏览器插件，用于在 TUI 中浏览和管理文件
-- **版本**: ^0.2.0
-
-### 4. `pi-interactive-shell`
-- **来源**: `npm:pi-interactive-shell`
-- **用途**: 通过可观察的终端 overlay 启动和管理 Pi 子 agent，支持 dispatch、hands-free、monitor 和后台会话
-- **版本**: 0.13.0
-
-### 5. `pi-hashline-edit-pro`
-- **来源**: `npm:pi-hashline-edit-pro`
-- **用途**: 通过 hash 锚点实现精确的行编辑，用基于哈希的完美定位替换内置编辑工具
-- **版本**: ^0.18.0
+使用 Clash、Mihomo 等 TUN/fake-IP 代理时，公网域名可能解析到合成保留地址段。可通过 `ssrf.allowRanges` 添加最小范围的白名单，使搜索和抓取通过 SSRF 地址校验。API Key 不应写入版本控制。
 
 ## 扩展（Extensions）
 
-位于 `agent/extensions/` 目录下，使用 pi SDK 注册的自定义扩展：
+`agent/extensions/` 下的 `*.ts` 和 `*/index.ts` 会被 Pi 自动发现并全局加载；不需要再在 `settings.json` 中重复声明。
 
-### anyrouter-provider
-- **文件**: `agent/extensions/anyrouter-provider/index.ts`
-- **功能**: 通过 AnyRouter 中转服务注册模型提供商，支持两种 API 类型混用
-- **配置**（GPT 模型）:
-  - Base URL: `https://anyrouter.top/v1`
-  - API: `openai-responses` 格式
-  - API Key: 通过环境变量 `$ANYROUTER_API_KEY` 注入
-- **配置**（Claude 模型）:
-  - Base URL: `https://anyrouter.top`（不带 /v1）
-  - API: `anthropic-messages` 格式
-  - API Key: 复用 `$ANYROUTER_API_KEY`
-- **注册的模型**:
-  - `gpt-5.6-sol` — GPT-5.6 Sol，支持推理（thinking level: high），272K 上下文窗口，支持文本和图像输入
-  - `claude-fable-5` — Claude Fable 5，思考等级 low→xhigh，1M 上下文，128K 输出，支持文本和图像输入
-  - `claude-opus-5` — Claude Opus 5，思考等级 low→xhigh，1M 上下文，128K 输出，支持文本和图像输入
+### Provider 扩展
 
-### micu-provider
-- **文件**: `agent/extensions/micu-provider/index.ts`
-- **功能**: 通过 Micu AI 注册模型提供商
-- **配置**:
-  - Base URL: `https://www.micuapi.ai/v1`
-  - API: `openai-responses` 格式
-  - API Key: 通过环境变量 `$MICU_API_KEY` 注入
-- **注册的模型**:
-  - `gpt-5.6-luna` — GPT-5.6 Luna，支持推理，272K 上下文
-  - `gpt-5.6-terra` — GPT-5.6 Terra，支持推理，272K 上下文
-  - `gpt-5.6-sol` — GPT-5.6 Sol，支持推理，272K 上下文
+| 扩展 | Base URL | API Key | 模型 |
+|---|---|---|---|
+| `anyrouter-provider` | `https://anyrouter.top/v1`；Claude 使用 `https://anyrouter.top` | `$ANYROUTER_API_KEY` | `gpt-5.6-sol`、`claude-fable-5`、`claude-opus-5` |
+| `cola-provider` | `https://code28.ccwu.cc/v1` | `$COLA_API_KEY` | `gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol` |
+| `micu-provider` | `https://www.micuapi.ai/v1` | `$MICU_API_KEY` | `gpt-5.6-terra`、`gpt-5.6-sol` |
+
+OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anthropic-messages`。当前三个 provider 对 GPT 模型统一配置为 1,050,000 token 上下文窗口和 128,000 token 最大输出；实际限制仍以服务端为准。
 
 ### readonly-mode
-- **文件**:
-  - `agent/extensions/readonly-mode/index.ts` — Pi 生命周期适配器，注册命令、快捷键、CLI flag 和事件处理器
-  - `agent/extensions/readonly-mode/enforcement.ts` — 只读策略模块，统一处理状态转换、恢复、命令判定、提示事实和阻止原因
-- **功能**: 本地核心工具只读模式。阻止 Pi 内置 `edit`/`write`，并对 `bash` 采用 fail-closed 检查；允许明确批准的读取命令、测试和静态检查。测试与静态检查可能生成正常缓存或临时产物，安装、构建、发布和任意脚本仍会被阻止。
-- **安全范围**: MCP、技能和其他自定义工具不在此模式的执行限制范围内，仍可能修改外部系统；该模式不是全局无副作用沙箱。
-- **使用方式**:
-  - CLI: `pi --readonly`
-  - 命令: `/readonly`（切换开关）；`/readonly <prompt>`（一键进入并提问）
-  - 快捷键: `Ctrl+Alt+R`（切换开关）
-- **防护层次**:
-  1. 系统提示注入 — 向 LLM 注入与实际执行策略一致的限制和范围
-  2. `tool_call` 事件拦截 — 直接 block `edit`/`write`，并校验 `bash` 输入
-  3. bash fail-closed 检查 — 逐段校验管道和组合命令，拒绝危险子命令、重定向、后台执行、命令替换和不可信执行路径
-  4. Session entry 持久化 — 从当前 active branch 恢复状态；显式 `--readonly` 优先于旧会话状态，用户仍可用 `/readonly` 退出
-- **测试**:
-  ```bash
-  node --test agent/extensions/readonly-mode/*.test.ts
-  ```
+
+- **文件**：`agent/extensions/readonly-mode/`
+- **功能**：本地核心工具只读模式，阻止 `edit`、`write`、`replace` 和 `undo_last_replace`，并对 `bash` 采用 fail-closed 检查。
+- **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`
+- **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
+- **测试**：`node --test agent/extensions/readonly-mode/*.test.ts`
 
 ### planning-files-runtime
-- **文件**: `agent/extensions/planning-files-runtime/`
-- **功能**: 在每个项目的 `.pi/planning/` 中持久化实施上下文，并在新会话、`resume` 或 `fork` 时重新读取并注入当前计划、发现、进度和目标状态。
-- **持久化内容**:
-  - `task_plan.md`、`findings.md`、`progress.md`：当前实施的计划、发现与进度
-  - `goal-design.md`、`tasks/`、`.goal-state.json`：跨运行的目标蓝图、任务卡和恢复状态
-- **使用方式**:
-  - `/plan-new`：初始化或归档后重置规划工作区
-  - `/plan-goal-set <目标>`：分阶段澄清并保存目标
-  - `/plan-goal-impl`：启动或恢复已提交目标的实施
-  - `/plan-update`：将当前工作与持久化规划重新对齐
-- **并发限制**: 同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
+
+- **文件**：`agent/extensions/planning-files-runtime/`
+- **功能**：在项目 `.pi/planning/` 中持久化当前计划、发现、进度和目标状态。
+- **命令**：`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
+- **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
+
+### readme-check
+
+- **文件**：`.pi/extensions/readme-check.ts`
+- **范围**：仅在本配置仓库（`~/.pi`）中作为项目扩展加载。
+- **功能**：追踪 `write`、`edit`、`replace` 和 `undo_last_replace` 修改，并在 agent settled 后提醒检查 README 是否漂移。
 
 ## 模型提供商（Providers）
 
 ### 已启用的模型（`settings.json` 中 `enabledModels`）
+
 | 模型 ID | 来源 |
 |---|---|
 | `anyrouter/gpt-5.6-sol` | AnyRouter 扩展 |
 | `anyrouter/claude-fable-5` | AnyRouter 扩展 |
 | `anyrouter/claude-opus-5` | AnyRouter 扩展 |
-| `deepseek/deepseek-v4-pro` | OpenRouter |
-| `deepseek/deepseek-v4-flash` | OpenRouter |
+| `deepseek/deepseek-v4-pro` | DeepSeek provider |
+| `deepseek/deepseek-v4-flash` | DeepSeek provider |
 | `micu/gpt-5.6-sol` | Micu AI 扩展 |
-| `micu/gpt-5.6-luna` | Micu AI 扩展 |
 | `micu/gpt-5.6-terra` | Micu AI 扩展 |
+| `cola/gpt-5.6-sol` | Cola AI 扩展 |
+| `cola/gpt-5.6-luna` | Cola AI 扩展 |
+| `cola/gpt-5.6-terra` | Cola AI 扩展 |
+
+provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 仅保留本地自定义 provider 配置，且已被 `.gitignore` 排除。
 
 ## 安装的技能（Skills）
 
-位于 `agent/skills/` 目录下，这些技能为 pi 提供特定任务的专用指令：
+当前 `~/.pi/agent/skills/` 目录下的技能（包括软链接）都会被 Pi 加载，以下为完整列表：
 
 | 技能名称 | 用途 |
 |---|---|
-| `code-review` | 代码审查（Standards + Spec 双轴审查） |
-| `codebase-design` | 模块接口设计/深层模块分析 |
-| `diagnosing-bugs` | 硬 Bug 和性能回归的诊断循环 |
-| `domain-modeling` | 领域模型构建与术语梳理 |
-| `find-skills` | 发现和安装 agent 技能 |
-| `grilling` | 对计划/决策进行压力测试 |
-| `prototype` | 构建快速原型验证设计 |
-| `research` | 基于高信任度主来源的调查 |
-| `resolving-merge-conflicts` | Git 合并冲突解决 |
-| `tdd` | 测试驱动开发（红-绿-重构） |
-| `implement` | 通用功能实现 |
-| `handoff` | 任务交接 |
-| `teach` | 教学技能 |
-| `to-spec` | 按规格说明书实现 |
-| `to-tickets` | 将需求拆解为任务单 |
-| `triage` | 问题分类与优先级排序 |
-| `wayfinder` | 路线规划 |
-| `writing-great-skills` | 编写优秀技能文件 |
-| `ask-matt` | 向 Matt 提问 |
-| `grill-me` | 自我质询 |
-| `grill-with-docs` | 带文档的质询 |
+| `adb` | Android Debug Bridge 设备检查、AOSP/vendor bring-up、HAL 调试、日志收集、文件传输和设备操作 |
+| `commit-bu1-sdk-gerrit` | 按 BU1-SDK 规则提交 Nationalchip Gerrit review |
+| `domain-modeling` | 构建和完善项目领域模型、术语与决策记录 |
+| `grill-with-docs` | 结合文档通过质询完善计划或设计 |
+| `grilling` | 对计划或设计进行全面压力测试 |
+| `handoff` | 将当前会话整理成交接文档供其他 agent 继续工作 |
 | `impl-with-spawn` | 通过 `interactive_shell` 编排 Pi 子 agent 完成实现、修复和审查 |
-| `improve-codebase-architecture` | 改进代码库架构 |
-| `setup-matt-pocock-skills` | 设置 Matt Pocock 技能 |
+| `improve-codebase-architecture` | 扫描代码库、生成架构改进报告并通过质询推进选择的改进项 |
+| `prototype` | 构建一次性原型验证设计问题 |
+| `redmine` | 查询、创建、更新、分析和组织 Nationalchip Redmine 工作项 |
+| `update-bu1-sdk-issue-conclusion` | 按规则完成 BU1-SDK-2007-01-UNIFY Redmine issue 的结论更新 |
+| `wayfinder` | 通过 taskmd 规划多会话工作，并逐个解决决策 Ticket |
+| `writing-great-skills` | 编写和编辑可预测、可维护的 agent skill |
 
 ## 项目级技能（`.pi/skills/`）
 
@@ -219,16 +158,6 @@
 - **编辑器**: 关闭
 - **Copy 友好模式**: 关闭
 
-## 全局设置摘要（`settings.json`）
-
-| 配置项 | 值 |
-|---|---|
-| 主题 | `dark` |
-| 默认 Provider | `deepseek` |
-| 默认模型 | `deepseek-v4-flash` |
-| 默认思考级别 | `high` |
-| pi 版本 | 0.82.1 |
-
 ## 键位配置（`agent/keybindings.json`）
 
 | 快捷键 | 操作 |
@@ -237,27 +166,6 @@
 | `Shift+Enter`、`Ctrl+J`、`Alt+Enter` | 在当前消息中换行 |
 | `Ctrl+S` | 打开模型选择器 |
 | `Alt+S` | 排队发送 follow-up 消息 |
-### pi-tokyo-night 插件配置
-```json
-{
-  "panel": true,
-  "codexQuota": false,
-  "kimiQuota": true,
-  "rainRows": 3,
-  "rainTickMs": 130,
-  "maxRainDrops": 25
-}
-```
-
-## 模型商店（models-store.json）
-
-包含从 OpenRouter 同步的海量模型列表（60+ 模型），涵盖以下系列：
-- **Anthropic**: Claude Opus 4/4.1/4.5/4.6/4.7/4.8/5, Sonnet 4/4.5/4.6/5, Haiku 3/4.5, Fable 5
-- **DeepSeek**: V3/V3.1/V3.2/V4 Flash/V4 Pro, R1
-- **Google**: Gemini 2.5 Flash/Pro, 3 Flash/Pro, 3.1/3.5/3.6 Flash
-- **Meta**: Llama 3.1/3.3/4 Maverick
-- **ByteDance Seed**: Seed 1.6/2.0 系列
-- 以及更多（Gemma, Nova, Cohere, Inclusion AI 等）
 
 ---
 
