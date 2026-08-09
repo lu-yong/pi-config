@@ -1,4 +1,4 @@
-import type { PlanningSnapshot } from "./types";
+import type { PlanningSnapshot } from "./types.ts";
 
 /**
  * Format a one-line status text for the Pi status bar.

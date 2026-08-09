@@ -5,10 +5,10 @@ import type {
 	GoalOverlayState,
 	PauseGoalParams,
 	SaveGoalDraftParams,
-} from "./types";
-import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } from "./state";
-import { goalContractFromDraft, mergeDraft } from "./draft";
-import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils";
+} from "./types.ts";
+import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
+import { goalContractFromDraft, mergeDraft } from "./draft.ts";
+import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
 
 export type GoalOverlayEvent =
 	| { type: "restore" }

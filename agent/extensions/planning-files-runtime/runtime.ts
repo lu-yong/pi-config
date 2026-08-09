@@ -8,20 +8,20 @@ import {
 	MESSAGE_TYPE_GOAL_IMPL,
 	MESSAGE_TYPE_GOAL_SET,
 	WIDGET_KEY,
-} from "./types";
+} from "./types.ts";
 import type {
 	CommitGoalParams,
 	CompleteGoalParams,
 	PauseGoalParams,
 	SaveGoalDraftParams,
-} from "./types";
-import { ensureDir, getPaths, normalizeString, readText, tailLines } from "./utils";
-import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, initializePlanningWorkspace } from "./workspace";
-import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts";
-import { appendProgressTimeline } from "./markdown";
-import { buildWidgetLines } from "./ui";
-import { isInPlanningDir, isMeaningfulProgressToolCall, isUnsafeDraftingBash, redirectPlanningPath } from "./guards";
-import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay";
+} from "./types.ts";
+import { ensureDir, getPaths, normalizeString, readText, tailLines } from "./utils.ts";
+import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, initializePlanningWorkspace } from "./workspace.ts";
+import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
+import { appendProgressTimeline } from "./markdown.ts";
+import { buildWidgetLines } from "./ui.ts";
+import { isInPlanningDir, isMeaningfulProgressToolCall, isUnsafeDraftingBash, redirectPlanningPath } from "./guards.ts";
+import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay.ts";
 
 /**
  * Pi is an adapter around the goal overlay. The overlay decides transitions

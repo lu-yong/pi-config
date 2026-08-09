@@ -1,6 +1,6 @@
-import { nowIso, readText, trimEmptyLines, writeText } from "./utils";
-import { getPaths } from "./utils";
-import { createProgressTemplate } from "./workspace";
+import { nowIso, readText, trimEmptyLines, writeText } from "./utils.ts";
+import { getPaths } from "./utils.ts";
+import { createProgressTemplate } from "./workspace.ts";
 
 /**
  * Append a bullet to a markdown heading section.

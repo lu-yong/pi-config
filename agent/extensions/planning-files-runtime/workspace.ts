@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { PLANNING_FILES } from "./types";
-import type { GoalContract } from "./types";
-import { archiveStamp, ensureDir, fileExists, getPaths, nowIso, readText, trimEmptyLines, writeText } from "./utils";
+import { PLANNING_FILES } from "./types.ts";
+import type { GoalContract } from "./types.ts";
+import { archiveStamp, ensureDir, fileExists, getPaths, nowIso, readText, trimEmptyLines, writeText } from "./utils.ts";
 
 // ---- file detection ----
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { PLANNING_DIR, GOAL_STATE_FILE, GOAL_DESIGN_FILE } from "./types";
-import type { PathBundle, PlanningFileName } from "./types";
+import { PLANNING_DIR, GOAL_STATE_FILE, GOAL_DESIGN_FILE } from "./types.ts";
+import type { PathBundle, PlanningFileName } from "./types.ts";
 
 // ---- time ----
 

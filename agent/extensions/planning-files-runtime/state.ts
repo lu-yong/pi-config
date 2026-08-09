@@ -1,5 +1,5 @@
-import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus } from "./types";
-import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, writeText } from "./utils";
+import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus } from "./types.ts";
+import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, writeText } from "./utils.ts";
 
 // ---- defaults ----
 

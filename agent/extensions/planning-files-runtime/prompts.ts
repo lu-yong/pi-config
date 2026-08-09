@@ -1,4 +1,4 @@
-import type { GoalDraft, GoalOverlayState, PlanningSnapshot } from "./types";
+import type { GoalDraft, GoalOverlayState, PlanningSnapshot } from "./types.ts";
 import {
 	extractSection,
 	firstMeaningfulLine,
@@ -6,9 +6,9 @@ import {
 	readText,
 	tailLines,
 	truncate,
-} from "./utils";
-import { readGoalState } from "./state";
-import { hasPlanningFiles } from "./workspace";
+} from "./utils.ts";
+import { readGoalState } from "./state.ts";
+import { hasPlanningFiles } from "./workspace.ts";
 
 // ---- snapshot ----
 

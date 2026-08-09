@@ -1,6 +1,6 @@
-import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus, SaveGoalDraftParams } from "./types";
-import { normalizeString, normalizeStringArray } from "./utils";
-import { readGoalState, writeGoalState } from "./state";
+import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus, SaveGoalDraftParams } from "./types.ts";
+import { normalizeString, normalizeStringArray } from "./utils.ts";
+import { readGoalState, writeGoalState } from "./state.ts";
 
 /**
  * Merge tool params into an existing draft, preserving unchanged fields.

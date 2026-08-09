@@ -1,6 +1,6 @@
 import path from "node:path";
-import { MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types";
-import { ensureDir, getPaths } from "./utils";
+import { MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
+import { ensureDir, getPaths } from "./utils.ts";
 
 /**
  * Resolve a user-facing path to the planning directory equivalent.
