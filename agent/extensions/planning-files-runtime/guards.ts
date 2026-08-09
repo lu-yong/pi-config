@@ -51,7 +51,7 @@ export function isUnsafeDraftingBash(command: string): boolean {
 	const trimmed = command.trim();
 	if (!trimmed) return true;
 	if (/[;&|<>`$()]/.test(trimmed)) return true;
-	if (/\\\n/.test(trimmed)) return true;
+	if (/[\r\n]/.test(trimmed)) return true;
 
 	const argv = trimmed.split(/\s+/);
 	const executable = argv[0] ?? "";

@@ -417,7 +417,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			if (event.toolName === "bash") {
 				const command = typeof event.input.command === "string" ? event.input.command : "";
 				if (isUnsafeDraftingBash(command)) {
-					return { block: true, reason: "Goal drafting only allows read-only reconnaissance commands. Use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace." };
+					return { block: true, reason: "Goal drafting bash allows one approved read-only command per call. Do not use &&, ||, ;, |, redirects, backticks, $(), subshells, line continuations, or newline-separated commands. Retry with separate calls such as `pwd`, `rg --files -g '!node_modules' -g '!.git'`, and `git status --short`. Use only the read tool or whitelisted commands; helpers such as sed may be rejected. Use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace." };
 				}
 			}
 		}

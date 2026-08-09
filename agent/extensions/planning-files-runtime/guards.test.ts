@@ -14,6 +14,11 @@ test("drafting bash checks fail closed for shell writes and unknown commands", (
 	assert.equal(isUnsafeDraftingBash("echo injected > /tmp/drafting-escape"), true);
 	assert.equal(isUnsafeDraftingBash("unknown-command --read-only"), true);
 	assert.equal(isUnsafeDraftingBash("python -c 'open(\\\"escape\\\", \\\"w\\\")'"), true);
+	assert.equal(
+		isUnsafeDraftingBash("pwd && printf '%s\\n' '--- files ---' && rg --files -g '!node_modules' -g '!.git' | sed -n '1,240p' && git status --short"),
+		true,
+	);
+	assert.equal(isUnsafeDraftingBash("pwd\nrm -rf /tmp/drafting-escape"), true);
 });
 
 test("planning directory checks reject sibling prefix paths", () => {
