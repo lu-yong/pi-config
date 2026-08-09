@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isSafeShellCommand } from './policy.ts';
+import { explainUnsafeCommand, isSafeShellCommand } from './policy.ts';
 
 describe('read-only command policy', () => {
   test('allows read-only shell commands and validates every compound segment', () => {
@@ -13,6 +13,8 @@ describe('read-only command policy', () => {
       'tsc --noEmit',
       'cd agent; pwd',
       'printf "%s\\n" "a;b"',
+      'ls -la',
+      'diff README.md CONTEXT.md',
     ]) {
       assert.equal(isSafeShellCommand(command), true, command);
     }
@@ -33,6 +35,7 @@ describe('read-only command policy', () => {
       '/tmp/rg TODO',
       'find . -delete',
       'sort -o result.txt input.txt',
+      'diff --output=result.txt a b',
     ]) {
       assert.equal(isSafeShellCommand(command), false, command);
     }
@@ -87,6 +90,7 @@ describe('read-only command policy', () => {
       'rg -n "TODO" agent | wc -l',
       'git status && git diff -- README.md',
       'pwd && git status --short',
+      'pwd && ls -la',
       'jq .name agent/npm/package.json',
       'npm test',
       'pytest -q',
@@ -115,5 +119,27 @@ describe('read-only command policy', () => {
     // The same network reads stay allowed under the standard profile.
     assert.equal(isSafeShellCommand('curl -fsSL https://example.com'), true);
     assert.equal(isSafeShellCommand('ping -c 1 example.com', 'standard'), true);
+  });
+
+  test('names the rejected segment so callers can explain the block', () => {
+    assert.equal(explainUnsafeCommand('pwd && git status'), undefined);
+
+    assert.deepEqual(explainUnsafeCommand('pwd && rm -rf tmp'), {
+      kind: 'segment',
+      segment: 'rm -rf tmp',
+    });
+    assert.deepEqual(explainUnsafeCommand('git status && curl https://example.com', 'drafting'), {
+      kind: 'segment',
+      segment: 'curl https://example.com',
+    });
+    // Quotes are stripped: the segment is the parsed argv, not a verbatim slice.
+    assert.deepEqual(explainUnsafeCommand('rg TODO | sed -n "1,5p"'), {
+      kind: 'segment',
+      segment: 'sed -n 1,5p',
+    });
+
+    for (const command of ['', 'echo $(touch marker)', 'rg TODO > result.txt', "cat 'unbalanced"]) {
+      assert.deepEqual(explainUnsafeCommand(command), { kind: 'unparsable' }, command);
+    }
   });
 });

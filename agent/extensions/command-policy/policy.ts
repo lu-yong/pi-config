@@ -11,6 +11,15 @@
 
 export type CommandProfile = 'standard' | 'drafting';
 
+/**
+ * Why a command was rejected: 'unparsable' when the tokenizer could not reduce
+ * it to plain command segments (fail-closed), 'segment' when a specific segment
+ * is not an approved read-only command.
+ */
+export type UnsafeCommandReason =
+  | { kind: 'unparsable' }
+  | { kind: 'segment'; segment: string };
+
 const NETWORK_COMMANDS = new Set([
   'curl',
   'host',
@@ -34,6 +43,7 @@ const SAFE_COMMANDS = new Set([
   'cut',
   'date',
   'df',
+  'diff',
   'dir',
   'dirname',
   'dog',
@@ -60,6 +70,7 @@ const SAFE_COMMANDS = new Set([
   'jq',
   'less',
   'locate',
+  'ls',
   'lsof',
   'man',
   'mlocate',
@@ -130,8 +141,24 @@ const APPROVED_SCRIPT = /^(test|lint|typecheck|type-check|check)(:[A-Za-z0-9_.-]
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 export function isSafeShellCommand(command: string, profile: CommandProfile = 'standard'): boolean {
+  return explainUnsafeCommand(command, profile) === undefined;
+}
+
+/**
+ * Same classification as isSafeShellCommand, but names why the command was
+ * rejected so callers can tell the user which part failed. Returns undefined
+ * when the command is safe. `segment` is the normalized (quote-stripped) argv
+ * of the first rejected segment, not a verbatim slice of the input.
+ */
+export function explainUnsafeCommand(
+  command: string,
+  profile: CommandProfile = 'standard',
+): UnsafeCommandReason | undefined {
   const commands = parseCompoundCommand(command);
-  return commands !== undefined && commands.every((argv) => isSafeArgv(argv, profile));
+  if (commands === undefined) return { kind: 'unparsable' };
+  const rejected = commands.find((argv) => !isSafeArgv(argv, profile));
+  if (!rejected) return undefined;
+  return { kind: 'segment', segment: rejected.join(' ') };
 }
 
 function parseCompoundCommand(command: string): string[][] | undefined {

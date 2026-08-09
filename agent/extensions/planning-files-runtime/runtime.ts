@@ -17,9 +17,23 @@ import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspa
 import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
-import { isSafeShellCommand } from "../command-policy/policy.ts";
+import { explainUnsafeCommand, type UnsafeCommandReason } from "../command-policy/policy.ts";
 import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay.ts";
 import { createGoalEffectExecutor, createSetTimeoutTimer, type AppliedEffects } from "./effects.ts";
+
+const DRAFTING_BASH_ADVICE =
+	"Goal drafting bash is fail-closed: every segment of a compound command must be an approved read-only command, and network commands (curl, wget, ping, nslookup, traceroute, whois, host) are blocked. Prefer the read tool for file contents, and use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace.";
+
+/**
+ * Turn a policy rejection into a message that names the offending segment, so a
+ * blocked compound command does not read as "compound commands are unsupported".
+ */
+function draftingBashRejection(reason: UnsafeCommandReason): string {
+	if (reason.kind === "unparsable") {
+		return `Goal drafting blocked this bash command: it could not be parsed into plain read-only segments. Redirects, backticks, $(), subshells, and unbalanced quotes are always rejected. ${DRAFTING_BASH_ADVICE}`;
+	}
+	return `Goal drafting blocked this bash command at segment \`${reason.segment}\`: that segment is not an approved read-only command. The remaining segments were not the problem — rerun without this one. ${DRAFTING_BASH_ADVICE}`;
+}
 
 /**
  * Pi is an adapter around the goal overlay. The overlay decides transitions
@@ -270,8 +284,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			}
 			if (event.toolName === "bash") {
 				const command = typeof event.input.command === "string" ? event.input.command : "";
-				if (!isSafeShellCommand(command, "drafting")) {
-					return { block: true, reason: "Goal drafting bash is fail-closed: every segment of a compound command must be an approved read-only command, and network commands (curl, wget, ping, nslookup, traceroute, whois, host) are blocked during drafting. Helpers such as sed are not whitelisted; prefer the read tool for file contents. Use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace." };
+				const unsafe = explainUnsafeCommand(command, "drafting");
+				if (unsafe) {
+					return { block: true, reason: draftingBashRejection(unsafe) };
 				}
 			}
 		}
