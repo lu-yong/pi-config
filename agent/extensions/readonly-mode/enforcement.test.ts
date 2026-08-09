@@ -74,110 +74,28 @@ describe('read-only enforcement', () => {
     );
   });
 
-  test('allows read-only shell commands and validates every compound segment', () => {
+  test('routes bash commands through the shared command policy', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
-    for (const command of [
-      'rg -n "TODO" agent | head -20',
-      'git status && git diff -- README.md',
-      'FOO=bar env | sort',
-      'eslint src',
-      'tsc --noEmit',
-      'cd agent; pwd',
-      'printf "%s\\n" "a;b"',
-    ]) {
-      assert.deepEqual(
-        enforcement.handle({ type: 'tool-call', toolName: 'bash', input: { command } }),
-        [],
-        command,
-      );
-    }
-  });
-
-  test('rejects unsafe or ambiguous shell syntax fail-closed', () => {
-    const enforcement = createReadonlyEnforcement();
-    enforcement.handle({ type: 'toggle' });
-
-    for (const command of [
-      '',
-      'git status && rm -rf tmp',
-      'echo $(touch marker)',
-      'echo `touch marker`',
-      'rg TODO > result.txt',
-      'rg TODO &',
-      'cat <(generate-report)',
-      'unknown-command --read-only',
-      'env rm -rf tmp',
-      'PATH=/tmp env rg TODO',
-      '/tmp/rg TODO',
-      'find . -delete',
-      'sort -o result.txt input.txt',
-    ]) {
-      const effects = enforcement.handle({
+    assert.deepEqual(
+      enforcement.handle({
         type: 'tool-call',
         toolName: 'bash',
-        input: { command },
-      });
+        input: { command: 'git status && git diff -- README.md' },
+      }),
+      [],
+    );
 
-      assert.equal(effects[0]?.type, 'block-tool', command);
-    }
-  });
+    const effects = enforcement.handle({
+      type: 'tool-call',
+      toolName: 'bash',
+      input: { command: 'git status && rm -rf tmp' },
+    });
+    assert.equal(effects[0]?.type, 'block-tool');
 
-  test('uses command-specific policies for version control, network, and package tools', () => {
-    const enforcement = createReadonlyEnforcement();
-    enforcement.handle({ type: 'toggle' });
-
-    for (const command of [
-      'git log --oneline -5',
-      'git branch --list "feature/*"',
-      'git remote -v',
-      'curl -fsSL https://example.com',
-      'wget -qO- https://example.com',
-      'npm test',
-      'npm run lint',
-      'pnpm typecheck',
-      'cargo test',
-      'go vet ./...',
-      'pytest -q',
-    ]) {
-      assert.deepEqual(
-        enforcement.handle({ type: 'tool-call', toolName: 'bash', input: { command } }),
-        [],
-        command,
-      );
-    }
-
-    for (const command of [
-      'git clean -fd',
-      'git branch new-branch',
-      'git remote -v add origin https://example.com/repo.git',
-      'git config --list --unset user.name',
-      'curl -o result.json https://example.com',
-      'curl -sSLo result.json https://example.com',
-      'curl --json "{}" https://example.com',
-      'curl -X POST https://example.com',
-      'wget https://example.com',
-      'wget -qO- -o wget.log https://example.com',
-      'npm install',
-      'npm audit --fix',
-      'npm run build',
-      'npm run deploy',
-      'cargo clippy --fix',
-      'eslint --fix src',
-      'tsc',
-      'python script.py',
-      'node script.js',
-      'xcodebuild test',
-    ]) {
-      const effects = enforcement.handle({
-        type: 'tool-call',
-        toolName: 'bash',
-        input: { command },
-      });
-
-      assert.equal(effects[0]?.type, 'block-tool', command);
-    }
+    const invalidInput = enforcement.handle({ type: 'tool-call', toolName: 'bash', input: {} });
+    assert.equal(invalidInput[0]?.type, 'block-tool');
   });
 
   test('restores the latest valid branch state and ignores malformed entries', () => {

@@ -51,6 +51,13 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 - **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
 - **测试**：`node --test agent/extensions/readonly-mode/*.test.ts`
 
+### command-policy
+
+- **文件**：`agent/extensions/command-policy/`
+- **功能**：共享的只读命令策略（Read-only command policy）——判定一条 bash 命令是否可以在不改动工作区的前提下执行，复合命令逐段判定，解析失败一律 fail-closed。profile 为减法限制：`standard` 为完整只读命令面，`drafting` 在其上额外禁止网络命令（`curl`、`wget`、`ping`、`nslookup`、`traceroute`、`whois`、`host`）。
+- **说明**：非独立扩展（无 `index.ts`，不会被 Pi 自动加载），由 readonly-mode 以相对路径导入。
+- **测试**：`node --test agent/extensions/command-policy/*.test.ts`
+
 ### planning-files-runtime
 
 - **文件**：`agent/extensions/planning-files-runtime/`
