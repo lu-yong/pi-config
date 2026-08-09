@@ -15,6 +15,8 @@ describe('read-only command policy', () => {
       'printf "%s\\n" "a;b"',
       'ls -la',
       'diff README.md CONTEXT.md',
+      'sdiff -w 200 README.md CONTEXT.md',
+      'sort README.md',
     ]) {
       assert.equal(isSafeShellCommand(command), true, command);
     }
@@ -36,6 +38,10 @@ describe('read-only command policy', () => {
       'find . -delete',
       'sort -o result.txt input.txt',
       'diff --output=result.txt a b',
+      'diff -o result.txt a b',
+      'sdiff -o result.txt a b',
+      'sdiff --output=result.txt a b',
+      'sdiff -oresult.txt a b',
     ]) {
       assert.equal(isSafeShellCommand(command), false, command);
     }

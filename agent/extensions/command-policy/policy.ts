@@ -140,6 +140,13 @@ const READ_ONLY_GIT_COMMANDS = new Set([
 const APPROVED_SCRIPT = /^(test|lint|typecheck|type-check|check)(:[A-Za-z0-9_.-]+)?$|^format:check$/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/**
+ * Otherwise read-only commands that grow a write vector via an output-file
+ * option (-o FILE / --output=FILE). None of them has an unrelated flag starting
+ * with -o, so the whole -o prefix can be rejected.
+ */
+const OUTPUT_FILE_COMMANDS = new Set(['diff', 'sdiff', 'sort']);
+
 export function isSafeShellCommand(command: string, profile: CommandProfile = 'standard'): boolean {
   return explainUnsafeCommand(command, profile) === undefined;
 }
@@ -307,8 +314,7 @@ function isSafeArgv(originalArgv: string[], profile: CommandProfile): boolean {
   }
 
   if (!SAFE_COMMANDS.has(command)) return false;
-  if (command === 'diff' && hasOption(args, '--output', true)) return false;
-  if (command === 'sort' && (hasOption(args, '--output', true) || args.some((arg) => /^-o/.test(arg)))) return false;
+  if (OUTPUT_FILE_COMMANDS.has(command) && writesToOutputFile(args)) return false;
   if (command === 'uniq' && positionalArgs(args).length > 1) return false;
   if (command === 'xxd' && args.some((arg) => arg === '-r' || arg.startsWith('-r'))) return false;
   if (command === 'yq' && args.some((arg) => arg === '-i' || arg === '--in-place')) return false;
@@ -502,6 +508,10 @@ function isSafeSwift(args: string[]): boolean {
 
 function hasOption(args: string[], option: string, allowEquals: boolean): boolean {
   return args.some((arg) => arg === option || (allowEquals && arg.startsWith(`${option}=`)));
+}
+
+function writesToOutputFile(args: string[]): boolean {
+  return hasOption(args, '--output', true) || args.some((arg) => /^-o/.test(arg));
 }
 
 function positionalArgs(args: string[]): string[] {
