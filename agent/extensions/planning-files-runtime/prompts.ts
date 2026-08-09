@@ -148,62 +148,52 @@ export function buildGoalImplPrompt(state: PlanningSnapshot, mode: "start" | "re
 	].join("\n");
 }
 
-// ---- task index ----
+// ---- plan update ----
 
-export function extractTaskIndex(goalDesignPath: string): string | undefined {
-	const content = readText(goalDesignPath);
-	const section = extractSection(content, "Task Plan");
-	if (!section) return undefined;
-	return truncate(section, 1200);
-}
-
-// ---- injected context ----
-
-export function buildInjectedContext(state: PlanningSnapshot): string | undefined {
-	if (!state.exists && state.goalState.status === "none") return undefined;
-	const taskPlan = truncate(readText(state.files["task_plan.md"]), 2000);
-	const findings = truncate(tailLines(readText(state.files["findings.md"]), 20), 1200);
-	const progress = truncate(tailLines(readText(state.files["progress.md"]), 20), 1200);
-	const goalLines: string[] = [];
-	if (["ready", "active", "paused", "complete"].includes(state.goalState.status) && state.goalState.goal) {
-		goalLines.push(`goal overlay status: ${state.goalState.status}`);
-		goalLines.push(`goal objective: ${state.goalState.goal.objective}`);
-		if (state.goalState.impl.pausedReason) goalLines.push(`goal paused reason: ${state.goalState.impl.pausedReason}`);
-		if (state.goalState.status === "active") {
-			const taskIndex = extractTaskIndex(state.goalDesignPath);
-			if (taskIndex) {
-				goalLines.push("");
-				goalLines.push("Goal design Task Plan:");
-				goalLines.push(taskIndex);
-			}
-		}
-	}
-	if (state.goalState.status === "drafting" && state.goalState.draft.openQuestions.length > 0) {
-		goalLines.push(`goal draft in progress: ${state.goalState.draft.openQuestions.length} open question(s)`);
-	}
-	const resumeNote = state.resumedFromPreviousSession
-		? "- This session continues from a previous Pi session. Reconcile your next actions against the planning files before changing code."
-		: "";
+export function buildPlanUpdatePrompt(snapshot: PlanningSnapshot): string {
 	return [
-		"[PLANNING FILES RUNTIME]",
-		`Planning files for this project live under ${state.planningRoot}.`,
-		"Do not use root-level task_plan.md, findings.md, or progress.md in this project. Use the .pi/planning versions only.",
+		"[PLAN UPDATE]",
+		"Refresh planning files (task_plan.md, findings.md, progress.md) with current workspace context.",
 		"",
-		"Rules:",
-		"- Re-read the plan before major decisions.",
-		"- Update findings.md after discoveries and design decisions.",
-		"- Update progress.md after meaningful work, verification, blockers, or completion evidence.",
-		"- Keep task_plan.md as the source of truth for phase status and next actions.",
-		resumeNote,
-		...(goalLines.length > 0 ? ["", ...goalLines] : []),
+		"## Planning File Location (REQUIRED)",
+		`All planning files for this project live under ${snapshot.planningRoot}.`,
+		"Do NOT create or write task_plan.md, findings.md, or progress.md anywhere else (e.g. repo root or docs/).",
+		"Always write/edit using these exact paths:",
+		`- ${snapshot.files["task_plan.md"]}`,
+		`- ${snapshot.files["findings.md"]}`,
+		`- ${snapshot.files["progress.md"]}`,
 		"",
-		"Current task plan:",
-		taskPlan || "(missing)",
+		"## Continuity Check",
+		"Compare actual progress & findings against what's recorded in planning files:",
+		"- Is the last recorded progress in progress.md a continuation of what you're doing now?",
+		"- Are the findings and decisions in findings.md still valid in the current context?",
+		"- Is task_plan.md's phase/next-action still what you should be working on?",
+		"- Are there new findings or progress not yet recorded?",
 		"",
-		"Recent findings tail:",
-		findings || "(missing)",
+		"### If it IS a continuation",
+		"Use write/edit to update the planning files at the exact paths above:",
+		"- findings.md: append new discoveries",
+		"- progress.md: append new progress",
+		"- task_plan.md: update phase, next action, blocker, etc.",
 		"",
-		"Recent progress tail:",
-		progress || "(missing)",
-	].filter(Boolean).join("\n");
+		"### If it is NOT a continuation (progress doesn't align, context changed, old records stale)",
+		"Don't write yet. Explain what changed and ask the user:",
+		"1. **reset** — Archive current planning files, reinitialize, then write fresh content",
+		"2. **write-anyway** — Append current context to planning files despite discontinuity",
+		"3. **abort** — Don't write, wait for user decision",
+		"",
+		"## Current Planning State",
+		`Phase: ${snapshot.currentPhase ?? "(missing)"}`,
+		`Next action: ${snapshot.nextAction ?? "(missing)"}`,
+		`Blocker: ${snapshot.blocker ?? "(none)"}`,
+		"",
+		"## task_plan.md",
+		readText(snapshot.files["task_plan.md"]) || "(missing)",
+		"",
+		"## findings.md (tail)",
+		tailLines(readText(snapshot.files["findings.md"]), 30) || "(missing)",
+		"",
+		"## progress.md (tail)",
+		tailLines(readText(snapshot.files["progress.md"]), 30) || "(missing)",
+	].join("\n");
 }

@@ -1,29 +1,6 @@
 import type { PlanningSnapshot } from "./types.ts";
 
 /**
- * Format a one-line status text for the Pi status bar.
- */
-export function formatStatusText(state: PlanningSnapshot): string | undefined {
-	const goal = state.goalState.goal;
-	const shortGoal = goal?.objective ?? state.goalFromPlan;
-	switch (state.goalState.status) {
-		case "drafting":
-			return `🎯 draft · ${state.goalState.draft.draftingStage} · ${state.goalState.draft.openQuestions.length || 0} open q${state.goalState.draft.openQuestions.length === 1 ? "" : "s"}`;
-		case "ready":
-			return shortGoal ? `🎯 ready · ${shortGoal}` : "🎯 ready";
-		case "active":
-			return `🎯 active · ${state.currentPhase ?? "planning"}${shortGoal ? ` · ${shortGoal}` : ""}`;
-		case "paused":
-			return shortGoal ? `⏸ goal paused · ${shortGoal}` : "⏸ goal paused";
-		case "complete":
-			return shortGoal ? `✅ goal complete · ${shortGoal}` : "✅ goal complete";
-		default:
-			if (!state.exists) return undefined;
-			return state.currentPhase ? `🧭 planning · ${state.currentPhase}` : "🧭 planning";
-	}
-}
-
-/**
  * Build widget lines displayed above the editor.
  */
 export function buildWidgetLines(state: PlanningSnapshot): string[] | undefined {

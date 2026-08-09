@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import {
 	GOAL_TOOL_NAMES,
+	MESSAGE_TYPE_PLAN_UPDATE,
 	WIDGET_KEY,
 } from "./types.ts";
 import type {
@@ -11,9 +12,9 @@ import type {
 	PauseGoalParams,
 	SaveGoalDraftParams,
 } from "./types.ts";
-import { normalizeString, readText, tailLines } from "./utils.ts";
+import { normalizeString } from "./utils.ts";
 import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
-import { getPlanningSnapshot } from "./prompts.ts";
+import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
 import { isSafeShellCommand } from "../command-policy/policy.ts";
@@ -216,52 +217,8 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 			pi.sendMessage(
 				{
-					customType: "planning-files-runtime-update-context",
-					content: [
-						"[PLAN UPDATE]",
-						"Refresh planning files (task_plan.md, findings.md, progress.md) with current workspace context.",
-						"",
-						"## Planning File Location (REQUIRED)",
-						`All planning files for this project live under ${snapshot.planningRoot}.`,
-						"Do NOT create or write task_plan.md, findings.md, or progress.md anywhere else (e.g. repo root or docs/).",
-						"Always write/edit using these exact paths:",
-						`- ${snapshot.files["task_plan.md"]}`,
-						`- ${snapshot.files["findings.md"]}`,
-						`- ${snapshot.files["progress.md"]}`,
-						"",
-						"## Continuity Check",
-						"Compare actual progress & findings against what's recorded in planning files:",
-						"- Is the last recorded progress in progress.md a continuation of what you're doing now?",
-						"- Are the findings and decisions in findings.md still valid in the current context?",
-						"- Is task_plan.md's phase/next-action still what you should be working on?",
-						"- Are there new findings or progress not yet recorded?",
-						"",
-						"### If it IS a continuation",
-						"Use write/edit to update the planning files at the exact paths above:",
-						"- findings.md: append new discoveries",
-						"- progress.md: append new progress",
-						"- task_plan.md: update phase, next action, blocker, etc.",
-						"",
-						"### If it is NOT a continuation (progress doesn't align, context changed, old records stale)",
-						"Don't write yet. Explain what changed and ask the user:",
-						"1. **reset** — Archive current planning files, reinitialize, then write fresh content",
-						"2. **write-anyway** — Append current context to planning files despite discontinuity",
-						"3. **abort** — Don't write, wait for user decision",
-						"",
-						"## Current Planning State",
-						`Phase: ${snapshot.currentPhase ?? "(missing)"}`,
-						`Next action: ${snapshot.nextAction ?? "(missing)"}`,
-						`Blocker: ${snapshot.blocker ?? "(none)"}`,
-						"",
-						"## task_plan.md",
-						readText(snapshot.files["task_plan.md"]) || "(missing)",
-						"",
-						"## findings.md (tail)",
-						tailLines(readText(snapshot.files["findings.md"]), 30) || "(missing)",
-						"",
-						"## progress.md (tail)",
-						tailLines(readText(snapshot.files["progress.md"]), 30) || "(missing)",
-					].join("\n"),
+					customType: MESSAGE_TYPE_PLAN_UPDATE,
+					content: buildPlanUpdatePrompt(snapshot),
 					display: false,
 				},
 				{ triggerTurn: true },

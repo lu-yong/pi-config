@@ -1,11 +1,10 @@
 // ---- constants ----
 
-export const CUSTOM_TYPE = "planning-files-runtime";
-export const STATUS_KEY = "planning-files-runtime";
 export const WIDGET_KEY = "planning-files-runtime";
 export const MESSAGE_TYPE_GOAL_SET = "planning-files-runtime-goal-set";
 export const MESSAGE_TYPE_GOAL_IMPL = "planning-files-runtime-goal-impl";
 export const MESSAGE_TYPE_CONTINUATION = "planning-files-runtime-goal-continuation";
+export const MESSAGE_TYPE_PLAN_UPDATE = "planning-files-runtime-update-context";
 export const PLANNING_DIR = ".pi/planning";
 export const GOAL_STATE_FILE = ".goal-state.json";
 export const GOAL_DESIGN_FILE = "goal-design.md";

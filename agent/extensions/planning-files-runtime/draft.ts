@@ -1,6 +1,5 @@
-import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus, SaveGoalDraftParams } from "./types.ts";
+import type { DraftingStage, GoalContract, GoalDraft, SaveGoalDraftParams } from "./types.ts";
 import { normalizeString, normalizeStringArray } from "./utils.ts";
-import { readGoalState, writeGoalState } from "./state.ts";
 
 /**
  * Merge tool params into an existing draft, preserving unchanged fields.
@@ -46,19 +45,4 @@ export function goalContractFromDraft(draft: GoalDraft): GoalContract | null {
 		outOfScope: draft.outOfScope,
 		blockerRule: draft.blockerRule,
 	};
-}
-
-/**
- * Read goal state, apply a mutation, set a new status, and persist.
- */
-export function setGoalStatus(
-	cwd: string,
-	status: GoalOverlayStatus,
-	mutate: (state: GoalOverlayState) => GoalOverlayState,
-): GoalOverlayState {
-	const current = readGoalState(cwd);
-	const next = mutate(current);
-	next.status = status;
-	writeGoalState(cwd, next);
-	return next;
 }
