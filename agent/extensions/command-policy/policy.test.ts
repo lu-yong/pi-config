@@ -86,6 +86,7 @@ describe('read-only command policy', () => {
       'git log --oneline -5 | head -3',
       'rg -n "TODO" agent | wc -l',
       'git status && git diff -- README.md',
+      'pwd && git status --short',
       'jq .name agent/npm/package.json',
       'npm test',
       'pytest -q',
@@ -105,6 +106,8 @@ describe('read-only command policy', () => {
       'timeout 5 curl -fsSL https://example.com',
       'git status && rm -rf tmp',
       'echo $(touch marker)',
+      "pwd && printf '%s\\n' '--- files ---' && rg --files -g '!node_modules' -g '!.git' | sed -n '1,240p' && git status --short",
+      'pwd\nrm -rf /tmp/drafting-escape',
     ]) {
       assert.equal(isSafeShellCommand(command, 'drafting'), false, command);
     }

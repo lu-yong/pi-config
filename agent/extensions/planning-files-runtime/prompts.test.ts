@@ -4,13 +4,13 @@ import { test } from "node:test";
 import { buildGoalSetPrompt } from "./prompts.ts";
 import { defaultGoalState } from "./state.ts";
 
-test("goal drafting prompt explains the single-command bash protocol", () => {
+test("goal drafting prompt explains the fail-closed bash policy", () => {
 	const state = defaultGoalState();
 	state.status = "drafting";
 	const prompt = buildGoalSetPrompt(state);
 
-	assert.ok(prompt.includes("Run exactly one approved read-only command per bash call."));
-	assert.ok(prompt.includes("Never use shell composition: &&, ||, ;, |, redirects, backticks, $(), subshells, line continuations, or newline-separated commands."));
-	assert.ok(prompt.includes("Do not combine pwd, file scanning, and git status. Use separate bash calls."));
-	assert.ok(prompt.includes("`pwd`, `rg --files -g '!node_modules' -g '!.git'`, `git status --short`"));
+	assert.ok(prompt.includes("every segment is an approved read-only command"));
+	assert.ok(prompt.includes("Redirects, backticks, $(), subshells, and unknown commands are always rejected."));
+	assert.ok(prompt.includes("curl, wget, ping, nslookup, traceroute, whois, host"));
+	assert.ok(prompt.includes("`pwd && git status --short`"));
 });

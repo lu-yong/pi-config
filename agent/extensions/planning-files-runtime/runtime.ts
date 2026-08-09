@@ -20,7 +20,8 @@ import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, i
 import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
 import { appendProgressTimeline } from "./markdown.ts";
 import { buildWidgetLines } from "./ui.ts";
-import { isInPlanningDir, isMeaningfulProgressToolCall, isUnsafeDraftingBash, redirectPlanningPath } from "./guards.ts";
+import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
+import { isSafeShellCommand } from "../command-policy/policy.ts";
 import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay.ts";
 
 /**
@@ -416,8 +417,8 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			}
 			if (event.toolName === "bash") {
 				const command = typeof event.input.command === "string" ? event.input.command : "";
-				if (isUnsafeDraftingBash(command)) {
-					return { block: true, reason: "Goal drafting bash allows one approved read-only command per call. Do not use &&, ||, ;, |, redirects, backticks, $(), subshells, line continuations, or newline-separated commands. Retry with separate calls such as `pwd`, `rg --files -g '!node_modules' -g '!.git'`, and `git status --short`. Use only the read tool or whitelisted commands; helpers such as sed may be rejected. Use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace." };
+				if (!isSafeShellCommand(command, "drafting")) {
+					return { block: true, reason: "Goal drafting bash is fail-closed: every segment of a compound command must be an approved read-only command, and network commands (curl, wget, ping, nslookup, traceroute, whois, host) are blocked during drafting. Helpers such as sed are not whitelisted; prefer the read tool for file contents. Use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace." };
 				}
 			}
 		}
