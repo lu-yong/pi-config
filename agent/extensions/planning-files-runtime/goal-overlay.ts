@@ -34,15 +34,16 @@ export type GoalOverlayEffect =
 	| { type: "refresh" }
 	| { type: "send-goal-set"; supplementalInput?: string }
 	| { type: "send-goal-impl"; mode: "start" | "resume" }
-	| { type: "queue-continuation"; runId: number }
+	| { type: "schedule-continuation"; runId: number }
 	| { type: "send-continuation"; runId: number }
-	| { type: "stop-turn"; operation: string }
 	| { type: "reject"; operation: string; reason: string };
 
 export interface GoalOverlay {
 	handle(event: GoalOverlayEvent): GoalOverlayEffect[];
 	getState(): GoalOverlayState;
 	rollback(): void;
+	/** Operation that stopped the current turn (commit/pause/complete), if any. */
+	turnStoppedBy(): string | null;
 }
 
 function cloneState(state: GoalOverlayState): GoalOverlayState {
@@ -77,6 +78,10 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 	let state = readGoalState(cwd);
 	let rollbackState: GoalOverlayState | null = null;
 	let progressSeenThisTurn = false;
+	// In-memory, never persisted: a queued Continuation and the turn-stop gate
+	// must not survive a process restart.
+	let queuedRunId: number | null = null;
+	let turnStopped: string | null = null;
 
 	const persist = (next: GoalOverlayState): void => {
 		rollbackState = cloneState(state);
@@ -89,6 +94,7 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 		state = rollbackState;
 		writeGoalState(cwd, state);
 		rollbackState = null;
+		queuedRunId = null;
 	};
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
@@ -102,12 +108,15 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				state = readGoalState(cwd);
 				rollbackState = null;
 				progressSeenThisTurn = false;
+				queuedRunId = null;
+				turnStopped = null;
 				return [{ type: "refresh" }];
 
 			case "reset":
 				rollbackState = cloneState(state);
 				state = defaultGoalState();
 				progressSeenThisTurn = false;
+				queuedRunId = null;
 				writeGoalState(cwd, state);
 				return [{ type: "clear-continuation" }, { type: "refresh" }];
 
@@ -156,6 +165,7 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 					}));
 				}
 
+				queuedRunId = null;
 				return [
 					{ type: "ensure-goal-design" },
 					{ type: "clear-continuation" },
@@ -208,10 +218,11 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 					},
 					impl: { ...current.impl, planningResetRequired: true, pausedReason: "", completedSummary: "" },
 				}));
+				turnStopped = "commit_plan_goal";
+				queuedRunId = null;
 				return [
 					{ type: "clear-continuation" },
 					{ type: "refresh" },
-					{ type: "stop-turn", operation: "commit_plan_goal" },
 				];
 			}
 
@@ -235,6 +246,7 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 							pausedReason: "",
 						},
 					}));
+					queuedRunId = null;
 					return [
 						{ type: "archive-implementation-workspace", label: `before-goal-run-${runId}` },
 						{ type: "initialize-implementation-workspace", goal: state.goal, runId },
@@ -251,6 +263,7 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				status: "active",
 				impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "" },
 			}));
+			queuedRunId = null;
 			return [
 				{ type: "ensure-implementation-workspace", goal: state.goal, runId },
 				{ type: "append-progress", heading: "Timeline", message: `Goal implementation resumed (run ${runId})` },
@@ -267,11 +280,12 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				if (!reason) return reject("pause_plan_goal", "pause_plan_goal rejected: reason is required.");
 				const suggestedAction = normalizeString(event.params.suggestedAction);
 				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+				turnStopped = "pause_plan_goal";
+				queuedRunId = null;
 				return [
 					{ type: "append-progress", heading: "Blockers / Interruptions", message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
 					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
 					{ type: "clear-continuation" },
-					{ type: "stop-turn", operation: "pause_plan_goal" },
 					{ type: "refresh" },
 				];
 			}
@@ -284,17 +298,19 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				if (!summary) return reject("complete_plan_goal", "complete_plan_goal rejected: summary is required.");
 				const evidence = normalizeStringArray(event.params.evidence);
 				mutate((current) => ({ ...current, status: "complete", impl: { ...current.impl, completedSummary: summary, pausedReason: "" } }));
+				turnStopped = "complete_plan_goal";
+				queuedRunId = null;
 				return [
 					{ type: "append-progress", heading: "Completion Evidence", message: `${summary}${evidence.length > 0 ? ` | evidence: ${evidence.join("; ")}` : ""}` },
 					{ type: "append-progress", heading: "Timeline", message: `Goal implementation completed: ${summary}` },
 					{ type: "clear-continuation" },
-					{ type: "stop-turn", operation: "complete_plan_goal" },
 					{ type: "refresh" },
 				];
 			}
 
 			case "turn-start":
 				progressSeenThisTurn = false;
+				turnStopped = null;
 				return [];
 
 			case "progress-tool-called":
@@ -306,6 +322,7 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 					const reason = "The goal run was interrupted by the user.";
 					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
 					progressSeenThisTurn = false;
+					queuedRunId = null;
 					return [
 						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
 						{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
@@ -315,15 +332,21 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				}
 				if (state.status !== "active") {
 					progressSeenThisTurn = false;
+					queuedRunId = null;
 					return [{ type: "clear-continuation" }];
 				}
 				const shouldContinue = progressSeenThisTurn;
 				progressSeenThisTurn = false;
-				return shouldContinue
-					? [{ type: "refresh" }, { type: "queue-continuation", runId: state.impl.runId }]
-					: [{ type: "clear-continuation" }];
+				if (!shouldContinue) {
+					queuedRunId = null;
+					return [{ type: "clear-continuation" }];
+				}
+				if (queuedRunId === state.impl.runId) return [{ type: "refresh" }];
+				queuedRunId = state.impl.runId;
+				return [{ type: "refresh" }, { type: "schedule-continuation", runId: state.impl.runId }];
 
 			case "continuation-fired":
+				queuedRunId = null;
 				if (state.status !== "active" || !state.goal || state.impl.planningResetRequired || state.impl.runId !== event.runId) return [];
 				return [{ type: "send-continuation", runId: event.runId }];
 		}
@@ -333,5 +356,6 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 		handle,
 		getState: () => cloneState(state),
 		rollback,
+		turnStoppedBy: () => turnStopped,
 	};
 }

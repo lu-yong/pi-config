@@ -56,10 +56,6 @@ export interface ApplyContext {
 
 export interface GoalEffectExecutor {
 	apply(overlay: GoalOverlay, effects: GoalOverlayEffect[], context: ApplyContext): AppliedEffects;
-	/** Operation that stopped the current turn via a stop-turn effect, if any. */
-	turnStopped(): string | null;
-	/** Reset the stop-turn gate at turn start. */
-	resetTurnStopped(): void;
 }
 
 /** Default single-slot timer backed by setTimeout. */
@@ -83,26 +79,6 @@ export function createSetTimeoutTimer(): ContinuationTimer {
 }
 
 export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffectExecutor {
-	let turnStoppedFor: string | null = null;
-	let continuationQueuedFor: string | null = null;
-
-	const clearContinuation = (): void => {
-		continuationQueuedFor = null;
-		deps.timer.clear();
-	};
-
-	const queueContinuation = (overlay: GoalOverlay, runId: number, context: ApplyContext): void => {
-		const current = overlay.getState();
-		if (current.status !== "active" || current.impl.runId !== runId || current.impl.planningResetRequired) return;
-		if (continuationQueuedFor === `${runId}`) return;
-		clearContinuation();
-		continuationQueuedFor = `${runId}`;
-		deps.timer.schedule(() => {
-			continuationQueuedFor = null;
-			apply(overlay, overlay.handle({ type: "continuation-fired", runId }), context);
-		}, CONTINUATION_DELAY_MS);
-	};
-
 	const apply = (overlay: GoalOverlay, effects: GoalOverlayEffect[], context: ApplyContext): AppliedEffects => {
 		let rejection: AppliedEffects["rejection"];
 		let failure: AppliedEffects["failure"];
@@ -130,7 +106,7 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 						appendProgressTimeline(context.cwd, effect.heading, effect.message);
 						break;
 					case "clear-continuation":
-						clearContinuation();
+						deps.timer.clear();
 						break;
 					case "refresh":
 						context.refresh();
@@ -159,9 +135,13 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 						);
 						break;
 					}
-					case "queue-continuation":
-						queueContinuation(overlay, effect.runId, context);
+					case "schedule-continuation": {
+						const runId = effect.runId;
+						deps.timer.schedule(() => {
+							apply(overlay, overlay.handle({ type: "continuation-fired", runId }), context);
+						}, CONTINUATION_DELAY_MS);
 						break;
+					}
 					case "send-continuation":
 						deps.sendMessage(
 							{
@@ -172,9 +152,6 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 							{ triggerTurn: true, deliverAs: "followUp" },
 						);
 						break;
-					case "stop-turn":
-						turnStoppedFor = effect.operation;
-						break;
 					case "reject":
 						rejection = { operation: effect.operation, reason: effect.reason };
 						break;
@@ -182,18 +159,12 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 			}
 		} catch (error) {
 			overlay.rollback();
-			clearContinuation();
+			deps.timer.clear();
 			const message = error instanceof Error ? error.message : String(error);
 			failure = { operation: "effect-execution", reason: `Goal overlay effect failed; state restored. Retry the operation. ${message}` };
 		}
 		return { rejection, failure };
 	};
 
-	return {
-		apply,
-		turnStopped: () => turnStoppedFor,
-		resetTurnStopped: () => {
-			turnStoppedFor = null;
-		},
-	};
+	return { apply };
 }

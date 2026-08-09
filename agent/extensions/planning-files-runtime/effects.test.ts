@@ -48,6 +48,7 @@ function spyRollback(overlay: GoalOverlay): GoalOverlay & { rollbackCount(): num
 			rollbacks += 1;
 			overlay.rollback();
 		},
+		turnStoppedBy: () => overlay.turnStoppedBy(),
 		rollbackCount: () => rollbacks,
 	};
 }
@@ -181,14 +182,13 @@ describe("goal effect executor", () => {
 		assert.match(readText(paths.files["progress.md"]), /before failure/);
 	});
 
-	test("queue-continuation schedules once, dedupes the same run, and fires the full chain", () => {
+	test("schedule-continuation fires the continuation chain back through the overlay", () => {
 		const cwd = makeCwd();
 		const overlay = prepareActiveOverlay(cwd);
 		const { executor, timer, sent, contextFor } = createHarness();
 		const runId = overlay.getState().impl.runId;
 
-		executor.apply(overlay, [{ type: "queue-continuation", runId }], contextFor(cwd));
-		executor.apply(overlay, [{ type: "queue-continuation", runId }], contextFor(cwd));
+		executor.apply(overlay, [{ type: "schedule-continuation", runId }], contextFor(cwd));
 
 		assert.deepEqual(timer.scheduledDelays(), [CONTINUATION_DELAY_MS]);
 
@@ -205,7 +205,7 @@ describe("goal effect executor", () => {
 		const { executor, timer, sent, contextFor } = createHarness();
 		const runId = overlay.getState().impl.runId;
 
-		executor.apply(overlay, [{ type: "queue-continuation", runId }], contextFor(cwd));
+		executor.apply(overlay, [{ type: "schedule-continuation", runId }], contextFor(cwd));
 		overlay.handle({ type: "pause", params: { reason: "blocked" } });
 		timer.fire();
 
@@ -218,21 +218,9 @@ describe("goal effect executor", () => {
 		const { executor, timer, contextFor } = createHarness();
 		const runId = overlay.getState().impl.runId;
 
-		executor.apply(overlay, [{ type: "queue-continuation", runId }], contextFor(cwd));
+		executor.apply(overlay, [{ type: "schedule-continuation", runId }], contextFor(cwd));
 		assert.equal(timer.hasPending(), true);
 		executor.apply(overlay, [{ type: "clear-continuation" }], contextFor(cwd));
 		assert.equal(timer.hasPending(), false);
-	});
-
-	test("stop-turn effects arm the turn gate until reset", () => {
-		const cwd = makeCwd();
-		const overlay = createGoalOverlay(cwd);
-		const { executor, contextFor } = createHarness();
-
-		assert.equal(executor.turnStopped(), null);
-		executor.apply(overlay, [{ type: "stop-turn", operation: "commit_plan_goal" }], contextFor(cwd));
-		assert.equal(executor.turnStopped(), "commit_plan_goal");
-		executor.resetTurnStopped();
-		assert.equal(executor.turnStopped(), null);
 	});
 });

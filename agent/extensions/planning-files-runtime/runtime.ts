@@ -286,18 +286,17 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
-		executor.resetTurnStopped();
 		const overlay = overlayFor(ctx.cwd);
 		overlay.handle({ type: "turn-start" });
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const turnStoppedFor = executor.turnStopped();
+		const overlay = overlayFor(ctx.cwd);
+		const turnStoppedFor = overlay.turnStoppedBy();
 		if (turnStoppedFor) {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
 		redirectPlanningPath(event as { toolName: string; input: Record<string, unknown> }, ctx.cwd);
-		const overlay = overlayFor(ctx.cwd);
 		const goalState = overlay.getState();
 		if (goalState.status === "drafting") {
 			if (event.toolName === "write") {

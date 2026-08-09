@@ -62,7 +62,7 @@ describe("goal overlay event -> effect seam", () => {
 		overlay.handle({ type: "save-draft", params: contractParams });
 		writeText(getPaths(cwd).goalDesign, "# Goal Design\n\n## Design\n- agreed\n");
 		const commitEffects = overlay.handle({ type: "commit", params: contractParams });
-		assert.deepEqual(effectTypes(commitEffects), ["clear-continuation", "refresh", "stop-turn"]);
+		assert.deepEqual(effectTypes(commitEffects), ["clear-continuation", "refresh"]);
 		assert.equal(overlay.getState().status, "ready");
 
 		const startEffects = overlay.handle({ type: "implementation-request" });
@@ -78,7 +78,7 @@ describe("goal overlay event -> effect seam", () => {
 		assert.equal(overlay.getState().impl.runId, 1);
 
 		const pauseEffects = overlay.handle({ type: "pause", params: { reason: "external dependency unavailable" } });
-		assert.deepEqual(effectTypes(pauseEffects), ["append-progress", "append-progress", "clear-continuation", "stop-turn", "refresh"]);
+		assert.deepEqual(effectTypes(pauseEffects), ["append-progress", "append-progress", "clear-continuation", "refresh"]);
 		assert.equal(overlay.getState().status, "paused");
 
 		const resumeEffects = overlay.handle({ type: "implementation-request" });
@@ -87,7 +87,7 @@ describe("goal overlay event -> effect seam", () => {
 		assert.equal(overlay.getState().impl.runId, 1);
 
 		const completeEffects = overlay.handle({ type: "complete", params: { summary: "Lifecycle is complete" } });
-		assert.deepEqual(effectTypes(completeEffects), ["append-progress", "append-progress", "clear-continuation", "stop-turn", "refresh"]);
+		assert.deepEqual(effectTypes(completeEffects), ["append-progress", "append-progress", "clear-continuation", "refresh"]);
 		assert.equal(overlay.getState().status, "complete");
 	});
 
@@ -157,7 +157,18 @@ describe("goal overlay event -> effect seam", () => {
 		const overlay = prepareActive(makeCwd());
 		overlay.handle({ type: "turn-start" });
 		overlay.handle({ type: "progress-tool-called" });
-		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh", "queue-continuation"]);
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh", "schedule-continuation"]);
+
+		// The same run stays queued: further productive turn-ends do not re-schedule.
+		overlay.handle({ type: "turn-start" });
+		overlay.handle({ type: "progress-tool-called" });
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh"]);
+
+		// Firing consumes the queue slot, so the next productive turn-end schedules again.
+		assert.deepEqual(effectTypes(overlay.handle({ type: "continuation-fired", runId: 1 })), ["send-continuation"]);
+		overlay.handle({ type: "turn-start" });
+		overlay.handle({ type: "progress-tool-called" });
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh", "schedule-continuation"]);
 
 		overlay.handle({ type: "turn-start" });
 		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["clear-continuation"]);
@@ -167,6 +178,26 @@ describe("goal overlay event -> effect seam", () => {
 		const aborted = overlay.handle({ type: "turn-end", stopReason: "aborted" });
 		assert.deepEqual(effectTypes(aborted), ["append-progress", "append-progress", "clear-continuation", "refresh"]);
 		assert.equal(overlay.getState().status, "paused");
+	});
+
+	test("turn stop gate is held by the overlay and cleared at turn start", () => {
+		const cwd = makeCwd();
+		const overlay = prepareDraft(cwd);
+		assert.equal(overlay.turnStoppedBy(), null);
+
+		overlay.handle({ type: "commit", params: contractParams });
+		assert.equal(overlay.turnStoppedBy(), "commit_plan_goal");
+		overlay.handle({ type: "turn-start" });
+		assert.equal(overlay.turnStoppedBy(), null);
+
+		overlay.handle({ type: "implementation-request" });
+		overlay.handle({ type: "pause", params: { reason: "blocked" } });
+		assert.equal(overlay.turnStoppedBy(), "pause_plan_goal");
+		overlay.handle({ type: "turn-start" });
+
+		overlay.handle({ type: "implementation-request" });
+		overlay.handle({ type: "complete", params: { summary: "done" } });
+		assert.equal(overlay.turnStoppedBy(), "complete_plan_goal");
 	});
 
 	test("rollback restores the persisted state after an effect failure", () => {
