@@ -2,11 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
-	CONTINUATION_DELAY_MS,
 	GOAL_TOOL_NAMES,
-	MESSAGE_TYPE_CONTINUATION,
-	MESSAGE_TYPE_GOAL_IMPL,
-	MESSAGE_TYPE_GOAL_SET,
 	WIDGET_KEY,
 } from "./types.ts";
 import type {
@@ -15,26 +11,27 @@ import type {
 	PauseGoalParams,
 	SaveGoalDraftParams,
 } from "./types.ts";
-import { ensureDir, getPaths, normalizeString, readText, tailLines } from "./utils.ts";
-import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, initializePlanningWorkspace } from "./workspace.ts";
-import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
-import { appendProgressTimeline } from "./markdown.ts";
+import { normalizeString, readText, tailLines } from "./utils.ts";
+import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
+import { getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
 import { isSafeShellCommand } from "../command-policy/policy.ts";
 import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay.ts";
+import { createGoalEffectExecutor, createSetTimeoutTimer, type AppliedEffects } from "./effects.ts";
 
 /**
  * Pi is an adapter around the goal overlay. The overlay decides transitions
- * and continuation policy; this module translates Pi events and executes the
- * resulting effects (including timers and follow-up messages).
+ * and continuation policy; effects.ts executes the resulting effects (timers,
+ * filesystem, follow-up messages); this module only translates Pi events.
  */
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	let state = getPlanningSnapshot(process.cwd(), false);
-	let turnStoppedFor: string | null = null;
-	let continuationQueuedFor: string | null = null;
-	let continuationTimer: ReturnType<typeof setTimeout> | null = null;
 	const overlays = new Map<string, GoalOverlay>();
+	const executor = createGoalEffectExecutor({
+		sendMessage: (message, options) => pi.sendMessage(message, options),
+		timer: createSetTimeoutTimer(),
+	});
 
 	function overlayFor(cwd: string): GoalOverlay {
 		let overlay = overlays.get(cwd);
@@ -45,21 +42,11 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		return overlay;
 	}
 
-	function clearContinuation(): void {
-		continuationQueuedFor = null;
-		if (continuationTimer) {
-			clearTimeout(continuationTimer);
-			continuationTimer = null;
-		}
-	}
-
 	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
 		state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
 		if (!ctx.hasUI) return;
 		ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
 	}
-
-	type AppliedEffects = { rejection?: { operation: string; reason: string }; failure?: { operation: string; reason: string }; };
 
 	function applyGoalEffects(
 		effects: GoalOverlayEffect[],
@@ -67,102 +54,11 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		overlay: GoalOverlay,
 		resumedFromPreviousSession = false,
 	): AppliedEffects {
-		let rejection: AppliedEffects["rejection"];
-		let failure: AppliedEffects["failure"];
-		try {
-		for (const effect of effects) {
-			switch (effect.type) {
-				case "ensure-goal-design":
-					ensureDir(getPaths(ctx.cwd).root);
-					createGoalDesignSkeleton(ctx.cwd);
-					break;
-				case "archive-implementation-workspace":
-					archivePlanningWorkspace(ctx.cwd, {
-						includeGoalState: false,
-						includeGoalDesign: false,
-						label: effect.label,
-					});
-					break;
-				case "initialize-implementation-workspace":
-					initializePlanningWorkspace(ctx.cwd, effect.goal, effect.runId);
-					break;
-				case "ensure-implementation-workspace":
-					if (!hasPlanningFiles(ctx.cwd)) initializePlanningWorkspace(ctx.cwd, effect.goal, effect.runId);
-					break;
-				case "append-progress":
-					appendProgressTimeline(ctx.cwd, effect.heading, effect.message);
-					break;
-				case "clear-continuation":
-					clearContinuation();
-					break;
-				case "refresh":
-					refresh(ctx, resumedFromPreviousSession);
-					break;
-				case "send-goal-set": {
-					const snapshot = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
-					pi.sendMessage(
-						{
-							customType: MESSAGE_TYPE_GOAL_SET,
-							content: buildGoalSetPrompt(snapshot.goalState, effect.supplementalInput),
-							display: false,
-						},
-						{ triggerTurn: true },
-					);
-					break;
-				}
-				case "send-goal-impl": {
-					const snapshot = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
-					pi.sendMessage(
-						{
-							customType: MESSAGE_TYPE_GOAL_IMPL,
-							content: buildGoalImplPrompt(snapshot, effect.mode),
-							display: false,
-						},
-						{ triggerTurn: true },
-					);
-					break;
-				}
-				case "queue-continuation":
-					queueContinuation(ctx, overlay, effect.runId);
-					break;
-				case "send-continuation":
-					pi.sendMessage(
-						{
-							customType: MESSAGE_TYPE_CONTINUATION,
-							content: buildGoalImplPrompt(getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession), "continue"),
-							display: false,
-						},
-						{ triggerTurn: true, deliverAs: "followUp" },
-					);
-					break;
-				case "stop-turn":
-					turnStoppedFor = effect.operation;
-					break;
-				case "reject":
-					rejection = { operation: effect.operation, reason: effect.reason };
-					break;
-			}
-		}
-		} catch (error) {
-			overlay.rollback();
-			clearContinuation();
-			const message = error instanceof Error ? error.message : String(error);
-			failure = { operation: "effect-execution", reason: `Goal overlay effect failed; state restored. Retry the operation. ${message}` };
-		}
-		return { rejection, failure };
-	}
-
-	function queueContinuation(ctx: ExtensionContext, overlay: GoalOverlay, runId: number): void {
-		const current = overlay.getState();
-		if (current.status !== "active" || current.impl.runId !== runId || current.impl.planningResetRequired) return;
-		if (continuationQueuedFor === `${runId}`) return;
-		clearContinuation();
-		continuationQueuedFor = `${runId}`;
-		continuationTimer = setTimeout(() => {
-			continuationTimer = null;
-			continuationQueuedFor = null;
-			applyGoalEffects(overlay.handle({ type: "continuation-fired", runId }), ctx, overlay, state.resumedFromPreviousSession);
-		}, CONTINUATION_DELAY_MS);
+		return executor.apply(overlay, effects, {
+			cwd: ctx.cwd,
+			resumedFromPreviousSession,
+			refresh: () => refresh(ctx, resumedFromPreviousSession),
+		});
 	}
 
 	function notifyRejection(ctx: ExtensionContext, result: AppliedEffects): void {
@@ -390,12 +286,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
-		turnStoppedFor = null;
+		executor.resetTurnStopped();
 		const overlay = overlayFor(ctx.cwd);
 		overlay.handle({ type: "turn-start" });
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		const turnStoppedFor = executor.turnStopped();
 		if (turnStoppedFor) {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
