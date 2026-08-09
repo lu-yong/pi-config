@@ -16,8 +16,10 @@ import {
 	normalizeQuestionnaireQuestions,
 	orderedAnswers,
 	reduceQuestionTakingState,
+	routeQuestionTakingInput,
 	type QuestionTakingAction,
 	type QuestionTakingAnswer,
+	type QuestionTakingKey,
 	type QuestionTakingMode,
 	type QuestionTakingOption,
 	type QuestionTakingQuestion,
@@ -232,45 +234,28 @@ export async function runQuestionTaking(
 			return lines;
 		}
 
+		function toKey(data: string): QuestionTakingKey {
+			if (matchesKey(data, Key.up)) return "up";
+			if (matchesKey(data, Key.down)) return "down";
+			if (matchesKey(data, Key.left)) return "left";
+			if (matchesKey(data, Key.right)) return "right";
+			if (matchesKey(data, Key.shift("tab"))) return "shift-tab";
+			if (matchesKey(data, Key.tab)) return "tab";
+			if (matchesKey(data, Key.enter)) return "enter";
+			if (matchesKey(data, Key.escape)) return "escape";
+			return "other";
+		}
+
 		function handleInput(data: string) {
-			if (currentState.inputMode) {
-				if (matchesKey(data, Key.escape)) {
-					dispatch({ type: "cancel-custom" });
-					editor.setText("");
-					return;
-				}
+			const route = routeQuestionTakingInput(toKey(data), currentState);
+			if (route.type === "editor") {
 				editor.handleInput(data);
 				refresh();
 				return;
 			}
-
-			const isMulti = options.mode === "questionnaire" && questions.length > 1;
-			if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.right))) {
-				dispatch({ type: "move-tab", direction: 1 });
-				return;
-			}
-			if (isMulti && (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left))) {
-				dispatch({ type: "move-tab", direction: -1 });
-				return;
-			}
-			if (isMulti && currentState.currentIndex === questions.length) {
-				if (matchesKey(data, Key.enter)) dispatch({ type: "submit" });
-				else if (matchesKey(data, Key.escape)) dispatch({ type: "cancel" });
-				return;
-			}
-			if (matchesKey(data, Key.up)) {
-				dispatch({ type: "move-option", direction: -1 });
-				return;
-			}
-			if (matchesKey(data, Key.down)) {
-				dispatch({ type: "move-option", direction: 1 });
-				return;
-			}
-			if (matchesKey(data, Key.enter)) {
-				dispatch({ type: "select-option" });
-				return;
-			}
-			if (matchesKey(data, Key.escape)) dispatch({ type: "cancel" });
+			if (route.type !== "action") return;
+			dispatch(route.action);
+			if (route.action.type === "cancel-custom") editor.setText("");
 		}
 
 		return {

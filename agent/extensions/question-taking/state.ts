@@ -199,3 +199,48 @@ export function reduceQuestionTakingState(
 			return state;
 	}
 }
+
+// ---- input routing ----
+
+export type QuestionTakingKey =
+	| "up"
+	| "down"
+	| "left"
+	| "right"
+	| "tab"
+	| "shift-tab"
+	| "enter"
+	| "escape"
+	| "other";
+
+export type QuestionTakingInputRoute =
+	| { type: "action"; action: QuestionTakingAction }
+	| { type: "editor" }
+	| { type: "none" };
+
+const routeAction = (action: QuestionTakingAction): QuestionTakingInputRoute => ({ type: "action", action });
+
+/**
+ * Decide what a key press means in the current state. The TUI adapter only
+ * translates raw input into a QuestionTakingKey and executes the route.
+ */
+export function routeQuestionTakingInput(key: QuestionTakingKey, state: QuestionTakingState): QuestionTakingInputRoute {
+	if (state.inputMode) {
+		if (key === "escape") return routeAction({ type: "cancel-custom" });
+		return { type: "editor" };
+	}
+
+	const isMulti = state.mode === "questionnaire" && state.questions.length > 1;
+	if (isMulti && (key === "tab" || key === "right")) return routeAction({ type: "move-tab", direction: 1 });
+	if (isMulti && (key === "shift-tab" || key === "left")) return routeAction({ type: "move-tab", direction: -1 });
+	if (isMulti && state.currentIndex === state.questions.length) {
+		if (key === "enter") return routeAction({ type: "submit" });
+		if (key === "escape") return routeAction({ type: "cancel" });
+		return { type: "none" };
+	}
+	if (key === "up") return routeAction({ type: "move-option", direction: -1 });
+	if (key === "down") return routeAction({ type: "move-option", direction: 1 });
+	if (key === "enter") return routeAction({ type: "select-option" });
+	if (key === "escape") return routeAction({ type: "cancel" });
+	return { type: "none" };
+}
