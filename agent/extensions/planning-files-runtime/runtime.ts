@@ -12,30 +12,37 @@ import {
 import type {
 	CommitGoalParams,
 	CompleteGoalParams,
-	GoalOverlayState,
-	GoalOverlayStatus,
 	PauseGoalParams,
-	PlanningSnapshot,
 	SaveGoalDraftParams,
 } from "./types";
-
-import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, tailLines } from "./utils";
-import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } from "./state";
+import { ensureDir, getPaths, normalizeString, readText, tailLines } from "./utils";
 import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, initializePlanningWorkspace } from "./workspace";
-import { appendProgressTimeline } from "./markdown";
 import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts";
+import { appendProgressTimeline } from "./markdown";
 import { buildWidgetLines } from "./ui";
 import { isInPlanningDir, isMeaningfulProgressToolCall, isUnsafeDraftingBash, redirectPlanningPath } from "./guards";
-import { mergeDraft, setGoalStatus } from "./draft";
+import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay";
 
+/**
+ * Pi is an adapter around the goal overlay. The overlay decides transitions
+ * and continuation policy; this module translates Pi events and executes the
+ * resulting effects (including timers and follow-up messages).
+ */
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	let state = getPlanningSnapshot(process.cwd(), false);
-	let goalProgressToolCalledThisTurn = false;
 	let turnStoppedFor: string | null = null;
 	let continuationQueuedFor: string | null = null;
 	let continuationTimer: ReturnType<typeof setTimeout> | null = null;
+	const overlays = new Map<string, GoalOverlay>();
 
-	// ---- continuation ----
+	function overlayFor(cwd: string): GoalOverlay {
+		let overlay = overlays.get(cwd);
+		if (!overlay) {
+			overlay = createGoalOverlay(cwd);
+			overlays.set(cwd, overlay);
+		}
+		return overlay;
+	}
 
 	function clearContinuation(): void {
 		continuationQueuedFor = null;
@@ -45,160 +52,131 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		}
 	}
 
-	function queueContinuation(ctx: ExtensionContext, force = false): void {
-		if (state.goalState.status !== "active" || !state.goalState.goal) return;
-		const runId = state.goalState.impl.runId;
-		if (!force && continuationQueuedFor === `${runId}`) return;
+	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
+		state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
+	}
+
+	type AppliedEffects = { rejection?: { operation: string; reason: string }; failure?: { operation: string; reason: string }; };
+
+	function applyGoalEffects(
+		effects: GoalOverlayEffect[],
+		ctx: ExtensionContext,
+		overlay: GoalOverlay,
+		resumedFromPreviousSession = false,
+	): AppliedEffects {
+		let rejection: AppliedEffects["rejection"];
+		let failure: AppliedEffects["failure"];
+		try {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case "ensure-goal-design":
+					ensureDir(getPaths(ctx.cwd).root);
+					createGoalDesignSkeleton(ctx.cwd);
+					break;
+				case "archive-implementation-workspace":
+					archivePlanningWorkspace(ctx.cwd, {
+						includeGoalState: false,
+						includeGoalDesign: false,
+						label: effect.label,
+					});
+					break;
+				case "initialize-implementation-workspace":
+					initializePlanningWorkspace(ctx.cwd, effect.goal, effect.runId);
+					break;
+				case "ensure-implementation-workspace":
+					if (!hasPlanningFiles(ctx.cwd)) initializePlanningWorkspace(ctx.cwd, effect.goal, effect.runId);
+					break;
+				case "append-progress":
+					appendProgressTimeline(ctx.cwd, effect.heading, effect.message);
+					break;
+				case "clear-continuation":
+					clearContinuation();
+					break;
+				case "refresh":
+					refresh(ctx, resumedFromPreviousSession);
+					break;
+				case "send-goal-set": {
+					const snapshot = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
+					pi.sendMessage(
+						{
+							customType: MESSAGE_TYPE_GOAL_SET,
+							content: buildGoalSetPrompt(snapshot.goalState, effect.supplementalInput),
+							display: false,
+						},
+						{ triggerTurn: true },
+					);
+					break;
+				}
+				case "send-goal-impl": {
+					const snapshot = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
+					pi.sendMessage(
+						{
+							customType: MESSAGE_TYPE_GOAL_IMPL,
+							content: buildGoalImplPrompt(snapshot, effect.mode),
+							display: false,
+						},
+						{ triggerTurn: true },
+					);
+					break;
+				}
+				case "queue-continuation":
+					queueContinuation(ctx, overlay, effect.runId);
+					break;
+				case "send-continuation":
+					pi.sendMessage(
+						{
+							customType: MESSAGE_TYPE_CONTINUATION,
+							content: buildGoalImplPrompt(getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession), "continue"),
+							display: false,
+						},
+						{ triggerTurn: true, deliverAs: "followUp" },
+					);
+					break;
+				case "stop-turn":
+					turnStoppedFor = effect.operation;
+					break;
+				case "reject":
+					rejection = { operation: effect.operation, reason: effect.reason };
+					break;
+			}
+		}
+		} catch (error) {
+			overlay.rollback();
+			clearContinuation();
+			const message = error instanceof Error ? error.message : String(error);
+			failure = { operation: "effect-execution", reason: `Goal overlay effect failed; state restored. Retry the operation. ${message}` };
+		}
+		return { rejection, failure };
+	}
+
+	function queueContinuation(ctx: ExtensionContext, overlay: GoalOverlay, runId: number): void {
+		const current = overlay.getState();
+		if (current.status !== "active" || current.impl.runId !== runId || current.impl.planningResetRequired) return;
+		if (continuationQueuedFor === `${runId}`) return;
 		clearContinuation();
 		continuationQueuedFor = `${runId}`;
 		continuationTimer = setTimeout(() => {
 			continuationTimer = null;
-			const latest = getPlanningSnapshot(ctx.cwd, state.resumedFromPreviousSession);
-			state = latest;
-			if (latest.goalState.status !== "active" || latest.goalState.impl.runId !== runId || latest.goalState.impl.planningResetRequired) {
-				continuationQueuedFor = null;
-				return;
-			}
-			pi.sendMessage(
-				{
-					customType: MESSAGE_TYPE_CONTINUATION,
-					content: buildGoalImplPrompt(latest, "continue"),
-					display: false,
-				},
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
-		}, force ? 0 : CONTINUATION_DELAY_MS);
+			continuationQueuedFor = null;
+			applyGoalEffects(overlay.handle({ type: "continuation-fired", runId }), ctx, overlay, state.resumedFromPreviousSession);
+		}, CONTINUATION_DELAY_MS);
 	}
 
-	// ---- refresh UI ----
-
-	function refresh(ctx?: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
-		state = getPlanningSnapshot(ctx?.cwd ?? process.cwd(), resumedFromPreviousSession);
-		if (!ctx?.hasUI) return;
-		const widgetLines = buildWidgetLines(state);
-		ctx.ui.setWidget(WIDGET_KEY, widgetLines, { placement: "aboveEditor" });
+	function notifyRejection(ctx: ExtensionContext, result: AppliedEffects): void {
+		const message = result.failure?.reason ?? result.rejection?.reason;
+		if (message) ctx.ui.notify(message, "warning");
 	}
 
-	// ---- goal lifecycle ----
-
-	function startGoalDrafting(args: string, ctx: ExtensionContext): void {
-		ensureDir(getPaths(ctx.cwd).root);
-		createGoalDesignSkeleton(ctx.cwd);
-		const current = readGoalState(ctx.cwd);
-		const supplementalInput = args.trim();
-		let next = current;
-		if (current.status === "none") {
-			if (!supplementalInput) {
-				ctx.ui.notify("Provide a topic: /plan-goal-set <goal topic>", "warning");
-				return;
-			}
-			next = {
-				...current,
-				status: "drafting" as GoalOverlayStatus,
-				draft: {
-					...defaultGoalDraft(),
-					sourceTopic: supplementalInput,
-					supplementalInputs: [supplementalInput],
-				},
-				impl: {
-					...current.impl,
-					planningResetRequired: false,
-					pausedReason: "",
-					completedSummary: "",
-				},
-			};
-		} else if (current.status === "drafting") {
-			next = {
-				...current,
-				status: "drafting" as GoalOverlayStatus,
-				draft: {
-					...current.draft,
-					supplementalInputs: supplementalInput
-						? [...current.draft.supplementalInputs, supplementalInput].slice(-20)
-						: current.draft.supplementalInputs,
-				},
-			};
-		} else {
-			const goal = current.goal;
-			next = {
-				...current,
-				status: "drafting" as GoalOverlayStatus,
-				draft: {
-					sourceTopic: supplementalInput || goal?.objective || current.draft.sourceTopic,
-					supplementalInputs: supplementalInput ? [...current.draft.supplementalInputs, supplementalInput].slice(-20) : current.draft.supplementalInputs,
-					clarificationSummary: current.draft.clarificationSummary,
-					objective: goal?.objective || current.draft.objective,
-					successCriteria: goal?.successCriteria || current.draft.successCriteria,
-					constraints: goal?.constraints || current.draft.constraints,
-					outOfScope: goal?.outOfScope || current.draft.outOfScope,
-					blockerRule: goal?.blockerRule || current.draft.blockerRule,
-					openQuestions: current.draft.openQuestions,
-					nextRecommendedQuestion: current.draft.nextRecommendedQuestion,
-					draftingStage: "as-is",
-				},
-			};
-		}
-		writeGoalState(ctx.cwd, next);
-		clearContinuation();
-		refresh(ctx, false);
-		pi.sendMessage(
-			{
-				customType: MESSAGE_TYPE_GOAL_SET,
-				content: buildGoalSetPrompt(next, supplementalInput || undefined),
-				display: false,
-			},
-			{ triggerTurn: true },
-		);
+	function toolError(result: AppliedEffects): { content: Array<{ type: "text"; text: string }>; isError: true; details: undefined } | undefined {
+		const message = result.failure?.reason ?? result.rejection?.reason;
+		if (!message) return undefined;
+		return { content: [{ type: "text", text: message }], isError: true, details: undefined };
 	}
 
-	function startOrResumeGoalImpl(ctx: ExtensionContext): void {
-		const current = readGoalState(ctx.cwd);
-		if (!["ready", "paused", "active"].includes(current.status) || !current.goal) {
-			ctx.ui.notify("No committed goal is ready to implement. Run /plan-goal-set first.", "warning");
-			return;
-		}
-
-		let mode: "start" | "resume" | "continue" = "continue";
-		const needsReset = current.impl.planningResetRequired || !hasPlanningFiles(ctx.cwd);
-		if (current.status === "ready" && needsReset) {
-			archivePlanningWorkspace(ctx.cwd, { includeGoalState: false, includeGoalDesign: false, label: `before-goal-run-${current.impl.runId + 1}` });
-			initializePlanningWorkspace(ctx.cwd, current.goal, current.impl.runId + 1);
-			mode = "start";
-		} else if (current.status === "paused" || needsReset) {
-			if (needsReset) initializePlanningWorkspace(ctx.cwd, current.goal, current.impl.runId + 1);
-			mode = "resume";
-		} else {
-			mode = "continue";
-		}
-
-		const next: GoalOverlayState = {
-			...current,
-			status: "active",
-			impl: {
-				...current.impl,
-				runId: mode === "start" ? current.impl.runId + 1 : current.impl.runId || 1,
-				planningResetRequired: false,
-				initializedAt: mode === "start" ? nowIso() : current.impl.initializedAt,
-				lastResumedAt: nowIso(),
-				pausedReason: "",
-			},
-		};
-		writeGoalState(ctx.cwd, next);
-		appendProgressTimeline(ctx.cwd, "Timeline", mode === "start" ? `Goal implementation started (run ${next.impl.runId})` : `Goal implementation resumed (run ${next.impl.runId})`);
-		clearContinuation();
-		refresh(ctx, false);
-		pi.sendMessage(
-			{
-				customType: MESSAGE_TYPE_GOAL_IMPL,
-				content: buildGoalImplPrompt(getPlanningSnapshot(ctx.cwd, false), mode),
-				display: false,
-			},
-			{ triggerTurn: true },
-		);
-	}
 
 	// ---- tools ----
-
 	pi.registerTool({
 		name: "save_plan_goal_draft",
 		label: "Save Plan Goal Draft",
@@ -210,22 +188,19 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			clarificationSummary: Type.Optional(Type.Array(Type.String(), { description: "Short bullets summarizing what is now clear" })),
 			objective: Type.Optional(Type.String({ description: "Current draft objective" })),
 			successCriteria: Type.Optional(Type.Array(Type.String(), { description: "Current draft success criteria" })),
-			constraints: Type.Optional(Type.Array(Type.String(), { description: "Current draft constraints" })),
-			outOfScope: Type.Optional(Type.Array(Type.String(), { description: "Current draft out-of-scope items" })),
+			constraints: Type.Optional(Type.Array(Type.String(), { description: "Hard constraints the implementation must respect" })),
+			outOfScope: Type.Optional(Type.Array(Type.String(), { description: "Explicitly excluded work" })),
 			blockerRule: Type.Optional(Type.String({ description: "What the agent should do if blocked" })),
 			openQuestions: Type.Optional(Type.Array(Type.String(), { description: "Remaining open questions that still need user input" })),
 			nextRecommendedQuestion: Type.Optional(Type.String({ description: "The single next question the agent most wants to ask" })),
 			draftingStage: Type.Optional(Type.String({ description: "Current drafting stage: as-is, design, story, or task" })),
 		}),
 		async execute(_toolCallId, params: SaveGoalDraftParams, _signal, _onUpdate, ctx) {
-			const current = readGoalState(ctx.cwd);
-			const next: GoalOverlayState = {
-				...current,
-				status: "drafting",
-				draft: mergeDraft(current.draft, params),
-			};
-			writeGoalState(ctx.cwd, next);
-			refresh(ctx, false);
+			const overlay = overlayFor(ctx.cwd);
+			const result = applyGoalEffects(overlay.handle({ type: "save-draft", params }), ctx, overlay);
+			const error = toolError(result);
+			if (error) return error;
+			const next = overlay.getState();
 			return {
 				content: [{ type: "text", text: `Saved goal draft with ${next.draft.openQuestions.length} open question(s).` }],
 				details: { status: next.status, openQuestions: next.draft.openQuestions },
@@ -247,56 +222,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			blockerRule: Type.String({ description: "What the agent should do if blocked" }),
 		}),
 		async execute(_toolCallId, params: CommitGoalParams, _signal, _onUpdate, ctx) {
-			const objective = normalizeString(params.objective);
-			const successCriteria = normalizeStringArray(params.successCriteria);
-			const constraints = normalizeStringArray(params.constraints);
-			const outOfScope = normalizeStringArray(params.outOfScope);
-			const blockerRule = normalizeString(params.blockerRule);
-			if (!objective || successCriteria.length === 0 || constraints.length === 0 || outOfScope.length === 0 || !blockerRule) {
-				return {
-					content: [{ type: "text", text: "Goal commit rejected: objective, successCriteria, constraints, outOfScope, and blockerRule must all be non-empty." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			const goalDesignPath = getPaths(ctx.cwd).goalDesign;
-			if (!fileExists(goalDesignPath) || readText(goalDesignPath).trim().length === 0) {
-				return {
-					content: [{ type: "text", text: "Goal commit rejected: goal-design.md must exist and be non-empty. Complete the 4 drafting stages first." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			const current = readGoalState(ctx.cwd);
-			const goal = { objective, successCriteria, constraints, outOfScope, blockerRule };
-			const next: GoalOverlayState = {
-				...current,
-				status: "ready",
-				goal,
-				draft: {
-					...current.draft,
-					objective,
-					successCriteria,
-					constraints,
-					outOfScope,
-					blockerRule,
-					openQuestions: [],
-					nextRecommendedQuestion: "",
-					draftingStage: "as-is",
-				},
-				impl: {
-					...current.impl,
-					planningResetRequired: true,
-					pausedReason: "",
-					completedSummary: "",
-				},
-			};
-			writeGoalState(ctx.cwd, next);
-			turnStoppedFor = "commit_plan_goal";
-			refresh(ctx, false);
+			const overlay = overlayFor(ctx.cwd);
+			const result = applyGoalEffects(overlay.handle({ type: "commit", params }), ctx, overlay);
+			const error = toolError(result);
+			if (error) return error;
+			const goal = overlay.getState().goal;
 			return {
-				content: [{ type: "text", text: `Committed plan goal: ${objective}` }],
-				details: { status: next.status, goal },
+				content: [{ type: "text", text: `Committed plan goal: ${goal?.objective ?? params.objective}` }],
+				details: { status: overlay.getState().status, goal },
 			};
 		},
 	});
@@ -312,40 +245,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			suggestedAction: Type.Optional(Type.String({ description: "Suggested next user action" })),
 		}),
 		async execute(_toolCallId, params: PauseGoalParams, _signal, _onUpdate, ctx) {
-			const reason = normalizeString(params.reason);
-			const suggestedAction = normalizeString(params.suggestedAction);
-			const current = readGoalState(ctx.cwd);
-			if (current.status !== "active" || !current.goal) {
-				return {
-					content: [{ type: "text", text: "pause_plan_goal rejected: no active goal implementation is running." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			if (!reason) {
-				return {
-					content: [{ type: "text", text: "pause_plan_goal rejected: reason is required." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			const next: GoalOverlayState = {
-				...current,
-				status: "paused",
-				impl: {
-					...current.impl,
-					pausedReason: reason,
-				},
-			};
-			writeGoalState(ctx.cwd, next);
-			appendProgressTimeline(ctx.cwd, "Blockers / Interruptions", `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}`);
-			appendProgressTimeline(ctx.cwd, "Timeline", `Goal implementation paused: ${reason}`);
-			clearContinuation();
-			turnStoppedFor = "pause_plan_goal";
-			refresh(ctx, false);
+			const overlay = overlayFor(ctx.cwd);
+			const result = applyGoalEffects(overlay.handle({ type: "pause", params }), ctx, overlay);
+			const error = toolError(result);
+			if (error) return error;
 			return {
-				content: [{ type: "text", text: `Paused plan goal: ${reason}` }],
-				details: { status: next.status, reason, suggestedAction },
+				content: [{ type: "text", text: `Paused plan goal: ${normalizeString(params.reason)}` }],
+				details: { status: overlay.getState().status, reason: normalizeString(params.reason), suggestedAction: normalizeString(params.suggestedAction) },
 			};
 		},
 	});
@@ -361,55 +267,25 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			evidence: Type.Optional(Type.Array(Type.String(), { description: "Concrete evidence that the goal is complete" })),
 		}),
 		async execute(_toolCallId, params: CompleteGoalParams, _signal, _onUpdate, ctx) {
-			const summary = normalizeString(params.summary);
-			const evidence = normalizeStringArray(params.evidence);
-			const current = readGoalState(ctx.cwd);
-			if (current.status !== "active" || !current.goal) {
-				return {
-					content: [{ type: "text", text: "complete_plan_goal rejected: no active goal implementation is running." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			if (!summary) {
-				return {
-					content: [{ type: "text", text: "complete_plan_goal rejected: summary is required." }],
-					isError: true,
-					details: undefined,
-				};
-			}
-			const next: GoalOverlayState = {
-				...current,
-				status: "complete",
-				impl: {
-					...current.impl,
-					completedSummary: summary,
-					pausedReason: "",
-				},
-			};
-			writeGoalState(ctx.cwd, next);
-			appendProgressTimeline(ctx.cwd, "Completion Evidence", `${summary}${evidence.length > 0 ? ` | evidence: ${evidence.join("; ")}` : ""}`);
-			appendProgressTimeline(ctx.cwd, "Timeline", `Goal implementation completed: ${summary}`);
-			clearContinuation();
-			turnStoppedFor = "complete_plan_goal";
-			refresh(ctx, false);
+			const overlay = overlayFor(ctx.cwd);
+			const result = applyGoalEffects(overlay.handle({ type: "complete", params }), ctx, overlay);
+			const error = toolError(result);
+			if (error) return error;
 			return {
-				content: [{ type: "text", text: `Completed plan goal: ${summary}` }],
-				details: { status: next.status, summary, evidence },
+				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}` }],
+				details: { status: overlay.getState().status, summary: normalizeString(params.summary), evidence: params.evidence ?? [] },
 			};
 		},
 	});
 
 	// ---- commands ----
-
 	pi.registerCommand("plan-new", {
 		description: "Initialize or reset .pi/planning and clear any current goal overlay.",
 		handler: async (_args, ctx) => {
 			archivePlanningWorkspace(ctx.cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-reset" });
 			initializePlanningWorkspace(ctx.cwd);
-			writeGoalState(ctx.cwd, defaultGoalState());
-			clearContinuation();
-			refresh(ctx, false);
+			const overlay = overlayFor(ctx.cwd);
+			applyGoalEffects(overlay.handle({ type: "reset" }), ctx, overlay);
 			ctx.ui.notify("Planning workspace reset. Goal overlay cleared.", "info");
 		},
 	});
@@ -417,14 +293,16 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.registerCommand("plan-goal-set", {
 		description: "Create or continue clarifying a goal overlay without resetting current planning files.",
 		handler: async (args, ctx) => {
-			startGoalDrafting(args, ctx);
+			const overlay = overlayFor(ctx.cwd);
+			notifyRejection(ctx, applyGoalEffects(overlay.handle({ type: "start-drafting", input: args }), ctx, overlay));
 		},
 	});
 
 	pi.registerCommand("plan-goal-impl", {
 		description: "Start or resume implementing the committed goal using planning files as the execution tracker.",
 		handler: async (_args, ctx) => {
-			startOrResumeGoalImpl(ctx);
+			const overlay = overlayFor(ctx.cwd);
+			notifyRejection(ctx, applyGoalEffects(overlay.handle({ type: "implementation-request" }), ctx, overlay));
 		},
 	});
 
@@ -495,11 +373,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	// ---- events ----
-
 	pi.on("session_start", async (event, ctx) => {
 		const resumed = event.reason === "resume" || event.reason === "fork";
+		const overlay = overlayFor(ctx.cwd);
+		const result = applyGoalEffects(overlay.handle({ type: "restore" }), ctx, overlay, resumed);
+		notifyRejection(ctx, result);
 		refresh(ctx, resumed);
-		if (!state.exists && state.goalState.status === "none") return;
+		if (!state.exists && overlay.getState().status === "none") return;
 		const label = resumed ? "Planning runtime resumed." : `Planning runtime attached to ${state.planningRoot}`;
 		ctx.ui.notify(label, "info");
 	});
@@ -508,9 +388,10 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		refresh(ctx, state.resumedFromPreviousSession);
 	});
 
-	pi.on("turn_start", async () => {
-		goalProgressToolCalledThisTurn = false;
+	pi.on("turn_start", async (_event, ctx) => {
 		turnStoppedFor = null;
+		const overlay = overlayFor(ctx.cwd);
+		overlay.handle({ type: "turn-start" });
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -518,8 +399,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
 		redirectPlanningPath(event as { toolName: string; input: Record<string, unknown> }, ctx.cwd);
-		const latestGoalState = readGoalState(ctx.cwd);
-		if (latestGoalState.status === "drafting") {
+		const overlay = overlayFor(ctx.cwd);
+		const goalState = overlay.getState();
+		if (goalState.status === "drafting") {
 			if (event.toolName === "write") {
 				const filePath = typeof event.input.path === "string" ? event.input.path : "";
 				if (!isInPlanningDir(filePath, ctx.cwd)) {
@@ -540,42 +422,18 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			}
 		}
 		if (isMeaningfulProgressToolCall(event.toolName, event.input as Record<string, unknown>)) {
-			goalProgressToolCalledThisTurn = true;
+			overlay.handle({ type: "progress-tool-called" });
 		}
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (["write", "edit", ...GOAL_TOOL_NAMES].includes(event.toolName)) {
-			refresh(ctx, false);
-		}
+		if (["write", "edit", ...GOAL_TOOL_NAMES].includes(event.toolName)) refresh(ctx, false);
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		const overlay = overlayFor(ctx.cwd);
 		const stopReason = (event.message as { stopReason?: string } | undefined)?.stopReason;
-		if (state.goalState.status === "active" && stopReason === "aborted") {
-			const paused = setGoalStatus(ctx.cwd, "paused", (current) => ({
-				...current,
-				impl: {
-					...current.impl,
-					pausedReason: "The goal run was interrupted by the user.",
-				},
-			}));
-			appendProgressTimeline(ctx.cwd, "Blockers / Interruptions", "Goal paused because the current run was interrupted by the user.");
-			state = getPlanningSnapshot(ctx.cwd, false);
-			state.goalState = paused;
-			clearContinuation();
-			refresh(ctx, false);
-			return;
-		}
-		refresh(ctx, false);
-		if (state.goalState.status !== "active") {
-			clearContinuation();
-			return;
-		}
-		if (!goalProgressToolCalledThisTurn) {
-			clearContinuation();
-			return;
-		}
-		queueContinuation(ctx);
+		const result = applyGoalEffects(overlay.handle({ type: "turn-end", stopReason }), ctx, overlay, state.resumedFromPreviousSession);
+		notifyRejection(ctx, result);
 	});
 }
