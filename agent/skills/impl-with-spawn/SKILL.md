@@ -1,6 +1,7 @@
 ---
 name: impl-with-spawn
 description: Delegate implementation, fixes, reviews, and multi-step coding work to Pi subagents through interactive_shell. Use for substantial tasks that benefit from decomposition, parallel investigation, or an independent implementation/review pass.
+disable-model-invocation: true
 ---
 
 # Implement with Pi Subagents
