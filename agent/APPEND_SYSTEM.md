@@ -13,3 +13,15 @@ Prefer explicit non-interactive flags when available. When a Git command may une
 GIT_EDITOR=true git ...
 GIT_SEQUENCE_EDITOR=true git ...
 ```
+
+## Fast Repository Search
+
+When composing ad-hoc shell commands for repository inspection:
+
+- Prefer `rg` over shell `grep` for text and code searches.
+- Prefer `fd` over shell `find` for file or directory discovery.
+- Prefer `rg --files` when enumerating repository files.
+- Fall back to `grep` or `find` only when their exact semantics are required or when `rg` or `fd` is unavailable.
+- Do not mechanically rewrite existing project scripts solely to replace `grep` or `find`.
+- Remember that `rg` and `fd` respect ignore files and skip some hidden content by default; adjust flags when the requested search scope requires it.
+- This preference applies to shell commands, not to Pi's built-in tools named `grep` and `find`, which are backed by `rg` and `fd`.

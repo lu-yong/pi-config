@@ -144,7 +144,7 @@ provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 
 ### 编排入口
 - `impl-with-spawn` skill：拆解实现、修复和审查任务，按依赖层串行或安全并行派发
 - `/explore-codebase [主题]`：派出 2-4 个只读 Pi 子 agent 并行探索后汇总
-- `agent/APPEND_SYSTEM.md`：规定需要输入、打开 TUI/editor 或持续运行的命令使用 `interactive_shell`；普通一次性非交互命令使用 `bash`
+- `agent/APPEND_SYSTEM.md`：规定需要输入、打开 TUI/editor 或持续运行的命令使用 `interactive_shell`，普通一次性非交互命令使用 `bash`；临时仓库检索的 shell 命令优先使用 `rg`、`fd` 和 `rg --files`，仅在需要原命令的精确语义或替代工具不可用时回退到 `grep`/`find`，且不限制 Pi 内置的同名工具
 
 ## TUI 配置
 
