@@ -16,6 +16,11 @@ export function buildWidgetLines(state: PlanningSnapshot): string[] | undefined 
 			lines.push(`next question: ${state.goalState.draft.nextRecommendedQuestion}`);
 		}
 	}
+	if (state.goalState.status === "complete") {
+		lines.push("phase: Complete");
+		lines.push("next: None (goal complete).");
+		return lines;
+	}
 	if (state.currentPhase) lines.push(`phase: ${state.currentPhase}`);
 	if (state.nextAction) lines.push(`next: ${state.nextAction}`);
 	if (state.blocker) lines.push(`blocker: ${state.blocker}`);

@@ -1,6 +1,7 @@
 import type {
 	CommitGoalParams,
 	CompleteGoalParams,
+	GoalCompletion,
 	GoalContract,
 	GoalOverlayState,
 	PauseGoalParams,
@@ -34,6 +35,7 @@ export type GoalOverlayEffect =
 	| { type: "ensure-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "append-progress"; heading: string; message: string }
 	| { type: "clear-continuation" }
+	| { type: "finalize-goal-workspace"; completion: GoalCompletion }
 	| { type: "refresh" }
 	| { type: "send-goal-set"; supplementalInput?: string }
 	| { type: "send-goal-impl"; mode: "start" | "resume" }
@@ -100,7 +102,11 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 		state = rollbackState;
 		writeGoalState(cwd, state);
 		rollbackState = null;
+		progressSeenThisRun = false;
+		terminalStopReason = undefined;
+		terminalErrorMessage = "";
 		queuedRunId = null;
+		turnStopped = null;
 	};
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
@@ -311,10 +317,8 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				turnStopped = "complete_plan_goal";
 				queuedRunId = null;
 				return [
-					{ type: "append-progress", heading: "Completion Evidence", message: `${summary}${evidence.length > 0 ? ` | evidence: ${evidence.join("; ")}` : ""}` },
-					{ type: "append-progress", heading: "Timeline", message: `Goal implementation completed: ${summary}` },
 					{ type: "clear-continuation" },
-					{ type: "refresh" },
+					{ type: "finalize-goal-workspace", completion: { summary, evidence, runId: state.impl.runId } },
 				];
 			}
 

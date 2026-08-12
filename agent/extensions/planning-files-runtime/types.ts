@@ -47,6 +47,12 @@ export type GoalContract = {
 	blockerRule: string;
 };
 
+export type GoalCompletion = {
+	summary: string;
+	evidence: string[];
+	runId: number;
+};
+
 export type GoalImplState = {
 	runId: number;
 	planningResetRequired: boolean;

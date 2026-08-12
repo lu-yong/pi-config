@@ -6,7 +6,7 @@ import {
 	MESSAGE_TYPE_GOAL_SET,
 } from "./types.ts";
 import { ensureDir, getPaths } from "./utils.ts";
-import { archivePlanningWorkspace, createGoalDesignSkeleton, hasPlanningFiles, initializePlanningWorkspace } from "./workspace.ts";
+import { archivePlanningWorkspace, createGoalDesignSkeleton, finalizeGoalWorkspace, hasPlanningFiles, initializePlanningWorkspace } from "./workspace.ts";
 import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
 import { appendProgressTimeline } from "./markdown.ts";
 
@@ -106,6 +106,9 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 						break;
 					case "append-progress":
 						appendProgressTimeline(context.cwd, effect.heading, effect.message);
+						break;
+					case "finalize-goal-workspace":
+						finalizeGoalWorkspace(context.cwd, effect.completion);
 						break;
 					case "clear-continuation":
 						deps.timer.clear();

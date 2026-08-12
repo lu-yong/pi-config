@@ -87,7 +87,7 @@ describe("goal overlay event -> effect seam", () => {
 		assert.equal(overlay.getState().impl.runId, 1);
 
 		const completeEffects = overlay.handle({ type: "complete", params: { summary: "Lifecycle is complete" } });
-		assert.deepEqual(effectTypes(completeEffects), ["append-progress", "append-progress", "clear-continuation", "refresh"]);
+		assert.deepEqual(effectTypes(completeEffects), ["clear-continuation", "finalize-goal-workspace"]);
 		assert.equal(overlay.getState().status, "complete");
 	});
 

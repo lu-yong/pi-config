@@ -8,6 +8,7 @@ import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_SET
 import { createGoalOverlay, type GoalOverlay } from "./goal-overlay.ts";
 import { createGoalEffectExecutor, type ContinuationTimer, type OutgoingGoalMessage, type OutgoingGoalMessageOptions } from "./effects.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
+import { hasActiveGoal } from "./state.ts";
 
 const tempDirectories: string[] = [];
 
@@ -287,4 +288,62 @@ describe("goal effect executor", () => {
 		executor.apply(overlay, [{ type: "clear-continuation" }], contextFor(cwd));
 		assert.equal(timer.hasPending(), false);
 	});
+});
+
+test("successful completion finalizes the workspace, clears the timer, and releases Q&A suppression", () => {
+	const cwd = makeCwd();
+	const overlay = prepareActiveOverlay(cwd);
+	const paths = getPaths(cwd);
+	const { executor, timer, contextFor } = createHarness();
+	const runId = overlay.getState().impl.runId;
+	executor.apply(overlay, [{ type: "initialize-implementation-workspace", goal: contractParams, runId }], contextFor(cwd));
+	executor.apply(overlay, [{ type: "schedule-continuation", runId }], contextFor(cwd));
+	assert.equal(timer.hasPending(), true);
+
+	const result = executor.apply(
+		overlay,
+		overlay.handle({ type: "complete", params: { summary: "done", evidence: ["tests pass"] } }),
+		contextFor(cwd),
+	);
+
+	assert.equal(result.failure, undefined);
+	assert.equal(overlay.getState().status, "complete");
+	assert.equal(hasActiveGoal(cwd), false);
+	assert.equal(timer.hasPending(), false);
+	assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
+	assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
+});
+
+test("failed completion finalization rolls back lifecycle and transient gates", () => {
+	const cwd = makeCwd();
+	const overlay = prepareActiveOverlay(cwd);
+	const paths = getPaths(cwd);
+	writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 1\n\n## Blocker\nold\n\n## Blocker\nduplicate\n");
+	const originalTaskPlan = readText(paths.files["task_plan.md"]);
+	const originalProgress = readText(paths.files["progress.md"]);
+	const { executor, timer, contextFor } = createHarness();
+	const result = executor.apply(overlay, overlay.handle({ type: "complete", params: { summary: "should roll back" } }), contextFor(cwd));
+
+	assert.ok(result.failure);
+	assert.equal(overlay.getState().status, "active");
+	assert.equal(hasActiveGoal(cwd), true);
+	assert.equal(overlay.turnStoppedBy(), null);
+	assert.equal(timer.hasPending(), false);
+	assert.deepEqual(overlay.handle({ type: "agent-settled" }).map((effect) => effect.type), ["clear-continuation"]);
+	assert.equal(overlay.getState().status, "active");
+	assert.equal(readText(paths.files["task_plan.md"]), originalTaskPlan);
+	assert.equal(readText(paths.files["progress.md"]), originalProgress);
+});
+
+test("missing progress.md returns a clear failure and rolls completion back to active", () => {
+	const cwd = makeCwd();
+	const overlay = prepareActiveOverlay(cwd);
+	const paths = getPaths(cwd);
+	writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 1\n");
+	const { executor, contextFor } = createHarness();
+	const result = executor.apply(overlay, overlay.handle({ type: "complete", params: { summary: "cannot finish" } }), contextFor(cwd));
+
+	assert.match(result.failure?.reason ?? "", /progress.md is required/);
+	assert.equal(overlay.getState().status, "active");
+	assert.equal(hasActiveGoal(cwd), true);
 });
