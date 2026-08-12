@@ -9,6 +9,7 @@ import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 
 import { askExtractedQuestions } from "../question-taking/interaction.ts";
+import { isQnaSuppressedByActiveGoal, rejectManualQnaForActiveGoal } from "./goal-policy.ts";
 
 interface QItem {
 	question: string;
@@ -40,6 +41,7 @@ const processedMessageIds = new Set<string>();
 export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.model) return;
+		if (isQnaSuppressedByActiveGoal(ctx.cwd)) return;
 		const lastText = getLastAssistantText(ctx);
 		if (!lastText || !hasQuestionMark(lastText)) return;
 
@@ -51,6 +53,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("qna", {
 		description: "从最后一条 AI 回复中提取问题，箭头选择回答",
 		handler: async (_args, ctx) => {
+			if (rejectManualQnaForActiveGoal(ctx.cwd, (message, level) => ctx.ui.notify(message, level))) return;
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("qna 需要交互模式", "error");
 				return;

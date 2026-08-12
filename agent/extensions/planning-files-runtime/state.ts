@@ -116,6 +116,11 @@ export function readGoalState(cwd: string): GoalOverlayState {
 	}
 }
 
+/** Stable read-only query for extensions that must yield control to an active goal run. */
+export function hasActiveGoal(cwd: string): boolean {
+	return readGoalState(cwd).status === "active";
+}
+
 export function writeGoalState(cwd: string, state: GoalOverlayState): void {
 	const target = getPaths(cwd).goalState;
 	const next: GoalOverlayState = {

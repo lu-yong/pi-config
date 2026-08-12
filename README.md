@@ -65,6 +65,12 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 - **命令**：`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
 - **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
 
+### qna
+
+- **文件**：`agent/extensions/qna/`
+- **功能**：普通 TUI 对话在 agent settled 后自动抽取回复中的用户问题，并通过共享 question-taking 界面收集答案；也可手动运行 `/qna`。
+- **目标模式限制**：当 planning-files-runtime 的 goal 状态为 `active` 时，自动 Q&A 被抑制，手动 `/qna` 会提示先暂停或完成目标，避免打断目标的自动 continuation。
+
 ### readme-check
 
 - **文件**：`.pi/extensions/readme-check.ts`
