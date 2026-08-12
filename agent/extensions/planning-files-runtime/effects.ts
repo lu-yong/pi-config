@@ -51,6 +51,8 @@ export interface GoalEffectExecutorDeps {
 export interface ApplyContext {
 	cwd: string;
 	resumedFromPreviousSession?: boolean;
+	isIdle(): boolean;
+	notify(message: string, level: "warning"): void;
 	refresh(): void;
 }
 
@@ -138,6 +140,16 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 					case "schedule-continuation": {
 						const runId = effect.runId;
 						deps.timer.schedule(() => {
+							let idle = false;
+							try {
+								idle = context.isIdle();
+							} catch {
+								// A stale extension context is never safe for enqueueing a follow-up.
+							}
+							if (!idle) {
+								overlay.handle({ type: "continuation-discarded", runId });
+								return;
+							}
 							apply(overlay, overlay.handle({ type: "continuation-fired", runId }), context);
 						}, CONTINUATION_DELAY_MS);
 						break;
@@ -151,6 +163,9 @@ export function createGoalEffectExecutor(deps: GoalEffectExecutorDeps): GoalEffe
 							},
 							{ triggerTurn: true, deliverAs: "followUp" },
 						);
+						break;
+					case "notify":
+						context.notify(effect.message, effect.level);
 						break;
 					case "reject":
 						rejection = { operation: effect.operation, reason: effect.reason };

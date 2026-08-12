@@ -19,9 +19,12 @@ export type GoalOverlayEvent =
 	| { type: "implementation-request" }
 	| { type: "pause"; params: PauseGoalParams }
 	| { type: "complete"; params: CompleteGoalParams }
+	| { type: "agent-start" }
 	| { type: "turn-start" }
 	| { type: "progress-tool-called" }
-	| { type: "turn-end"; stopReason?: string }
+	| { type: "turn-end"; stopReason?: string; errorMessage?: string }
+	| { type: "agent-settled" }
+	| { type: "continuation-discarded"; runId: number }
 	| { type: "continuation-fired"; runId: number };
 
 export type GoalOverlayEffect =
@@ -36,6 +39,7 @@ export type GoalOverlayEffect =
 	| { type: "send-goal-impl"; mode: "start" | "resume" }
 	| { type: "schedule-continuation"; runId: number }
 	| { type: "send-continuation"; runId: number }
+	| { type: "notify"; level: "warning"; message: string }
 	| { type: "reject"; operation: string; reason: string };
 
 export interface GoalOverlay {
@@ -77,7 +81,9 @@ function contractFromParams(params: CommitGoalParams): GoalContract | null {
 export function createGoalOverlay(cwd: string): GoalOverlay {
 	let state = readGoalState(cwd);
 	let rollbackState: GoalOverlayState | null = null;
-	let progressSeenThisTurn = false;
+	let progressSeenThisRun = false;
+	let terminalStopReason: string | undefined;
+	let terminalErrorMessage = "";
 	// In-memory, never persisted: a queued Continuation and the turn-stop gate
 	// must not survive a process restart.
 	let queuedRunId: number | null = null;
@@ -107,7 +113,9 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 			case "restore":
 				state = readGoalState(cwd);
 				rollbackState = null;
-				progressSeenThisTurn = false;
+				progressSeenThisRun = false;
+				terminalStopReason = undefined;
+				terminalErrorMessage = "";
 				queuedRunId = null;
 				turnStopped = null;
 				return [{ type: "refresh" }];
@@ -115,7 +123,9 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 			case "reset":
 				rollbackState = cloneState(state);
 				state = defaultGoalState();
-				progressSeenThisTurn = false;
+				progressSeenThisRun = false;
+				terminalStopReason = undefined;
+				terminalErrorMessage = "";
 				queuedRunId = null;
 				writeGoalState(cwd, state);
 				return [{ type: "clear-continuation" }, { type: "refresh" }];
@@ -308,20 +318,25 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				];
 			}
 
+			case "agent-start":
+				queuedRunId = null;
+				return [{ type: "clear-continuation" }];
+
 			case "turn-start":
-				progressSeenThisTurn = false;
 				turnStopped = null;
 				return [];
 
 			case "progress-tool-called":
-				if (state.status === "active") progressSeenThisTurn = true;
+				if (state.status === "active") progressSeenThisRun = true;
 				return [];
 
 			case "turn-end":
+				terminalStopReason = event.stopReason;
+				terminalErrorMessage = normalizeString(event.errorMessage);
 				if (state.status === "active" && event.stopReason === "aborted") {
 					const reason = "The goal run was interrupted by the user.";
 					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
-					progressSeenThisTurn = false;
+					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [
 						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
@@ -330,22 +345,48 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 						{ type: "refresh" },
 					];
 				}
+				if (state.status !== "active" || event.stopReason === "error") return [{ type: "clear-continuation" }];
+				return [{ type: "refresh" }];
+
+			case "agent-settled":
 				if (state.status !== "active") {
-					progressSeenThisTurn = false;
+					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [{ type: "clear-continuation" }];
 				}
-				const shouldContinue = progressSeenThisTurn;
-				progressSeenThisTurn = false;
-				if (!shouldContinue) {
+				if (terminalStopReason === "error") {
+					const detail = terminalErrorMessage || "unknown provider error";
+					const reason = `LLM request failed and Pi will not retry automatically: ${detail}`;
+					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+					progressSeenThisRun = false;
+					queuedRunId = null;
+					return [
+						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
+						{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+						{ type: "clear-continuation" },
+						{ type: "refresh" },
+						{
+							type: "notify",
+							level: "warning",
+							message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later.",
+						},
+					];
+				}
+				if (!progressSeenThisRun) {
 					queuedRunId = null;
 					return [{ type: "clear-continuation" }];
 				}
+				progressSeenThisRun = false;
 				if (queuedRunId === state.impl.runId) return [{ type: "refresh" }];
 				queuedRunId = state.impl.runId;
 				return [{ type: "refresh" }, { type: "schedule-continuation", runId: state.impl.runId }];
 
+			case "continuation-discarded":
+				if (queuedRunId === event.runId) queuedRunId = null;
+				return [];
+
 			case "continuation-fired":
+				if (queuedRunId !== event.runId) return [];
 				queuedRunId = null;
 				if (state.status !== "active" || !state.goal || state.impl.planningResetRequired || state.impl.runId !== event.runId) return [];
 				return [{ type: "send-continuation", runId: event.runId }];

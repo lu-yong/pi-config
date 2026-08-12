@@ -72,6 +72,8 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		return executor.apply(overlay, effects, {
 			cwd: ctx.cwd,
 			resumedFromPreviousSession,
+			isIdle: () => ctx.isIdle(),
+			notify: (message, level) => ctx.ui.notify(message, level),
 			refresh: () => refresh(ctx, resumedFromPreviousSession),
 		});
 	}
@@ -256,6 +258,12 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		refresh(ctx, state.resumedFromPreviousSession);
 	});
 
+	pi.on("agent_start", async (_event, ctx) => {
+		const overlay = overlayFor(ctx.cwd);
+		const result = applyGoalEffects(overlay.handle({ type: "agent-start" }), ctx, overlay, state.resumedFromPreviousSession);
+		notifyRejection(ctx, result);
+	});
+
 	pi.on("turn_start", async (_event, ctx) => {
 		const overlay = overlayFor(ctx.cwd);
 		overlay.handle({ type: "turn-start" });
@@ -301,8 +309,19 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", async (event, ctx) => {
 		const overlay = overlayFor(ctx.cwd);
-		const stopReason = (event.message as { stopReason?: string } | undefined)?.stopReason;
-		const result = applyGoalEffects(overlay.handle({ type: "turn-end", stopReason }), ctx, overlay, state.resumedFromPreviousSession);
+		const message = event.message as { stopReason?: string; errorMessage?: string } | undefined;
+		const result = applyGoalEffects(
+			overlay.handle({ type: "turn-end", stopReason: message?.stopReason, errorMessage: message?.errorMessage }),
+			ctx,
+			overlay,
+			state.resumedFromPreviousSession,
+		);
+		notifyRejection(ctx, result);
+	});
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		const overlay = overlayFor(ctx.cwd);
+		const result = applyGoalEffects(overlay.handle({ type: "agent-settled" }), ctx, overlay, state.resumedFromPreviousSession);
 		notifyRejection(ctx, result);
 	});
 }

@@ -86,10 +86,11 @@ function createFakeTimer(): FakeTimer {
 
 type SentMessage = { message: OutgoingGoalMessage; options: OutgoingGoalMessageOptions };
 
-function createHarness(options: { failSends?: boolean } = {}) {
+function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleCheck?: boolean } = {}) {
 	const sent: SentMessage[] = [];
 	const log: string[] = [];
 	const timer = createFakeTimer();
+	let idle = options.idle ?? true;
 	const executor = createGoalEffectExecutor({
 		sendMessage: (message, sendOptions) => {
 			if (options.failSends) throw new Error("send exploded");
@@ -101,11 +102,18 @@ function createHarness(options: { failSends?: boolean } = {}) {
 	const contextFor = (cwd: string) => ({
 		cwd,
 		resumedFromPreviousSession: false,
+		isIdle: () => {
+			if (options.failIdleCheck) throw new Error("stale context");
+			return idle;
+		},
+		notify: (message: string, level: "warning") => {
+			log.push(`notify:${level}:${message}`);
+		},
 		refresh: () => {
 			log.push("refresh");
 		},
 	});
-	return { executor, timer, sent, log, contextFor };
+	return { executor, timer, sent, log, contextFor, setIdle: (next: boolean) => (idle = next) };
 }
 
 describe("goal effect executor", () => {
@@ -116,11 +124,16 @@ describe("goal effect executor", () => {
 
 		const result = executor.apply(
 			overlay,
-			[{ type: "refresh" }, { type: "send-goal-set" }, { type: "refresh" }],
+			[
+				{ type: "refresh" },
+				{ type: "notify", level: "warning", message: "typed warning" },
+				{ type: "send-goal-set" },
+				{ type: "refresh" },
+			],
 			contextFor(cwd),
 		);
 
-		assert.deepEqual(log, ["refresh", `send:${MESSAGE_TYPE_GOAL_SET}`, "refresh"]);
+		assert.deepEqual(log, ["refresh", "notify:warning:typed warning", `send:${MESSAGE_TYPE_GOAL_SET}`, "refresh"]);
 		assert.deepEqual(result, { rejection: undefined, failure: undefined });
 	});
 
@@ -188,7 +201,9 @@ describe("goal effect executor", () => {
 		const { executor, timer, sent, contextFor } = createHarness();
 		const runId = overlay.getState().impl.runId;
 
-		executor.apply(overlay, [{ type: "schedule-continuation", runId }], contextFor(cwd));
+		overlay.handle({ type: "progress-tool-called" });
+		overlay.handle({ type: "turn-end", stopReason: "stop" });
+		executor.apply(overlay, overlay.handle({ type: "agent-settled" }), contextFor(cwd));
 
 		assert.deepEqual(timer.scheduledDelays(), [CONTINUATION_DELAY_MS]);
 
@@ -197,6 +212,39 @@ describe("goal effect executor", () => {
 		assert.equal(sent.length, 1);
 		assert.equal(sent[0]?.message.customType, MESSAGE_TYPE_CONTINUATION);
 		assert.equal(sent[0]?.options.deliverAs, "followUp");
+		timer.fire();
+		assert.equal(sent.length, 1);
+	});
+
+	test("a continuation is discarded when Pi becomes busy before the timer fires", () => {
+		const cwd = makeCwd();
+		const overlay = prepareActiveOverlay(cwd);
+		const { executor, timer, sent, contextFor, setIdle } = createHarness();
+		const runId = overlay.getState().impl.runId;
+
+		overlay.handle({ type: "progress-tool-called" });
+		overlay.handle({ type: "turn-end", stopReason: "stop" });
+		executor.apply(overlay, overlay.handle({ type: "agent-settled" }), contextFor(cwd));
+		setIdle(false);
+		timer.fire();
+
+		assert.equal(sent.length, 0);
+		assert.deepEqual(overlay.handle({ type: "continuation-fired", runId }), []);
+	});
+
+	test("a stale extension context discards the continuation fail-closed", () => {
+		const cwd = makeCwd();
+		const overlay = prepareActiveOverlay(cwd);
+		const { executor, timer, sent, contextFor } = createHarness({ failIdleCheck: true });
+		const runId = overlay.getState().impl.runId;
+
+		overlay.handle({ type: "progress-tool-called" });
+		overlay.handle({ type: "turn-end", stopReason: "stop" });
+		executor.apply(overlay, overlay.handle({ type: "agent-settled" }), contextFor(cwd));
+		timer.fire();
+
+		assert.equal(sent.length, 0);
+		assert.deepEqual(overlay.handle({ type: "continuation-fired", runId }), []);
 	});
 
 	test("a continuation firing after pause sends nothing", () => {
@@ -210,6 +258,22 @@ describe("goal effect executor", () => {
 		timer.fire();
 
 		assert.equal(sent.length, 0);
+	});
+
+	test("agent start cancels a settled continuation before it can fire", () => {
+		const cwd = makeCwd();
+		const overlay = prepareActiveOverlay(cwd);
+		const { executor, timer, sent, contextFor } = createHarness();
+		const runId = overlay.getState().impl.runId;
+
+		overlay.handle({ type: "progress-tool-called" });
+		overlay.handle({ type: "turn-end", stopReason: "stop" });
+		executor.apply(overlay, overlay.handle({ type: "agent-settled" }), contextFor(cwd));
+		executor.apply(overlay, overlay.handle({ type: "agent-start" }), contextFor(cwd));
+		timer.fire();
+
+		assert.equal(sent.length, 0);
+		assert.equal(timer.hasPending(), false);
 	});
 
 	test("clear-continuation cancels the pending timer", () => {

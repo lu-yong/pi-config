@@ -147,32 +147,51 @@ describe("goal overlay event -> effect seam", () => {
 		assert.equal(restored.getState().status, "active");
 		assert.equal(restored.handle({ type: "restore" })[0]?.type, "refresh");
 		assert.deepEqual(restored.handle({ type: "continuation-fired", runId: 99 }), []);
-		assert.deepEqual(effectTypes(restored.handle({ type: "continuation-fired", runId: 1 })), ["send-continuation"]);
+		assert.deepEqual(restored.handle({ type: "continuation-fired", runId: 1 }), []);
 
 		restored.handle({ type: "pause", params: { reason: "stale continuation check" } });
 		assert.deepEqual(restored.handle({ type: "continuation-fired", runId: 1 }), []);
 	});
 
-	test("continuation policy is decided by the overlay, not by the timer adapter", () => {
+	test("continuation waits for agent settlement and LLM failure pauses the goal", () => {
 		const overlay = prepareActive(makeCwd());
 		overlay.handle({ type: "turn-start" });
 		overlay.handle({ type: "progress-tool-called" });
-		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh", "schedule-continuation"]);
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end", stopReason: "stop" })), ["refresh"]);
+		assert.deepEqual(effectTypes(overlay.handle({ type: "agent-settled" })), ["refresh", "schedule-continuation"]);
 
-		// The same run stays queued: further productive turn-ends do not re-schedule.
-		overlay.handle({ type: "turn-start" });
-		overlay.handle({ type: "progress-tool-called" });
-		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh"]);
-
-		// Firing consumes the queue slot, so the next productive turn-end schedules again.
 		assert.deepEqual(effectTypes(overlay.handle({ type: "continuation-fired", runId: 1 })), ["send-continuation"]);
+
 		overlay.handle({ type: "turn-start" });
 		overlay.handle({ type: "progress-tool-called" });
-		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["refresh", "schedule-continuation"]);
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end", stopReason: "error", errorMessage: "provider overloaded" })), ["clear-continuation"]);
+		const failed = overlay.handle({ type: "agent-settled" });
+		assert.deepEqual(effectTypes(failed), ["append-progress", "append-progress", "clear-continuation", "refresh", "notify"]);
+		assert.equal(overlay.getState().status, "paused");
+		assert.match(overlay.getState().impl.pausedReason, /will not retry automatically: provider overloaded/);
+		assert.deepEqual(failed.at(-1), {
+			type: "notify",
+			level: "warning",
+			message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later.",
+		});
+	});
 
+	test("a successful native retry preserves earlier tool progress", () => {
+		const overlay = prepareActive(makeCwd());
 		overlay.handle({ type: "turn-start" });
-		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end" })), ["clear-continuation"]);
+		overlay.handle({ type: "progress-tool-called" });
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end", stopReason: "error", errorMessage: "temporary overload" })), ["clear-continuation"]);
 
+		// Pi starts a low-level retry run before agent_settled; this must only cancel stale timers.
+		assert.deepEqual(effectTypes(overlay.handle({ type: "agent-start" })), ["clear-continuation"]);
+		overlay.handle({ type: "turn-start" });
+		assert.deepEqual(effectTypes(overlay.handle({ type: "turn-end", stopReason: "stop" })), ["refresh"]);
+		assert.deepEqual(effectTypes(overlay.handle({ type: "agent-settled" })), ["refresh", "schedule-continuation"]);
+		assert.equal(overlay.getState().status, "active");
+	});
+
+	test("an aborted turn pauses immediately", () => {
+		const overlay = prepareActive(makeCwd());
 		overlay.handle({ type: "turn-start" });
 		overlay.handle({ type: "progress-tool-called" });
 		const aborted = overlay.handle({ type: "turn-end", stopReason: "aborted" });
