@@ -201,10 +201,14 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	let progressSeenThisRun = false;
 	let terminalStopReason: string | undefined;
 	let terminalErrorMessage = "";
-	// In-memory, never persisted: a queued Continuation and the turn-stop gate
-	// must not survive a process restart.
+	// In-memory, never persisted: a queued Continuation, the turn-stop gate,
+	// and the recovery intent must not survive a process restart.
 	let queuedRunId: number | null = null;
 	let turnStopped: string | null = null;
+	// Set when a lost Continuation's pause recovery could not be persisted:
+	// the run stays active (memory and disk agree), and an explicit
+	// /plan-goal-impl re-sends the same run's continuation once storage works.
+	let recoveryPending = false;
 
 	/**
 	 * Persist before publishing: a goal-state write failure must not leave
@@ -260,6 +264,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalErrorMessage = "";
 				queuedRunId = null;
 				turnStopped = null;
+				recoveryPending = false;
 				return [{ type: "refresh" }];
 
 			case "reset":
@@ -268,6 +273,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalStopReason = undefined;
 				terminalErrorMessage = "";
 				queuedRunId = null;
+				recoveryPending = false;
 				return [{ type: "clear-continuation" }, { type: "refresh" }];
 
 			case "start-drafting": {
@@ -377,7 +383,16 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			}
 
 			case "implementation-request":
-				if (state.status === "active") return [];
+				if (state.status === "active") {
+					// A stalled run — its Continuation was lost to a failed
+					// delivery and the pause recovery could not be persisted —
+					// is recoverable by re-sending the same run's continuation.
+					if (recoveryPending && state.goal) {
+						recoveryPending = false;
+						return [{ type: "send-continuation", runId: state.impl.runId }];
+					}
+					return [];
+				}
 				if (state.status !== "ready" && state.status !== "paused") {
 					return reject("plan-goal-impl", "No committed goal is ready to implement. Run /plan-goal-set first.");
 				}
@@ -432,6 +447,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
 				turnStopped = "pause_plan_goal";
 				queuedRunId = null;
+				recoveryPending = false;
 				return [
 					{ type: "append-progress", heading: "Blockers / Interruptions", message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
 					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
@@ -450,6 +466,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				mutate((current) => ({ ...current, status: "complete", impl: { ...current.impl, completedSummary: summary, pausedReason: "" } }));
 				turnStopped = "complete_plan_goal";
 				queuedRunId = null;
+				recoveryPending = false;
 				return [
 					{ type: "clear-continuation" },
 					{ type: "finalize-goal-workspace", completion: { summary, evidence, runId: state.impl.runId } },
@@ -458,10 +475,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 			case "agent-start":
 				queuedRunId = null;
+				recoveryPending = false;
 				return [{ type: "clear-continuation" }];
 
 			case "turn-start":
 				turnStopped = null;
+				recoveryPending = false;
 				return [];
 
 			case "progress-tool-called":
@@ -633,10 +652,13 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 								// never roll the committed pause back to active.
 								const committed = runInternal({ type: "continuation-failed", runId, detail: result.failure.reason }, context);
 								if (committed.failure) {
-									// Even the pause could not be persisted; leave a
-									// visible trace instead of a silent dead run.
+									// Even the pause could not be persisted; keep an
+									// in-memory recovery intent so /plan-goal-impl can
+									// re-send the lost continuation once storage works,
+									// and leave a visible trace instead of a dead run.
+									recoveryPending = true;
 									execute(
-										[{ type: "notify", level: "warning", message: "Goal implementation stalled: the continuation could not be delivered and its recovery state could not be saved. Check storage and retry /plan-goal-impl." }],
+										[{ type: "notify", level: "warning", message: "Goal implementation stalled: the continuation could not be delivered and its recovery state could not be saved. Check storage and retry /plan-goal-impl to resume." }],
 										context,
 									);
 									return;

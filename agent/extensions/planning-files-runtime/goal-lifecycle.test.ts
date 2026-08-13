@@ -593,6 +593,46 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, 1);
 	});
 
+	test("a failed recovery commit leaves a re-sendable recovery intent for /plan-goal-impl", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+
+		harness.setFailSends(true);
+		// Break the goal-state storage so the pause recovery commit fails too.
+		fs.chmodSync(getPaths(cwd).root, 0o555);
+		harness.timer.fire();
+		harness.setFailSends(false);
+
+		// Both delivery and the recovery commit failed: still active (memory
+		// and disk agree), no timer, no continuation sent, stall is visible.
+		assert.equal(run.getState().status, "active");
+		assert.equal(harness.timer.hasPending(), false);
+		assert.equal(harness.sent.length, 0);
+		assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
+
+		// Restore storage; the warning's command now actually recovers the run
+		// by re-sending the same run's continuation.
+		fs.chmodSync(getPaths(cwd).root, 0o755);
+		const result = run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(result.failure, undefined);
+		assert.equal(result.rejection, undefined);
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.runId, 1);
+		assert.equal(harness.sent.length, 1);
+		assert.equal(harness.sent[0]?.message.customType, MESSAGE_TYPE_CONTINUATION);
+		assert.match(harness.sent[0]?.message.content, /runId=1/);
+
+		// The recovery intent is consumed: a second request is a true no-op.
+		const before = run.getState();
+		const again = run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(again.failure, undefined);
+		assert.deepEqual(run.getState(), before);
+		assert.equal(harness.sent.length, 1);
+	});
+
 	test("agent start cancels a settled continuation before it can fire", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
