@@ -94,7 +94,9 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 | `cola/gpt-5.6-luna` | Cola AI 扩展 |
 | `cola/gpt-5.6-terra` | Cola AI 扩展 |
 
-provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 仅保留本地自定义 provider 配置，且已被 `.gitignore` 排除。
+直连 DeepSeek 的 `deepseek-v4-flash` 和 `deepseek-v4-pro` 由 `agent/models.json` 覆盖为 `openai-responses`，使用 `https://api.deepseek.com/responses`。DeepSeek API Key 继续通过既有认证配置或 `$DEEPSEEK_API_KEY` 提供。
+
+provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 保存本地模型/provider 配置覆盖。
 
 ## 安装的技能（Skills）
 
@@ -185,7 +187,6 @@ provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 
 
 > ⚠️ **注意**: 以下敏感文件已在 `.gitignore` 中排除，不会提交到版本控制：
 > - `agent/auth.json` — DeepSeek API Key
-> - `agent/models.json` — 自定义 Provider API Key
 > - `agent/models-store.json` — 模型商店缓存
 > - `agent/trust.json` — 信任配置
 > - `agent/sessions/` — 个人会话历史
