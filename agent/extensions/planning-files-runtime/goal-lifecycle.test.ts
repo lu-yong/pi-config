@@ -71,12 +71,14 @@ function createFakeTimer(): FakeTimer {
 	};
 }
 
-function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleCheck?: boolean } = {}) {
+function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleCheck?: boolean; failNotify?: boolean; failRefresh?: boolean } = {}) {
 	const sent: SentMessage[] = [];
 	const log: string[] = [];
 	const timer = createFakeTimer();
 	let idle = options.idle ?? true;
 	let failSends = options.failSends ?? false;
+	let failNotify = options.failNotify ?? false;
+	let failRefresh = options.failRefresh ?? false;
 	const context = (): GoalLifecycleContext => ({
 		resumedFromPreviousSession: false,
 		isIdle: () => {
@@ -84,9 +86,11 @@ function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleC
 			return idle;
 		},
 		notify: (message, level) => {
+			if (failNotify) throw new Error("notify exploded");
 			log.push(`notify:${level}:${message}`);
 		},
 		refresh: () => {
+			if (failRefresh) throw new Error("refresh exploded");
 			log.push("refresh");
 		},
 	});
@@ -106,6 +110,8 @@ function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleC
 		setIdle: (next: boolean) => (idle = next),
 		clearSent: () => sent.splice(0),
 		setFailSends: (next: boolean) => (failSends = next),
+		setFailNotify: (next: boolean) => (failNotify = next),
+		setFailRefresh: (next: boolean) => (failRefresh = next),
 	};
 }
 
@@ -352,6 +358,34 @@ describe("goal lifecycle", () => {
 		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "drafting");
 	});
 
+	test("a failed atomic goal-state write leaves the prior file intact", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+		run.handle({ type: "start-drafting", input: "goal" }, harness.context());
+		run.handle({ type: "save-draft", params: contractParams }, harness.context());
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		assert.equal(run.getState().status, "ready");
+		const goalStatePath = getPaths(cwd).goalState;
+		const original = readText(goalStatePath);
+		assert.ok(original.length > 0);
+
+		// A read-only planning directory makes the atomic temp write fail
+		// before the destination can be truncated.
+		fs.chmodSync(getPaths(cwd).root, 0o555);
+		try {
+			const result = run.handle({ type: "implementation-request" }, harness.context());
+			assert.match(result.failure?.reason ?? "", /Goal run failed; state preserved/);
+			assert.equal(run.getState().status, "ready");
+			assert.equal(readText(goalStatePath), original); // destination untouched
+		} finally {
+			fs.chmodSync(getPaths(cwd).root, 0o755);
+		}
+
+		// The prior goal state is still loadable after the failure.
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "ready");
+	});
+
 	test("continuation waits for agent settlement and LLM failure pauses the goal", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
@@ -483,6 +517,80 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
 		run.handle({ type: "agent-settled" }, harness.context());
 		assert.equal(harness.timer.hasPending(), true);
+	});
+
+	test("continuation recovery keeps the paused commit when the progress append fails", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+
+		harness.setFailSends(true);
+		// progress.md becomes unwritable so the pause diagnostics fail after the commit.
+		const progressPath = getPaths(cwd).files["progress.md"];
+		fs.rmSync(progressPath, { force: true });
+		fs.mkdirSync(progressPath);
+		harness.timer.fire();
+		harness.setFailSends(false);
+
+		// The committed pause survives the diagnostic failure.
+		assert.equal(run.getState().status, "paused");
+		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
+		assert.equal(harness.timer.hasPending(), false);
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused"); // persisted
+
+		// Retry is deterministic: /plan-goal-impl resumes the same run.
+		fs.rmSync(progressPath, { recursive: true, force: true });
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.runId, 1);
+	});
+
+	test("continuation recovery keeps the paused commit when the warning notification fails", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+
+		harness.setFailSends(true);
+		harness.setFailNotify(true);
+		harness.timer.fire();
+		harness.setFailSends(false);
+		harness.setFailNotify(false);
+
+		assert.equal(run.getState().status, "paused");
+		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
+		assert.equal(harness.timer.hasPending(), false);
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
+
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.runId, 1);
+	});
+
+	test("continuation recovery keeps the paused commit when the UI refresh fails", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+
+		harness.setFailSends(true);
+		harness.setFailRefresh(true);
+		harness.timer.fire();
+		harness.setFailSends(false);
+		harness.setFailRefresh(false);
+
+		assert.equal(run.getState().status, "paused");
+		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
+		assert.equal(harness.timer.hasPending(), false);
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
+
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.runId, 1);
 	});
 
 	test("agent start cancels a settled continuation before it can fire", () => {

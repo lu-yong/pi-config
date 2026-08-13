@@ -40,6 +40,34 @@ export function writeText(target: string, content: string): void {
 	fs.writeFileSync(target, content, "utf8");
 }
 
+/**
+ * Atomically replace `target` with `content`: write the complete bytes to a
+ * sibling temporary file, flush them, then rename over the destination. A
+ * failure at any point leaves the destination untouched, so a partial write
+ * can never masquerade as the persisted value.
+ */
+export function writeTextAtomic(target: string, content: string): void {
+	const directory = path.dirname(target);
+	ensureDir(directory);
+	const temporary = path.join(directory, `.${path.basename(target)}.atomic-${process.pid}-${Math.random().toString(16).slice(2)}.tmp`);
+	try {
+		const handle = fs.openSync(temporary, "w");
+		try {
+			fs.writeFileSync(handle, content, "utf8");
+			fs.fsyncSync(handle);
+		} finally {
+			fs.closeSync(handle);
+		}
+		fs.renameSync(temporary, target);
+	} finally {
+		try {
+			fs.rmSync(temporary, { force: true });
+		} catch {
+			// Best-effort cleanup of a leftover temporary file.
+		}
+	}
+}
+
 export function getPaths(cwd: string): PathBundle {
 	const root = path.join(cwd, PLANNING_DIR);
 	return {

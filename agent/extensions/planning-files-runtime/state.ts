@@ -1,5 +1,5 @@
 import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus } from "./types.ts";
-import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, writeText } from "./utils.ts";
+import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, writeTextAtomic } from "./utils.ts";
 
 // ---- defaults ----
 
@@ -127,5 +127,7 @@ export function writeGoalState(cwd: string, state: GoalOverlayState): void {
 		...state,
 		updatedAt: nowIso(),
 	};
-	writeText(target, `${JSON.stringify(next, null, 2)}\n`);
+	// Atomic replacement: a failed write must never truncate or corrupt the
+	// persisted goal state (memory and disk must agree on the prior state).
+	writeTextAtomic(target, `${JSON.stringify(next, null, 2)}\n`);
 }

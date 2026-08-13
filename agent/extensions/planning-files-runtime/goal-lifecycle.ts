@@ -124,7 +124,8 @@ type InternalEvent =
 	| GoalLifecycleEvent
 	| { type: "continuation-discarded"; runId: number }
 	| { type: "continuation-fired"; runId: number }
-	| { type: "continuation-failed"; runId: number; detail: string };
+	| { type: "continuation-failed"; runId: number; detail: string }
+	| { type: "continuation-diagnostics"; runId: number };
 /** Default single-slot timer backed by setTimeout. */
 export function createSetTimeoutTimer(): ContinuationTimer {
 	let handle: ReturnType<typeof setTimeout> | null = null;
@@ -168,15 +169,26 @@ function contractFromParams(params: CommitGoalParams): GoalContract | null {
 }
 
 /**
- * Compose the user-facing failure reason. `rollbackError` is non-null only
- * when restoring the prior state could not itself be persisted, so the
- * message must not claim a clean restoration.
+ * Outcome of a rollback attempt: whether a prior state was actually restored
+ * (or nothing had been published), and whether restoring it could itself be
+ * persisted — a rollback write failure leaves disk validity unknown.
  */
-function buildFailureReason(message: string, rollbackError: string | null): string {
-	if (rollbackError) {
-		return `Goal run failed and the prior state could not be persisted; state may be inconsistent. Retry the operation. ${message} Rollback write error: ${rollbackError}`;
+type RollbackOutcome = { restored: boolean; error: string | null };
+
+/**
+ * Compose the user-facing failure reason. The message only claims a clean
+ * restoration when a rollback write actually succeeded; when nothing was
+ * ever published it says the prior state is preserved instead.
+ */
+function buildFailureReason(message: string, outcome: RollbackOutcome): string {
+	if (outcome.error) {
+		return `Goal run failed and the prior state could not be persisted; state may be inconsistent. Retry the operation. ${message} Rollback write error: ${outcome.error}`;
 	}
-	return `Goal run failed; state restored. Retry the operation. ${message}`;
+	if (outcome.restored) {
+		return `Goal run failed; state restored. Retry the operation. ${message}`;
+	}
+	// Nothing was ever published: the prior state is preserved in memory and on disk.
+	return `Goal run failed; state preserved. Retry the operation. ${message}`;
 }
 
 /**
@@ -207,11 +219,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	};
 
 	/**
-	 * Restore the pre-mutation state, persisting it back. Returns an error
-	 * message when the rollback write itself fails, or null on success.
+	 * Restore the pre-mutation state, persisting it back. `restored` is false
+	 * only when nothing was ever published (so there is nothing to restore);
+	 * `error` is set when the rollback write itself failed.
 	 */
-	const rollback = (): string | null => {
-		if (!rollbackState) return null;
+	const rollback = (): RollbackOutcome => {
+		if (!rollbackState) return { restored: false, error: null };
 		const target = rollbackState;
 		rollbackState = null;
 		let writeError: unknown = null;
@@ -226,8 +239,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		terminalErrorMessage = "";
 		queuedRunId = null;
 		turnStopped = null;
-		if (writeError) return writeError instanceof Error ? writeError.message : String(writeError);
-		return null;
+		if (writeError) return { restored: true, error: writeError instanceof Error ? writeError.message : String(writeError) };
+		return { restored: true, error: null };
 	};
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
@@ -514,19 +527,26 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				return [{ type: "send-continuation", runId: event.runId }];
 
 			case "continuation-failed": {
+				// Recovery commit point: persist the deterministic paused
+				// state. No effects here — the progress/UI diagnostics are a
+				// separate best-effort step that must never roll this back.
 				if (state.status !== "active" || !state.goal || state.impl.runId !== event.runId) return [];
 				const reason = `Continuation delivery failed and Pi will not retry automatically: ${event.detail}`;
 				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
 				progressSeenThisRun = false;
 				queuedRunId = null;
+				return [];
+			}
+
+			case "continuation-diagnostics":
+				if (state.status !== "paused" || state.impl.runId !== event.runId) return [];
 				return [
-					{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
-					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+					{ type: "append-progress", heading: "Blockers / Interruptions", message: state.impl.pausedReason },
+					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${state.impl.pausedReason}` },
 					{ type: "clear-continuation" },
 					{ type: "notify", level: "warning", message: "Goal implementation paused because the continuation could not be delivered. Retry /plan-goal-impl later." },
 					{ type: "refresh" },
 				];
-			}
 		}
 	};
 
@@ -606,9 +626,22 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 							}
 							const result = runInternal({ type: "continuation-fired", runId }, context);
 							if (result.failure) {
-								// The follow-up could not be delivered; surface the stall as
-								// a deterministic paused state instead of a silent dead run.
-								runInternal({ type: "continuation-failed", runId, detail: result.failure.reason }, context);
+								// The follow-up could not be delivered. Commit the
+								// deterministic paused state first; the progress/UI
+								// diagnostics run separately (best-effort, no state
+								// mutation) so a logging or notification failure can
+								// never roll the committed pause back to active.
+								const committed = runInternal({ type: "continuation-failed", runId, detail: result.failure.reason }, context);
+								if (committed.failure) {
+									// Even the pause could not be persisted; leave a
+									// visible trace instead of a silent dead run.
+									execute(
+										[{ type: "notify", level: "warning", message: "Goal implementation stalled: the continuation could not be delivered and its recovery state could not be saved. Check storage and retry /plan-goal-impl." }],
+										context,
+									);
+									return;
+								}
+								runInternal({ type: "continuation-diagnostics", runId }, context);
 							}
 						}, CONTINUATION_DELAY_MS);
 						break;
@@ -632,10 +665,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				}
 			}
 		} catch (error) {
-			const rollbackError = rollback();
+			const outcome = rollback();
 			deps.timer.clear();
 			const message = error instanceof Error ? error.message : String(error);
-			failure = { operation: "effect-execution", reason: buildFailureReason(message, rollbackError) };
+			failure = { operation: "effect-execution", reason: buildFailureReason(message, outcome) };
 		}
 		return { rejection, failure };
 	};
@@ -649,10 +682,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		try {
 			return execute(transition(event), context);
 		} catch (error) {
-			const rollbackError = rollback();
+			const outcome = rollback();
 			deps.timer.clear();
 			const message = error instanceof Error ? error.message : String(error);
-			return { failure: { operation: "effect-execution", reason: buildFailureReason(message, rollbackError) } };
+			return { failure: { operation: "effect-execution", reason: buildFailureReason(message, outcome) } };
 		}
 	};
 
