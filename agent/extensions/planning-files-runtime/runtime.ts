@@ -20,6 +20,7 @@ import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } f
 import { explainUnsafeCommand, type UnsafeCommandReason } from "../command-policy/policy.ts";
 import { createGoalOverlay, type GoalOverlay, type GoalOverlayEffect } from "./goal-overlay.ts";
 import { createGoalEffectExecutor, createSetTimeoutTimer, type AppliedEffects } from "./effects.ts";
+import { handleAgentSettled } from "./runtime-events.ts";
 
 const DRAFTING_BASH_ADVICE =
 	"Goal drafting bash is fail-closed: every segment of a compound command must be an approved read-only command, and network commands (curl, wget, ping, nslookup, traceroute, whois, host) are blocked. Prefer the read tool for file contents, and use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace.";
@@ -321,7 +322,10 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		const overlay = overlayFor(ctx.cwd);
-		const result = applyGoalEffects(overlay.handle({ type: "agent-settled" }), ctx, overlay, state.resumedFromPreviousSession);
-		notifyRejection(ctx, result);
+		handleAgentSettled(overlay, {
+			apply: (effects) => applyGoalEffects(effects, ctx, overlay, state.resumedFromPreviousSession),
+			notify: (result) => notifyRejection(ctx, result),
+			refresh: () => refresh(ctx, state.resumedFromPreviousSession),
+		});
 	});
 }
