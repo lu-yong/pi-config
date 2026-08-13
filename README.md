@@ -40,8 +40,9 @@
 | `anyrouter-provider` | `https://anyrouter.top/v1`；Claude 使用 `https://anyrouter.top` | `$ANYROUTER_API_KEY` | `gpt-5.6-sol`、`claude-fable-5`、`claude-opus-5` |
 | `cola-provider` | `https://code28.ccwu.cc/v1` | `$COLA_API_KEY` | `gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol` |
 | `micu-provider` | `https://www.micuapi.ai/v1` | `$MICU_API_KEY` | `gpt-5.6-terra`、`gpt-5.6-sol` |
+| `micu-xai-provider` | `https://www.micuapi.ai/v1` | `$MICU_XAI_API_KEY` | `grok-4.6` |
 
-OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anthropic-messages`。当前三个 provider 对 GPT 模型统一配置为 1,050,000 token 上下文窗口和 128,000 token 最大输出；实际限制仍以服务端为准。
+OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anthropic-messages`。前三个 provider 的 GPT 模型统一配置为 1,050,000 token 上下文窗口和 128,000 token 最大输出；Micu xAI 的 Grok 4.6 配置为 500,000 token 上下文窗口和 128,000 token 最大输出。实际限制仍以服务端为准。
 
 ### readonly-mode
 
@@ -93,6 +94,7 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 | `cola/gpt-5.6-sol` | Cola AI 扩展 |
 | `cola/gpt-5.6-luna` | Cola AI 扩展 |
 | `cola/gpt-5.6-terra` | Cola AI 扩展 |
+| `micu-xai/grok-4.6` | Micu xAI 扩展 |
 
 直连 DeepSeek 的 `deepseek-v4-flash` 和 `deepseek-v4-pro` 由 `agent/models.json` 覆盖为 `openai-responses`，使用 `https://api.deepseek.com/responses`。DeepSeek API Key 继续通过既有认证配置或 `$DEEPSEEK_API_KEY` 提供。
 
