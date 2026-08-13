@@ -7,11 +7,79 @@ import type {
 	PauseGoalParams,
 	SaveGoalDraftParams,
 } from "./types.ts";
+import {
+	CONTINUATION_DELAY_MS,
+	MESSAGE_TYPE_CONTINUATION,
+	MESSAGE_TYPE_GOAL_IMPL,
+	MESSAGE_TYPE_GOAL_SET,
+} from "./types.ts";
 import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
 import { goalContractFromDraft, mergeDraft } from "./draft.ts";
-import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
+import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
+import {
+	archivePlanningWorkspace,
+	createGoalDesignSkeleton,
+	finalizeGoalWorkspace,
+	hasPlanningFiles,
+	initializePlanningWorkspace,
+} from "./workspace.ts";
+import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
+import { appendProgressTimeline } from "./markdown.ts";
 
-export type GoalOverlayEvent =
+/**
+ * Goal lifecycle — a single deep module that owns the whole goal lifecycle
+ * policy: state transitions (drafting → ready → active/paused/complete),
+ * effect execution and rollback, and Continuation scheduling for the active
+ * implementation run.
+ *
+ * Pi hooks only express GoalLifecycleEvent values and read the
+ * GoalLifecycleResult projection (rejection/failure). They never see the
+ * internal effect vocabulary, the rollback protocol, or the Continuation
+ * timer callback. "Goal implementation run" (see CONTEXT.md) denotes the
+ * ready → active process identified by runId; this module schedules and
+ * tracks it but is not named after it.
+ */
+
+// ---- public vocabulary (the only surface Pi hooks and tests use) ----
+
+export type OutgoingGoalMessage = {
+	customType: string;
+	content: string;
+	display: boolean;
+};
+
+export type OutgoingGoalMessageOptions = {
+	triggerTurn: true;
+	deliverAs?: "followUp";
+};
+
+export interface ContinuationTimer {
+	/** Schedule the single pending continuation callback, replacing any previous one. */
+	schedule(callback: () => void, delayMs: number): void;
+	/** Cancel the pending callback, if any. */
+	clear(): void;
+}
+
+/** Run result projection: what the caller needs to know after an operation. */
+export type GoalLifecycleResult = {
+	rejection?: { operation: string; reason: string };
+	failure?: { operation: string; reason: string };
+};
+
+/** Pi-side capabilities injected per operation; the module stays UI-agnostic. */
+export interface GoalLifecycleContext {
+	resumedFromPreviousSession?: boolean;
+	isIdle(): boolean;
+	notify(message: string, level: "warning"): void;
+	refresh(): void;
+}
+
+export interface GoalLifecycleDeps {
+	sendMessage(message: OutgoingGoalMessage, options: OutgoingGoalMessageOptions): void;
+	timer: ContinuationTimer;
+}
+
+export type GoalLifecycleEvent =
 	| { type: "restore" }
 	| { type: "reset" }
 	| { type: "start-drafting"; input?: string }
@@ -24,11 +92,18 @@ export type GoalOverlayEvent =
 	| { type: "turn-start" }
 	| { type: "progress-tool-called" }
 	| { type: "turn-end"; stopReason?: string; errorMessage?: string }
-	| { type: "agent-settled" }
-	| { type: "continuation-discarded"; runId: number }
-	| { type: "continuation-fired"; runId: number };
+	| { type: "agent-settled" };
 
-export type GoalOverlayEffect =
+export interface GoalLifecycle {
+	handle(event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult;
+	getState(): GoalOverlayState;
+	/** Operation that stopped the current turn (commit/pause/complete), if any. */
+	turnStoppedBy(): string | null;
+}
+
+// ---- internal effect vocabulary (never leaves this module) ----
+
+type GoalLifecycleEffect =
 	| { type: "ensure-goal-design" }
 	| { type: "archive-implementation-workspace"; label: string }
 	| { type: "initialize-implementation-workspace"; goal: GoalContract; runId: number }
@@ -44,19 +119,37 @@ export type GoalOverlayEffect =
 	| { type: "notify"; level: "warning"; message: string }
 	| { type: "reject"; operation: string; reason: string };
 
-export interface GoalOverlay {
-	handle(event: GoalOverlayEvent): GoalOverlayEffect[];
-	getState(): GoalOverlayState;
-	rollback(): void;
-	/** Operation that stopped the current turn (commit/pause/complete), if any. */
-	turnStoppedBy(): string | null;
+/** GoalLifecycleEvent plus the Continuation timer's internal round-trip events. */
+type InternalEvent =
+	| GoalLifecycleEvent
+	| { type: "continuation-discarded"; runId: number }
+	| { type: "continuation-fired"; runId: number }
+	| { type: "continuation-failed"; runId: number; detail: string };
+/** Default single-slot timer backed by setTimeout. */
+export function createSetTimeoutTimer(): ContinuationTimer {
+	let handle: ReturnType<typeof setTimeout> | null = null;
+	return {
+		schedule(callback, delayMs) {
+			if (handle) clearTimeout(handle);
+			handle = setTimeout(() => {
+				handle = null;
+				callback();
+			}, delayMs);
+		},
+		clear() {
+			if (handle) {
+				clearTimeout(handle);
+				handle = null;
+			}
+		},
+	};
 }
 
 function cloneState(state: GoalOverlayState): GoalOverlayState {
 	return JSON.parse(JSON.stringify(state)) as GoalOverlayState;
 }
 
-function reject(operation: string, reason: string): GoalOverlayEffect[] {
+function reject(operation: string, reason: string): GoalLifecycleEffect[] {
 	return [{ type: "reject", operation, reason }];
 }
 
@@ -75,12 +168,22 @@ function contractFromParams(params: CommitGoalParams): GoalContract | null {
 }
 
 /**
- * Goal lifecycle state machine and its private filesystem persistence.
- *
- * Pi hooks should translate inputs into GoalOverlayEvent values and execute the
- * returned effects. They must not decide whether a transition is legal.
+ * Compose the user-facing failure reason. `rollbackError` is non-null only
+ * when restoring the prior state could not itself be persisted, so the
+ * message must not claim a clean restoration.
  */
-export function createGoalOverlay(cwd: string): GoalOverlay {
+function buildFailureReason(message: string, rollbackError: string | null): string {
+	if (rollbackError) {
+		return `Goal run failed and the prior state could not be persisted; state may be inconsistent. Retry the operation. ${message} Rollback write error: ${rollbackError}`;
+	}
+	return `Goal run failed; state restored. Retry the operation. ${message}`;
+}
+
+/**
+ * Create the goal lifecycle for one planning workspace (cwd). `deps` are the
+ * stable Pi-side capabilities; per-operation context is passed with each event.
+ */
+export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalLifecycle {
 	let state = readGoalState(cwd);
 	let rollbackState: GoalOverlayState | null = null;
 	let progressSeenThisRun = false;
@@ -91,29 +194,49 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 	let queuedRunId: number | null = null;
 	let turnStopped: string | null = null;
 
+	/**
+	 * Persist before publishing: a goal-state write failure must not leave
+	 * memory ahead of disk, and must not install a rollback target for a
+	 * state that never landed.
+	 */
 	const persist = (next: GoalOverlayState): void => {
-		rollbackState = cloneState(state);
+		const previous = state;
+		writeGoalState(cwd, next);
+		rollbackState = cloneState(previous);
 		state = next;
-		writeGoalState(cwd, state);
 	};
 
-	const rollback = (): void => {
-		if (!rollbackState) return;
-		state = rollbackState;
-		writeGoalState(cwd, state);
+	/**
+	 * Restore the pre-mutation state, persisting it back. Returns an error
+	 * message when the rollback write itself fails, or null on success.
+	 */
+	const rollback = (): string | null => {
+		if (!rollbackState) return null;
+		const target = rollbackState;
 		rollbackState = null;
+		let writeError: unknown = null;
+		try {
+			writeGoalState(cwd, target);
+		} catch (error) {
+			writeError = error;
+		}
+		state = target;
 		progressSeenThisRun = false;
 		terminalStopReason = undefined;
 		terminalErrorMessage = "";
 		queuedRunId = null;
 		turnStopped = null;
+		if (writeError) return writeError instanceof Error ? writeError.message : String(writeError);
+		return null;
 	};
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
 		persist(mutation(state));
 	};
 
-	const handle = (event: GoalOverlayEvent): GoalOverlayEffect[] => {
+	// ---- state machine: GoalLifecycleEvent -> internal effects ----
+
+	const transition = (event: InternalEvent): GoalLifecycleEffect[] => {
 		rollbackState = null;
 		switch (event.type) {
 			case "restore":
@@ -127,13 +250,11 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				return [{ type: "refresh" }];
 
 			case "reset":
-				rollbackState = cloneState(state);
-				state = defaultGoalState();
+				persist(defaultGoalState());
 				progressSeenThisRun = false;
 				terminalStopReason = undefined;
 				terminalErrorMessage = "";
 				queuedRunId = null;
-				writeGoalState(cwd, state);
 				return [{ type: "clear-continuation" }, { type: "refresh" }];
 
 			case "start-drafting": {
@@ -273,20 +394,20 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 					];
 				}
 
-			const runId = state.impl.runId || 1;
-			mutate((current) => ({
-				...current,
-				status: "active",
-				impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "" },
-			}));
-			queuedRunId = null;
-			return [
-				{ type: "ensure-implementation-workspace", goal: state.goal, runId },
-				{ type: "append-progress", heading: "Timeline", message: `Goal implementation resumed (run ${runId})` },
-				{ type: "clear-continuation" },
-				{ type: "refresh" },
-				{ type: "send-goal-impl", mode: "resume" },
-			];
+				const runId = state.impl.runId || 1;
+				mutate((current) => ({
+					...current,
+					status: "active",
+					impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "" },
+				}));
+				queuedRunId = null;
+				return [
+					{ type: "ensure-implementation-workspace", goal: state.goal, runId },
+					{ type: "append-progress", heading: "Timeline", message: `Goal implementation resumed (run ${runId})` },
+					{ type: "clear-continuation" },
+					{ type: "refresh" },
+					{ type: "send-goal-impl", mode: "resume" },
+				];
 
 			case "pause": {
 				if (state.status !== "active") {
@@ -353,10 +474,11 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				return [{ type: "refresh" }];
 
 			case "agent-settled":
+				// The planning projection is always re-synced after the agent run settles.
 				if (state.status !== "active") {
 					progressSeenThisRun = false;
 					queuedRunId = null;
-					return [{ type: "clear-continuation" }];
+					return [{ type: "clear-continuation" }, { type: "refresh" }];
 				}
 				if (terminalStopReason === "error") {
 					const detail = terminalErrorMessage || "unknown provider error";
@@ -368,17 +490,13 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
 						{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
 						{ type: "clear-continuation" },
+						{ type: "notify", level: "warning", message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later." },
 						{ type: "refresh" },
-						{
-							type: "notify",
-							level: "warning",
-							message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later.",
-						},
 					];
 				}
 				if (!progressSeenThisRun) {
 					queuedRunId = null;
-					return [{ type: "clear-continuation" }];
+					return [{ type: "clear-continuation" }, { type: "refresh" }];
 				}
 				progressSeenThisRun = false;
 				if (queuedRunId === state.impl.runId) return [{ type: "refresh" }];
@@ -394,13 +512,155 @@ export function createGoalOverlay(cwd: string): GoalOverlay {
 				queuedRunId = null;
 				if (state.status !== "active" || !state.goal || state.impl.planningResetRequired || state.impl.runId !== event.runId) return [];
 				return [{ type: "send-continuation", runId: event.runId }];
+
+			case "continuation-failed": {
+				if (state.status !== "active" || !state.goal || state.impl.runId !== event.runId) return [];
+				const reason = `Continuation delivery failed and Pi will not retry automatically: ${event.detail}`;
+				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+				progressSeenThisRun = false;
+				queuedRunId = null;
+				return [
+					{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
+					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+					{ type: "clear-continuation" },
+					{ type: "notify", level: "warning", message: "Goal implementation paused because the continuation could not be delivered. Retry /plan-goal-impl later." },
+					{ type: "refresh" },
+				];
+			}
 		}
 	};
+
+	// ---- effect execution and rollback ----
+
+	const execute = (effects: GoalLifecycleEffect[], context: GoalLifecycleContext): GoalLifecycleResult => {
+		let rejection: GoalLifecycleResult["rejection"];
+		let failure: GoalLifecycleResult["failure"];
+		try {
+			for (const effect of effects) {
+				switch (effect.type) {
+					case "ensure-goal-design":
+						ensureDir(getPaths(cwd).root);
+						createGoalDesignSkeleton(cwd);
+						break;
+					case "archive-implementation-workspace":
+						archivePlanningWorkspace(cwd, {
+							includeGoalState: false,
+							includeGoalDesign: false,
+							label: effect.label,
+						});
+						break;
+					case "initialize-implementation-workspace":
+						initializePlanningWorkspace(cwd, effect.goal, effect.runId);
+						break;
+					case "ensure-implementation-workspace":
+						if (!hasPlanningFiles(cwd)) initializePlanningWorkspace(cwd, effect.goal, effect.runId);
+						break;
+					case "append-progress":
+						appendProgressTimeline(cwd, effect.heading, effect.message);
+						break;
+					case "finalize-goal-workspace":
+						finalizeGoalWorkspace(cwd, effect.completion);
+						break;
+					case "clear-continuation":
+						deps.timer.clear();
+						break;
+					case "refresh":
+						context.refresh();
+						break;
+					case "send-goal-set": {
+						const snapshot = getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false);
+						deps.sendMessage(
+							{
+								customType: MESSAGE_TYPE_GOAL_SET,
+								content: buildGoalSetPrompt(snapshot.goalState, effect.supplementalInput),
+								display: false,
+							},
+							{ triggerTurn: true },
+						);
+						break;
+					}
+					case "send-goal-impl": {
+						const snapshot = getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false);
+						deps.sendMessage(
+							{
+								customType: MESSAGE_TYPE_GOAL_IMPL,
+								content: buildGoalImplPrompt(snapshot, effect.mode),
+								display: false,
+							},
+							{ triggerTurn: true },
+						);
+						break;
+					}
+					case "schedule-continuation": {
+						const runId = effect.runId;
+						deps.timer.schedule(() => {
+							let idle = false;
+							try {
+								idle = context.isIdle();
+							} catch {
+								// A stale extension context is never safe for enqueueing a follow-up.
+							}
+							if (!idle) {
+								transition({ type: "continuation-discarded", runId });
+								return;
+							}
+							const result = runInternal({ type: "continuation-fired", runId }, context);
+							if (result.failure) {
+								// The follow-up could not be delivered; surface the stall as
+								// a deterministic paused state instead of a silent dead run.
+								runInternal({ type: "continuation-failed", runId, detail: result.failure.reason }, context);
+							}
+						}, CONTINUATION_DELAY_MS);
+						break;
+					}
+					case "send-continuation":
+						deps.sendMessage(
+							{
+								customType: MESSAGE_TYPE_CONTINUATION,
+								content: buildGoalImplPrompt(getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false), "continue"),
+								display: false,
+							},
+							{ triggerTurn: true, deliverAs: "followUp" },
+						);
+						break;
+					case "notify":
+						context.notify(effect.message, effect.level);
+						break;
+					case "reject":
+						rejection = { operation: effect.operation, reason: effect.reason };
+						break;
+				}
+			}
+		} catch (error) {
+			const rollbackError = rollback();
+			deps.timer.clear();
+			const message = error instanceof Error ? error.message : String(error);
+			failure = { operation: "effect-execution", reason: buildFailureReason(message, rollbackError) };
+		}
+		return { rejection, failure };
+	};
+
+	/**
+	 * Single guarded path for any event (public or timer-internal): run the
+	 * transition, execute its effects, and turn transition-time failures
+	 * (e.g. goal-state writes) into a result instead of an uncaught throw.
+	 */
+	const runInternal = (event: InternalEvent, context: GoalLifecycleContext): GoalLifecycleResult => {
+		try {
+			return execute(transition(event), context);
+		} catch (error) {
+			const rollbackError = rollback();
+			deps.timer.clear();
+			const message = error instanceof Error ? error.message : String(error);
+			return { failure: { operation: "effect-execution", reason: buildFailureReason(message, rollbackError) } };
+		}
+	};
+
+	const handle = (event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => runInternal(event, context);
 
 	return {
 		handle,
 		getState: () => cloneState(state),
-		rollback,
 		turnStoppedBy: () => turnStopped,
 	};
 }

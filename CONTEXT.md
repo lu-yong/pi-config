@@ -10,6 +10,9 @@ _避免_：goal service、task tracker
 **Goal implementation run**：Goal overlay 从 ready 进入 active 后，对同一目标进行的一次连续实施过程；runId 用于区分不同运行。
 _避免_：每次命令调用、独立任务
 
+**Goal lifecycle**：承载 Goal overlay 完整生命周期策略的模块（`agent/extensions/planning-files-runtime/goal-lifecycle.ts`）——状态转换、效果执行与回滚、Continuation 调度与运行结果投影。Pi 适配层只表达生命周期事件，不接触内部效果词汇。
+_避免_：goal service、run controller
+
 **Continuation**：Goal implementation run 在一次 agent turn 完成后、仍满足继续条件时产生的后续实施步骤。
 _避免_：自动重试、后台任务
 
