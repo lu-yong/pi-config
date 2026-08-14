@@ -17,6 +17,8 @@ describe('read-only command policy', () => {
       'diff README.md CONTEXT.md',
       'sdiff -w 200 README.md CONTEXT.md',
       'sort README.md',
+      'uniq input 2>/dev/null',
+      'ls -la /vendor/svd /device/svd 2>/dev/null; ls /workspace 2>/dev/null | head; find /home/luyong -maxdepth 4 -type d \\( -name model -o -name native \\) 2>/dev/null | head -50',
     ]) {
       assert.equal(isSafeShellCommand(command), true, command);
     }
@@ -42,6 +44,15 @@ describe('read-only command policy', () => {
       'sdiff -o result.txt a b',
       'sdiff --output=result.txt a b',
       'sdiff -oresult.txt a b',
+      'ls 2>/dev/nullx',
+      'ls 2>/tmp/error.log',
+      'ls 2>>/dev/null',
+      'ls 1>/dev/null',
+      'ls 2 > /dev/null',
+      'uniq input "2">/dev/null',
+      "uniq input '2'>/dev/null",
+      'uniq input \\2>/dev/null',
+      "uniq input 2''>/dev/null",
     ]) {
       assert.equal(isSafeShellCommand(command), false, command);
     }

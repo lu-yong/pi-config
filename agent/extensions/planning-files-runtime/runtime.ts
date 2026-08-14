@@ -29,7 +29,7 @@ const DRAFTING_BASH_ADVICE =
  */
 function draftingBashRejection(reason: UnsafeCommandReason): string {
 	if (reason.kind === "unparsable") {
-		return `Goal drafting blocked this bash command: it could not be parsed into plain read-only segments. Redirects, backticks, $(), subshells, and unbalanced quotes are always rejected. ${DRAFTING_BASH_ADVICE}`;
+		return `Goal drafting blocked this bash command: it could not be parsed into plain read-only segments. Redirects other than stderr to /dev/null (2>/dev/null), backticks, $(), subshells, and unbalanced quotes are always rejected. ${DRAFTING_BASH_ADVICE}`;
 	}
 	return `Goal drafting blocked this bash command at segment \`${reason.segment}\`: that segment is not an approved read-only command. The remaining segments were not the problem — rerun without this one. ${DRAFTING_BASH_ADVICE}`;
 }

@@ -44,7 +44,7 @@ You are in local read-only mode for exploration, planning, code review, and arch
 
 Enforced core-tool restrictions:
 - Pi's built-in edit, write, replace, and undo_last_replace tools are blocked.
-- Bash commands are fail-closed. Approved read commands, tests, and static checks are allowed; installs, builds, publishing, arbitrary scripts, redirection, background execution, and command substitution are blocked.
+- Bash commands are fail-closed. Approved read commands, tests, and static checks are allowed; installs, builds, publishing, arbitrary scripts, all redirection except stderr to /dev/null (2>/dev/null), background execution, and command substitution are blocked.
 - Every segment of a pipeline or compound command is checked independently.
 - Pi's built-in read, grep, find, and ls tools remain available.
 

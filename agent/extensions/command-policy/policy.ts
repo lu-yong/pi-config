@@ -175,6 +175,7 @@ function parseCompoundCommand(command: string): string[][] | undefined {
   let argv: string[] = [];
   let token = '';
   let tokenStarted = false;
+  let tokenIsBare = true;
   let quote: 'single' | 'double' | undefined;
 
   const pushToken = () => {
@@ -182,6 +183,7 @@ function parseCompoundCommand(command: string): string[][] | undefined {
     argv.push(token);
     token = '';
     tokenStarted = false;
+    tokenIsBare = true;
   };
   const pushCommand = () => {
     pushToken();
@@ -220,18 +222,31 @@ function parseCompoundCommand(command: string): string[][] | undefined {
     }
 
     if (char === "'" || char === '"') {
+      tokenIsBare = false;
       quote = char === "'" ? 'single' : 'double';
       tokenStarted = true;
       continue;
     }
     if (char === '\\') {
       if (next === undefined) return undefined;
+      tokenIsBare = false;
       token += next;
       tokenStarted = true;
       index += 1;
       continue;
     }
     if (char === '`' || (char === '$' && next === '(')) return undefined;
+    if (char === '>' && tokenIsBare && token === '2' && command.startsWith('>/dev/null', index)) {
+      const afterRedirect = command[index + '>/dev/null'.length];
+      if (afterRedirect === undefined || /\s/.test(afterRedirect) || ['&', '|', ';'].includes(afterRedirect)) {
+        // Only a bare shell IO number may use this harmless redirection form.
+        token = '';
+        tokenStarted = false;
+        tokenIsBare = true;
+        index += '>/dev/null'.length - 1;
+        continue;
+      }
+    }
     if (char === '<' || char === '>' || char === '(' || char === ')') return undefined;
 
     if (char === '&') {
