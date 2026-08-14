@@ -63,7 +63,7 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 
 - **文件**：`agent/extensions/planning-files-runtime/`
 - **功能**：在项目 `.pi/planning/` 中持久化当前计划、发现、进度和目标状态。
-- **命令**：`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
+- **命令**：`/plan-archive`（agent 空闲时仅归档、不新建模板，且不受目标状态限制）、`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
 - **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
 
 ### qna

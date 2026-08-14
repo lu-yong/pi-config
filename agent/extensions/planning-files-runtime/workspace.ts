@@ -220,39 +220,157 @@ export function finalizeGoalWorkspace(
 	}
 }
 
-export function archivePlanningWorkspace(cwd: string, options: { includeGoalState: boolean; includeGoalDesign: boolean; label: string }): string | null {
+export type PlanningArchiveFileOps = {
+	renameSync(source: string, destination: string): void;
+	copyFileSync(source: string, destination: string): void;
+	cpSync(source: string, destination: string, options: { recursive: true }): void;
+	rmSync(target: string, options: { force: true; recursive?: true }): void;
+};
+
+type PlanningArchiveEntry = {
+	source: string;
+	destination: string;
+	kind: "file" | "directory";
+};
+
+const defaultPlanningArchiveFileOps: PlanningArchiveFileOps = {
+	renameSync: (source, destination) => fs.renameSync(source, destination),
+	copyFileSync: (source, destination) => fs.copyFileSync(source, destination),
+	cpSync: (source, destination, options) => fs.cpSync(source, destination, options),
+	rmSync: (target, options) => fs.rmSync(target, options),
+};
+
+function archiveErrorCode(error: unknown): string {
+	return typeof error === "object" && error !== null && "code" in error
+		? String((error as { code?: unknown }).code ?? "")
+		: "";
+}
+
+function archiveErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+class ArchiveEntryRecoveryError extends Error {
+	readonly recoveryReason: string;
+
+	constructor(message: string, recoveryReason: string) {
+		super(message);
+		this.recoveryReason = recoveryReason;
+	}
+}
+
+function copyArchiveEntry(entry: PlanningArchiveEntry, ops: PlanningArchiveFileOps): void {
+	if (entry.kind === "directory") {
+		ops.cpSync(entry.source, entry.destination, { recursive: true });
+		return;
+	}
+	ops.copyFileSync(entry.source, entry.destination);
+}
+
+function removeArchiveEntry(target: string, kind: PlanningArchiveEntry["kind"], ops: PlanningArchiveFileOps): void {
+	if (kind === "directory") {
+		ops.rmSync(target, { force: true, recursive: true });
+		return;
+	}
+	ops.rmSync(target, { force: true });
+}
+
+function moveArchiveEntry(entry: PlanningArchiveEntry, ops: PlanningArchiveFileOps): void {
+	try {
+		ops.renameSync(entry.source, entry.destination);
+		return;
+	} catch (error) {
+		if (archiveErrorCode(error) !== "EXDEV") throw error;
+	}
+
+	try {
+		copyArchiveEntry(entry, ops);
+	} catch (error) {
+		try {
+			removeArchiveEntry(entry.destination, entry.kind, ops);
+		} catch (cleanupError) {
+			throw new Error(`${archiveErrorMessage(error)} Cross-device copy cleanup also failed: ${archiveErrorMessage(cleanupError)}`);
+		}
+		throw error;
+	}
+
+	try {
+		removeArchiveEntry(entry.source, entry.kind, ops);
+	} catch (error) {
+		try {
+			copyArchiveEntry({ source: entry.destination, destination: entry.source, kind: entry.kind }, ops);
+			removeArchiveEntry(entry.destination, entry.kind, ops);
+		} catch (recoveryError) {
+			throw new ArchiveEntryRecoveryError(
+				archiveErrorMessage(error),
+				`Cross-device source removal recovery failed: ${archiveErrorMessage(recoveryError)}`,
+			);
+		}
+		throw error;
+	}
+}
+
+export function archivePlanningWorkspace(
+	cwd: string,
+	options: {
+		includeGoalState: boolean;
+		includeGoalDesign: boolean;
+		label: string;
+		fileOps?: PlanningArchiveFileOps;
+	},
+): string | null {
 	const paths = getPaths(cwd);
-	const archiveTargets = [
+	const sources = [
 		...PLANNING_FILES.map((name) => paths.files[name]),
 		...(options.includeGoalState ? [paths.goalState] : []),
 		...(options.includeGoalDesign && fileExists(paths.goalDesign) ? [paths.goalDesign] : []),
 	].filter((target) => fileExists(target));
-	if (archiveTargets.length === 0 && !(options.includeGoalDesign && fileExists(paths.tasksDir))) return null;
+	const includeTasks = options.includeGoalDesign && fileExists(paths.tasksDir);
+	if (sources.length === 0 && !includeTasks) return null;
+
 	ensureDir(paths.archiveRoot);
 	const archiveDir = path.join(paths.archiveRoot, `${archiveStamp()}-${options.label}`);
 	ensureDir(archiveDir);
-	for (const target of archiveTargets) {
-		const destination = path.join(archiveDir, path.basename(target));
-		try {
-			fs.renameSync(target, destination);
-		} catch (error) {
-			const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
-			if (code !== "EXDEV") throw error;
-			fs.copyFileSync(target, destination);
-			fs.rmSync(target, { force: true });
-		}
+	const entries: PlanningArchiveEntry[] = sources.map((source) => ({
+		source,
+		destination: path.join(archiveDir, path.basename(source)),
+		kind: "file",
+	}));
+	if (includeTasks) {
+		entries.push({ source: paths.tasksDir, destination: path.join(archiveDir, "tasks"), kind: "directory" });
 	}
-	// Archive tasks/ directory if it exists (only during plan-new reset)
-	if (options.includeGoalDesign && fileExists(paths.tasksDir)) {
-		try {
-			fs.renameSync(paths.tasksDir, path.join(archiveDir, "tasks"));
-		} catch (error) {
-			const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
-			if (code !== "EXDEV") throw error;
-			// cross-device fallback: skip (tasks dir is ephemeral)
+
+	const ops = options.fileOps ?? defaultPlanningArchiveFileOps;
+	const moved: PlanningArchiveEntry[] = [];
+	try {
+		for (const entry of entries) {
+			moveArchiveEntry(entry, ops);
+			moved.push(entry);
 		}
+		return archiveDir;
+	} catch (error) {
+		const rollbackErrors: string[] = error instanceof ArchiveEntryRecoveryError
+			? [`current entry: ${error.recoveryReason}`]
+			: [];
+		for (const entry of [...moved].reverse()) {
+			try {
+				moveArchiveEntry({ source: entry.destination, destination: entry.source, kind: entry.kind }, ops);
+			} catch (rollbackError) {
+				rollbackErrors.push(`${path.basename(entry.source)}: ${archiveErrorMessage(rollbackError)}`);
+			}
+		}
+
+		const reason = archiveErrorMessage(error);
+		if (rollbackErrors.length > 0) {
+			throw new Error(`${reason} Archive rollback also failed (${rollbackErrors.join("; ")}). Partial archive retained at ${archiveDir}.`);
+		}
+		try {
+			ops.rmSync(archiveDir, { force: true, recursive: true });
+		} catch (cleanupError) {
+			throw new Error(`${reason} Workspace restored, but incomplete archive cleanup failed: ${archiveErrorMessage(cleanupError)}`);
+		}
+		throw error;
 	}
-	return archiveDir;
 }
 
 export function createGoalDesignSkeleton(cwd: string): void {

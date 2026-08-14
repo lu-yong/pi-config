@@ -14,6 +14,7 @@ import type {
 } from "./types.ts";
 import { normalizeString } from "./utils.ts";
 import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
+import { runPlanArchiveCommand } from "./archive-command.ts";
 import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
@@ -184,6 +185,25 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	// ---- commands ----
+	pi.registerCommand("plan-archive", {
+		description: "Archive the current .pi/planning workspace without creating a new one, regardless of goal status.",
+		handler: async (_args, ctx) => {
+			runPlanArchiveCommand(
+				{
+					cwd: ctx.cwd,
+					isIdle: () => ctx.isIdle(),
+					notify: (message, level) => ctx.ui.notify(message, level),
+				},
+				{
+					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-archive" }),
+					clearContinuation: () => timer.clear(),
+					dropLifecycle: (cwd) => lifecycles.delete(cwd),
+					refresh: () => refresh(ctx, false),
+				},
+			);
+		},
+	});
+
 	pi.registerCommand("plan-new", {
 		description: "Initialize or reset .pi/planning and clear any current goal overlay.",
 		handler: async (_args, ctx) => {

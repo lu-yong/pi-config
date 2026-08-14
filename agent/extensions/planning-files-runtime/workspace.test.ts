@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 
-import { finalizeGoalWorkspace, type GoalWorkspaceFileOps } from "./workspace.ts";
+import {
+	archivePlanningWorkspace,
+	finalizeGoalWorkspace,
+	type GoalWorkspaceFileOps,
+	type PlanningArchiveFileOps,
+} from "./workspace.ts";
 import { getPaths, readText, writeText } from "./utils.ts";
 
 const directories: string[] = [];
@@ -91,4 +96,191 @@ test("a later replacement failure restores both original files", () => {
 	assert.throws(() => finalizeGoalWorkspace(cwd, completion, { fileOps: real }), /simulated progress rename failure/);
 	assert.equal(readText(paths.files["task_plan.md"]), originals.taskPlan);
 	assert.equal(readText(paths.files["progress.md"]), originals.progress);
+});
+
+test("archives an active planning workspace without creating replacement templates", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const goalState = '{"status":"active"}\n';
+	writeText(paths.goalState, goalState);
+
+	const archiveDir = archivePlanningWorkspace(cwd, {
+		includeGoalState: true,
+		includeGoalDesign: true,
+		label: "plan-archive",
+	});
+
+	assert.ok(archiveDir);
+	assert.deepEqual(fs.readdirSync(paths.root), ["archive"]);
+	assert.equal(readText(path.join(archiveDir, "task_plan.md")), originals.taskPlan);
+	assert.equal(readText(path.join(archiveDir, "findings.md")), originals.findings);
+	assert.equal(readText(path.join(archiveDir, "progress.md")), originals.progress);
+	assert.equal(readText(path.join(archiveDir, "goal-design.md")), originals.goalDesign);
+	assert.equal(readText(path.join(archiveDir, ".goal-state.json")), goalState);
+	assert.equal(readText(path.join(archiveDir, "tasks", "task-01.md")), originals.taskCard);
+});
+
+test("returns null for an empty workspace without creating an archive directory", () => {
+	const cwd = makeCwd();
+	const paths = getPaths(cwd);
+	const archiveDir = archivePlanningWorkspace(cwd, {
+		includeGoalState: true,
+		includeGoalDesign: true,
+		label: "plan-archive",
+	});
+
+	assert.equal(archiveDir, null);
+	assert.equal(fs.existsSync(paths.root), false);
+});
+
+function archiveFileOps(renameSync: PlanningArchiveFileOps["renameSync"]): PlanningArchiveFileOps {
+	return {
+		renameSync,
+		copyFileSync: (source, destination) => fs.copyFileSync(source, destination),
+		cpSync: (source, destination, options) => fs.cpSync(source, destination, options),
+		rmSync: (target, options) => fs.rmSync(target, options),
+	};
+}
+
+function assertArchiveSeedRestored(
+	cwd: string,
+	originals: ReturnType<typeof seed>,
+	goalState: string,
+): void {
+	const paths = getPaths(cwd);
+	assert.equal(readText(paths.files["task_plan.md"]), originals.taskPlan);
+	assert.equal(readText(paths.files["findings.md"]), originals.findings);
+	assert.equal(readText(paths.files["progress.md"]), originals.progress);
+	assert.equal(readText(paths.goalDesign), originals.goalDesign);
+	assert.equal(readText(paths.goalState), goalState);
+	assert.equal(readText(path.join(paths.tasksDir, "task-01.md")), originals.taskCard);
+	assert.deepEqual(fs.readdirSync(paths.archiveRoot), []);
+}
+
+test("restores every source when the second archive move fails", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const goalState = '{"status":"active"}\n';
+	writeText(paths.goalState, goalState);
+	const fileOps = archiveFileOps((source, destination) => {
+		if (source === paths.files["findings.md"]) throw new Error("simulated second move failure");
+		fs.renameSync(source, destination);
+	});
+
+	assert.throws(
+		() => archivePlanningWorkspace(cwd, {
+			includeGoalState: true,
+			includeGoalDesign: true,
+			label: "plan-archive",
+			fileOps,
+		}),
+		/simulated second move failure/,
+	);
+	assertArchiveSeedRestored(cwd, originals, goalState);
+});
+
+test("restores every moved file when the final tasks directory move fails", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const goalState = '{"status":"active"}\n';
+	writeText(paths.goalState, goalState);
+	const fileOps = archiveFileOps((source, destination) => {
+		if (source === paths.tasksDir) throw new Error("simulated tasks move failure");
+		fs.renameSync(source, destination);
+	});
+
+	assert.throws(
+		() => archivePlanningWorkspace(cwd, {
+			includeGoalState: true,
+			includeGoalDesign: true,
+			label: "plan-archive",
+			fileOps,
+		}),
+		/simulated tasks move failure/,
+	);
+	assertArchiveSeedRestored(cwd, originals, goalState);
+});
+
+test("reports rollback failures and retains the partial archive", () => {
+	const cwd = makeCwd();
+	seed(cwd);
+	const paths = getPaths(cwd);
+	const fileOps = archiveFileOps((source, destination) => {
+		if (source === paths.files["findings.md"]) throw new Error("simulated forward failure");
+		if (source.startsWith(paths.archiveRoot) && destination === paths.files["task_plan.md"]) {
+			throw new Error("simulated rollback failure");
+		}
+		fs.renameSync(source, destination);
+	});
+
+	assert.throws(
+		() => archivePlanningWorkspace(cwd, {
+			includeGoalState: true,
+			includeGoalDesign: true,
+			label: "plan-archive",
+			fileOps,
+		}),
+		/simulated forward failure Archive rollback also failed \(task_plan\.md: simulated rollback failure\)\. Partial archive retained at/,
+	);
+	assert.equal(fs.existsSync(paths.files["task_plan.md"]), false);
+	assert.equal(fs.readdirSync(paths.archiveRoot).length, 1);
+});
+
+test("archives files and tasks through the cross-device fallback", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const crossDeviceError = Object.assign(new Error("cross-device move"), { code: "EXDEV" });
+	const fileOps = archiveFileOps(() => {
+		throw crossDeviceError;
+	});
+
+	const archiveDir = archivePlanningWorkspace(cwd, {
+		includeGoalState: true,
+		includeGoalDesign: true,
+		label: "plan-archive",
+		fileOps,
+	});
+
+	assert.ok(archiveDir);
+	assert.equal(readText(path.join(archiveDir, "task_plan.md")), originals.taskPlan);
+	assert.equal(readText(path.join(archiveDir, "tasks", "task-01.md")), originals.taskCard);
+	assert.equal(fs.existsSync(paths.files["task_plan.md"]), false);
+	assert.equal(fs.existsSync(paths.tasksDir), false);
+});
+
+test("restores a partially removed cross-device tasks source before rolling back", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const goalState = '{"status":"active"}\n';
+	writeText(paths.goalState, goalState);
+	const crossDeviceError = Object.assign(new Error("cross-device move"), { code: "EXDEV" });
+	const baseOps = archiveFileOps(() => {
+		throw crossDeviceError;
+	});
+	const fileOps: PlanningArchiveFileOps = {
+		...baseOps,
+		rmSync: (target, options) => {
+			if (target === paths.tasksDir) {
+				fs.rmSync(path.join(paths.tasksDir, "task-01.md"), { force: true });
+				throw new Error("simulated partial tasks removal");
+			}
+			fs.rmSync(target, options);
+		},
+	};
+
+	assert.throws(
+		() => archivePlanningWorkspace(cwd, {
+			includeGoalState: true,
+			includeGoalDesign: true,
+			label: "plan-archive",
+			fileOps,
+		}),
+		/simulated partial tasks removal/,
+	);
+	assertArchiveSeedRestored(cwd, originals, goalState);
 });

@@ -8,7 +8,8 @@ A single Pi extension that owns:
 
 ## Public commands
 
-- `/plan-new` — reset `.pi/planning/` including goal-design.md + tasks/, clear goal overlay
+- `/plan-archive` — when the agent is idle, archive the complete current workspace at any goal status without creating replacement templates
+- `/plan-new` — archive then reset `.pi/planning/`, including goal-design.md + tasks/, and clear the goal overlay
 - `/plan-goal-set` — 4-stage goal drafting (as-is → design → story → task), outputs to goal-design.md
 - `/plan-goal-impl` — execute committed goal using Task Plan from goal-design.md as blueprint
 
@@ -36,7 +37,7 @@ Goal overlay state:
 - Drafting stages auto-advance; agent asks user only when key info missing
 - Drafting: `write` blocked outside `.pi/planning/`; `edit` allowed inside; `bash` read-only
 - `commit_plan_goal` validates `goal-design.md` exists and non-empty
-- `goal-design.md` + `tasks/` persist across runs; only archived on `/plan-new`
+- `/plan-archive` rejects while the agent is running; once idle, it archives all managed files and goal state without reinitializing at any goal status; `/plan-new` archives them and creates a fresh workspace
 - Execution follows Task hard/soft deps + TDD (red → green → refactor, 1 commit per Task)
 
 ## Dotfiles integration
