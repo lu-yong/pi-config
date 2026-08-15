@@ -10,30 +10,14 @@ import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 
 import { askExtractedQuestions } from "../question-taking/interaction.ts";
 import { isQnaSuppressedByActiveGoal, rejectManualQnaForActiveGoal } from "./goal-policy.ts";
-
-interface QItem {
-	question: string;
-	options: string[];
-}
-
-const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, find ALL questions that need a decision/answer from the user.
-
-Output each question in this EXACT format (one per block, separated by blank line):
-
-<code>
-[Q] 问题文本
-[O] 选项1
-[O] 选项2
-[O] 选项3
-</code>
-
-Rules:
-- Only extract REAL questions that the user should answer (not rhetorical)
-- Provide 2-5 concise options per question
-- Keep options mutually exclusive
-- If a question is Yes/No, options should be like "是" / "否" or the two clear choices
-- Output ONLY the [Q]/[O] blocks, nothing else
-- If no questions found, output: [NONE]`;
+import {
+	SYSTEM_PROMPT,
+	type BranchEntry,
+	fingerprint,
+	getLastAssistantText,
+	parseQuestions,
+	shouldAutoExtract,
+} from "./extraction.ts";
 
 /** 已处理过的消息 ID，防止重复触发 */
 const processedMessageIds = new Set<string>();
@@ -42,11 +26,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.model) return;
 		if (isQnaSuppressedByActiveGoal(ctx.cwd)) return;
-		const lastText = getLastAssistantText(ctx);
-		if (!lastText || !hasQuestionMark(lastText)) return;
+		const lastText = lastAssistantText(ctx);
+		if (!lastText || !shouldAutoExtract(lastText, processedMessageIds)) return;
 
-		const fingerprint = simpleHash(lastText);
-		if (processedMessageIds.has(fingerprint)) return;
 		await runQna(ctx, lastText);
 	});
 
@@ -63,7 +45,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const lastText = getLastAssistantText(ctx);
+			const lastText = lastAssistantText(ctx);
 			if (!lastText) {
 				ctx.ui.notify("未找到 AI 回复", "error");
 				return;
@@ -71,6 +53,10 @@ export default function (pi: ExtensionAPI) {
 			await runQna(ctx, lastText);
 		},
 	});
+}
+
+function lastAssistantText(ctx: ExtensionContext): string | undefined {
+	return getLastAssistantText(ctx.sessionManager.getBranch() as unknown as BranchEntry[]);
 }
 
 async function runQna(ctx: ExtensionContext, lastText: string): Promise<void> {
@@ -115,8 +101,7 @@ async function runQna(ctx: ExtensionContext, lastText: string): Promise<void> {
 		return;
 	}
 
-	const fingerprint = simpleHash(lastText);
-	processedMessageIds.add(fingerprint);
+	processedMessageIds.add(fingerprint(lastText));
 
 	const answers = await askExtractedQuestions(ctx.ui, questions);
 	if (!answers) {
@@ -131,52 +116,4 @@ async function runQna(ctx: ExtensionContext, lastText: string): Promise<void> {
 
 	ctx.ui.setEditorText(result);
 	ctx.ui.notify(`已汇总 ${answers.length} 个问题，编辑后提交即可`, "info");
-}
-
-/** 从 session 中取最后一条已完成 assistant 消息的文本。 */
-function getLastAssistantText(ctx: ExtensionContext): string | undefined {
-	const branch = ctx.sessionManager.getBranch();
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry?.type !== "message") continue;
-		const message = entry.message;
-		if (!("role" in message) || message.role !== "assistant") continue;
-		if (message.stopReason !== "stop") return undefined;
-		const parts = message.content
-			.filter((content): content is { type: "text"; text: string } => content.type === "text")
-			.map((content) => content.text);
-		if (parts.length > 0) return parts.join("\n");
-	}
-	return undefined;
-}
-
-function hasQuestionMark(text: string): boolean {
-	return /[？?]/.test(text);
-}
-
-function simpleHash(text: string): string {
-	let hash = 0;
-	for (let i = 0; i < text.length; i++) {
-		hash = (hash * 31 + text.charCodeAt(i)) | 0;
-	}
-	return hash.toString(36);
-}
-
-function parseQuestions(text: string): QItem[] {
-	const result: QItem[] = [];
-	let current: QItem | null = null;
-	for (const raw of text.split("\n")) {
-		const line = raw.trim();
-		if (!line) continue;
-		if (/^\[NONE\]$/.test(line)) return [];
-		const question = line.match(/^\[Q\]\s*(.+)$/);
-		const option = line.match(/^\[O\]\s*(.+)$/);
-		if (question) {
-			current = { question: question[1]!, options: [] };
-			result.push(current);
-		} else if (option && current) {
-			current.options.push(option[1]!);
-		}
-	}
-	return result.filter((question) => question.options.length > 0);
 }
