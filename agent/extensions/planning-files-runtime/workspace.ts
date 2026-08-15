@@ -1,12 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PLANNING_FILES } from "./types.ts";
-import type { GoalCompletion, GoalContract } from "./types.ts";
-import { archiveStamp, ensureDir, fileExists, getPaths, trimEmptyLines, writeText } from "./utils.ts";
-import { createProgressTemplate, finalizeProgressMarkdown, finalizeTaskPlanMarkdown } from "./markdown.ts";
-
-// Kept as a compatibility export for callers that used the workspace template helper.
-export { createProgressTemplate } from "./markdown.ts";
+import type { GoalCompletion, GoalContract, PlanningSnapshot } from "./types.ts";
+import { archiveStamp, ensureDir, fileExists, getPaths, nowIso, readText, trimEmptyLines, writeText } from "./utils.ts";
+import {
+	HEADINGS,
+	appendBulletToHeading,
+	createProgressTemplate,
+	extractSection,
+	finalizeProgressMarkdown,
+	finalizeTaskPlanMarkdown,
+	firstMeaningfulLine,
+} from "./markdown.ts";
+import { readGoalState } from "./state.ts";
 
 // ---- file detection ----
 
@@ -15,9 +21,54 @@ export function hasPlanningFiles(cwd: string): boolean {
 	return PLANNING_FILES.some((name) => fileExists(paths.files[name]));
 }
 
+// ---- snapshot ----
+
+/** Read the live planning state callers reason about, without exposing markdown. */
+export function getPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
+	const paths = getPaths(cwd);
+	const taskPlan = readText(paths.files["task_plan.md"]);
+	return {
+		planningRoot: paths.root,
+		files: paths.files,
+		goalDesignPath: paths.goalDesign,
+		tasksDir: paths.tasksDir,
+		goalStatePath: paths.goalState,
+		exists: hasPlanningFiles(cwd),
+		currentPhase: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.currentPhase)),
+		goalFromPlan: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.goal)),
+		nextAction: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.nextAction)),
+		blocker: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.blocker)),
+		goalState: readGoalState(cwd),
+		resumedFromPreviousSession,
+	};
+}
+
+// ---- timeline ----
+
+/**
+ * The progress.md sections the Goal lifecycle appends to. Exported so the
+ * producer names a section through the workspace's vocabulary instead of
+ * spelling the heading — a rename here updates template and writers together.
+ */
+export const PROGRESS_HEADINGS = {
+	timeline: HEADINGS.timeline,
+	blockers: HEADINGS.blockers,
+} as const;
+
+export type ProgressHeading = (typeof PROGRESS_HEADINGS)[keyof typeof PROGRESS_HEADINGS];
+
+/** Append a timestamped bullet to a progress.md section, creating it if needed. */
+export function appendProgressTimeline(cwd: string, heading: ProgressHeading, message: string): void {
+	const paths = getPaths(cwd);
+	const target = paths.files["progress.md"];
+	const content = readText(target) || createProgressTemplate();
+	const next = appendBulletToHeading(content, heading, `[${nowIso()}] ${message}`);
+	writeText(target, trimEmptyLines(next).concat("\n"));
+}
+
 // ---- templates ----
 
-export function createTaskPlanTemplate(goal?: GoalContract): string {
+function createTaskPlanTemplate(goal?: GoalContract): string {
 	const goalSection = goal?.objective || "[One sentence describing the end state]";
 	const criteriaSection = goal && goal.successCriteria.length > 0
 		? `\n## Goal Success Criteria\n${goal.successCriteria.map((item) => `- ${item}`).join("\n")}\n`
@@ -44,16 +95,16 @@ export function createTaskPlanTemplate(goal?: GoalContract): string {
   WHEN: Keep this file current before and after meaningful work.
 -->
 
-## Goal
+## ${HEADINGS.goal}
 ${goalSection}
 ${criteriaSection}${constraintsSection}${outOfScopeSection}${blockedSection}
-## Current Phase
+## ${HEADINGS.currentPhase}
 Phase 1
 
-## Next Concrete Action
+## ${HEADINGS.nextAction}
 - [Describe the immediate next step]
 
-## Blocker
+## ${HEADINGS.blocker}
 [empty]
 
 ## Phases
@@ -109,7 +160,7 @@ ${keyQuestions.join("\n")}
 `);
 }
 
-export function createFindingsTemplate(goal?: GoalContract): string {
+function createFindingsTemplate(goal?: GoalContract): string {
 	const goalContext = goal
 		? [
 			"## Goal Context",

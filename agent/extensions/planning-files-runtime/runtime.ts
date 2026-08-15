@@ -13,10 +13,10 @@ import type {
 	SaveGoalDraftParams,
 } from "./types.ts";
 import { normalizeString } from "./utils.ts";
-import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
+import { archivePlanningWorkspace, getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
-import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
+import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
 import { createGoalLifecycle, createSetTimeoutTimer, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";

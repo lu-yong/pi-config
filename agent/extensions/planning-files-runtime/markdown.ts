@@ -1,5 +1,21 @@
 import type { GoalCompletion, GoalContract } from "./types.ts";
-import { getPaths, nowIso, readText, trimEmptyLines, writeText } from "./utils.ts";
+import { nowIso, trimEmptyLines } from "./utils.ts";
+
+/**
+ * The planning-file heading vocabulary. Templates, parsing and finalization all
+ * reference these constants so a heading is spelled in exactly one place.
+ */
+export const HEADINGS = {
+	goal: "Goal",
+	currentPhase: "Current Phase",
+	nextAction: "Next Concrete Action",
+	blocker: "Blocker",
+	timeline: "Timeline",
+	workCompleted: "Work Completed",
+	verification: "Verification",
+	blockers: "Blockers / Interruptions",
+	completionEvidence: "Completion Evidence",
+} as const;
 
 type MarkdownSection = {
 	name: string;
@@ -75,13 +91,14 @@ function appendSections(markdown: string, bodies: Array<{ heading: string; body:
 }
 
 function assertUniqueLiveSections(sections: MarkdownSection[]): void {
-	for (const heading of ["Current Phase", "Blocker"] as const) {
+	// Legacy-name support was removed: fail loudly instead of leaving the stale
+	// section in place alongside a freshly appended canonical one.
+	if (sections.some((section) => section.name === "Next Action")) {
+		throw new Error(`Cannot finalize task_plan.md: legacy "## Next Action" heading is no longer supported; rename it to "## ${HEADINGS.nextAction}".`);
+	}
+	for (const heading of [HEADINGS.currentPhase, HEADINGS.nextAction, HEADINGS.blocker] as const) {
 		const count = sections.filter((section) => section.name === heading).length;
 		if (count > 1) throw new Error(`Cannot finalize task_plan.md: duplicate \"## ${heading}\" headings.`);
-	}
-	const nextSections = sections.filter((section) => section.name === "Next Concrete Action" || section.name === "Next Action");
-	if (nextSections.length > 1) {
-		throw new Error("Cannot finalize task_plan.md: duplicate or conflicting next-action headings.");
 	}
 }
 
@@ -95,26 +112,24 @@ export function finalizeTaskPlanMarkdown(markdown: string): string {
 	const sections = sectionsOf(markdown);
 	assertUniqueLiveSections(sections);
 
-	const desired = new Map<string, { heading: string; body: string }>([
-		["Current Phase", { heading: "Current Phase", body: "Complete" }],
-		["Next Concrete Action", { heading: "Next Concrete Action", body: "- None (goal complete)." }],
-		["Next Action", { heading: "Next Concrete Action", body: "- None (goal complete)." }],
-		["Blocker", { heading: "Blocker", body: "[empty]" }],
-	]);
+	const terminalBodies = [
+		{ heading: HEADINGS.currentPhase, body: "Complete" },
+		{ heading: HEADINGS.nextAction, body: "- None (goal complete)." },
+		{ heading: HEADINGS.blocker, body: "[empty]" },
+	];
+	const desired = new Map(terminalBodies.map((entry) => [entry.heading, entry] as const));
 	const replacements: Array<{ start: number; end: number; text: string }> = [];
 	const found = new Set<string>();
 	for (const section of sections) {
 		const projection = desired.get(section.name);
 		if (!projection) continue;
-		const canonicalName = projection.heading;
-		found.add(canonicalName);
-		const headingLine = section.name === "Next Action" ? `## ${canonicalName}` : section.headingLine;
+		found.add(projection.heading);
 		const terminalSection = section.end === markdown.length;
 		const suffix = terminalSection ? (trailing ? eol : "") : `${eol}${eol}`;
 		replacements.push({
 			start: section.start,
 			end: section.end,
-			text: `${headingLine}${section.headingEol || eol}${projection.body}${suffix}`,
+			text: `${section.headingLine}${section.headingEol || eol}${projection.body}${suffix}`,
 		});
 	}
 
@@ -123,11 +138,7 @@ export function finalizeTaskPlanMarkdown(markdown: string): string {
 		result = `${result.slice(0, replacement.start)}${replacement.text}${result.slice(replacement.end)}`;
 	}
 
-	const missing = [
-		{ heading: "Current Phase", body: "Complete" },
-		{ heading: "Next Concrete Action", body: "- None (goal complete)." },
-		{ heading: "Blocker", body: "[empty]" },
-	].filter(({ heading }) => !found.has(heading));
+	const missing = terminalBodies.filter(({ heading }) => !found.has(heading));
 	return appendSections(result, missing);
 }
 
@@ -155,13 +166,13 @@ export function finalizeProgressMarkdown(markdown: string, completion: GoalCompl
 	const runIdentity = `goal-completion:run-${completion.runId}`;
 	let result = appendCompletionBullet(
 		markdown,
-		"Completion Evidence",
+		HEADINGS.completionEvidence,
 		`[${timestamp}] ${evidenceMessage}`,
 		`<!-- ${runIdentity}:evidence -->`,
 	);
 	result = appendCompletionBullet(
 		result,
-		"Timeline",
+		HEADINGS.timeline,
 		`[${timestamp}] Goal implementation completed (run ${completion.runId}): ${completion.summary}`,
 		`<!-- ${runIdentity}:timeline -->`,
 	);
@@ -174,44 +185,58 @@ export function createProgressTemplate(goal?: GoalContract, runId?: number): str
 		: `- [${nowIso()}] Planning workspace initialized`;
 	return trimEmptyLines(`# Progress
 
-## Timeline
+## ${HEADINGS.timeline}
 ${initialLine}
 
-## Work Completed
+## ${HEADINGS.workCompleted}
 - [empty]
 
-## Verification
+## ${HEADINGS.verification}
 - [empty]
 
-## Blockers / Interruptions
+## ${HEADINGS.blockers}
 - [empty]
 
-## Completion Evidence
+## ${HEADINGS.completionEvidence}
 - [empty]
 `);
+}
+
+/** Read one section body, or undefined when the heading is absent or empty. */
+export function extractSection(text: string, heading: string): string | undefined {
+	const section = sectionsOf(text).find((candidate) => candidate.name === heading);
+	if (!section) return undefined;
+	return text.slice(section.bodyStart, section.end).trim() || undefined;
+}
+
+/** First non-blank line of a section body, with any leading bullet marker removed. */
+export function firstMeaningfulLine(text: string | undefined): string | undefined {
+	if (!text) return undefined;
+	for (const line of text.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		return trimmed.replace(/^[-*]\s*/, "");
+	}
+	return undefined;
 }
 
 /**
  * Append a bullet to a markdown heading section.
  * If the heading doesn't exist, it is created.
- * If the first bullet is "[empty]", it is replaced.
+ * If the section carries the "[empty]" placeholder bullet, it is replaced.
  */
 export function appendBulletToHeading(markdown: string, heading: string, bullet: string): string {
-	const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const sectionPattern = new RegExp(`(## ${escapedHeading}\\n)([\\s\\S]*?)(?=\\n## |$)`);
-	const match = markdown.match(sectionPattern);
-	if (!match) return `${markdown.trim()}\n\n## ${heading}\n- ${bullet}\n`;
-	const prefix = match[1] ?? `## ${heading}\n`;
-	const body = (match[2] ?? "").replace(/^- \[empty\]\s*$/m, "").trimEnd();
-	const nextBody = body === "" ? `- ${bullet}\n` : `${body}\n- ${bullet}\n`;
-	return markdown.replace(sectionPattern, `${prefix}${nextBody}`);
-}
+	const eol = newlineOf(markdown);
+	const section = sectionsOf(markdown).find((candidate) => candidate.name === heading);
+	if (!section) return `${markdown.trim()}${eol}${eol}## ${heading}${eol}- ${bullet}${eol}`;
 
-/** Append a timestamped bullet to the progress.md timeline section. */
-export function appendProgressTimeline(cwd: string, heading: string, message: string): void {
-	const paths = getPaths(cwd);
-	const target = paths.files["progress.md"];
-	const content = readText(target) || createProgressTemplate();
-	const next = appendBulletToHeading(content, heading, `[${nowIso()}] ${message}`);
-	writeText(target, trimEmptyLines(next).concat("\n"));
+	const body = markdown.slice(section.bodyStart, section.end);
+	// Anchored at the body start (no /m): a "[empty]" placeholder is only ever
+	// the section's first bullet, and /m would also strip one inside a fence.
+	const withoutEmpty = body.replace(/^[ \t]*- \[empty\][ \t]*(?:\r\n|\n)?/, "");
+	const content = withoutEmpty.replace(/(?:\r\n|\n)+$/, "");
+	const appended = content.trim().length === 0 ? `- ${bullet}` : `${content}${eol}- ${bullet}`;
+	const terminalSection = section.end === markdown.length;
+	const suffix = terminalSection ? (hasTrailingNewline(markdown) ? eol : "") : `${eol}${eol}`;
+	return `${markdown.slice(0, section.bodyStart)}${appended}${suffix}${markdown.slice(section.end)}`;
 }

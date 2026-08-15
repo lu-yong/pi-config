@@ -84,26 +84,10 @@ export function getPaths(cwd: string): PathBundle {
 	};
 }
 
-// ---- string / markdown ----
+// ---- string ----
 
 export function trimEmptyLines(text: string): string {
 	return text.trim().replace(/\n{3,}/g, "\n\n");
-}
-
-export function extractSection(text: string, heading: string): string | undefined {
-	const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const match = text.match(new RegExp(`^## ${escaped}\\s*\\n+([\\s\\S]*?)(?:\\n## |$)`, "m"));
-	return match?.[1]?.trim() || undefined;
-}
-
-export function firstMeaningfulLine(text: string | undefined): string | undefined {
-	if (!text) return undefined;
-	for (const line of text.split(/\r?\n/)) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		return trimmed.replace(/^[-*]\s*/, "");
-	}
-	return undefined;
 }
 
 export function tailLines(text: string, count: number): string {

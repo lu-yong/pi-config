@@ -17,14 +17,17 @@ import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } fro
 import { goalContractFromDraft, mergeDraft } from "./draft.ts";
 import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
 import {
+	appendProgressTimeline,
+	PROGRESS_HEADINGS,
+	type ProgressHeading,
 	archivePlanningWorkspace,
 	createGoalDesignSkeleton,
 	finalizeGoalWorkspace,
+	getPlanningSnapshot,
 	hasPlanningFiles,
 	initializePlanningWorkspace,
 } from "./workspace.ts";
-import { buildGoalImplPrompt, buildGoalSetPrompt, getPlanningSnapshot } from "./prompts.ts";
-import { appendProgressTimeline } from "./markdown.ts";
+import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
 
 /**
  * Goal lifecycle — a single deep module that owns the whole goal lifecycle
@@ -108,7 +111,7 @@ type GoalLifecycleEffect =
 	| { type: "archive-implementation-workspace"; label: string }
 	| { type: "initialize-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "ensure-implementation-workspace"; goal: GoalContract; runId: number }
-	| { type: "append-progress"; heading: string; message: string }
+	| { type: "append-progress"; heading: ProgressHeading; message: string }
 	| { type: "clear-continuation" }
 	| { type: "finalize-goal-workspace"; completion: GoalCompletion }
 	| { type: "refresh" }
@@ -415,7 +418,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					return [
 						{ type: "archive-implementation-workspace", label: `before-goal-run-${runId}` },
 						{ type: "initialize-implementation-workspace", goal: state.goal, runId },
-						{ type: "append-progress", heading: "Timeline", message: `Goal implementation started (run ${runId})` },
+						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation started (run ${runId})` },
 						{ type: "clear-continuation" },
 						{ type: "refresh" },
 						{ type: "send-goal-impl", mode: "start" },
@@ -431,7 +434,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				queuedRunId = null;
 				return [
 					{ type: "ensure-implementation-workspace", goal: state.goal, runId },
-					{ type: "append-progress", heading: "Timeline", message: `Goal implementation resumed (run ${runId})` },
+					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation resumed (run ${runId})` },
 					{ type: "clear-continuation" },
 					{ type: "refresh" },
 					{ type: "send-goal-impl", mode: "resume" },
@@ -449,8 +452,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				queuedRunId = null;
 				recoveryPending = false;
 				return [
-					{ type: "append-progress", heading: "Blockers / Interruptions", message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
-					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+					{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
+					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
 					{ type: "clear-continuation" },
 					{ type: "refresh" },
 				];
@@ -496,8 +499,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [
-						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
-						{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+						{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
+						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
 						{ type: "clear-continuation" },
 						{ type: "refresh" },
 					];
@@ -519,8 +522,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [
-						{ type: "append-progress", heading: "Blockers / Interruptions", message: reason },
-						{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${reason}` },
+						{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
+						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
 						{ type: "clear-continuation" },
 						{ type: "notify", level: "warning", message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later." },
 						{ type: "refresh" },
@@ -560,8 +563,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			case "continuation-diagnostics":
 				if (state.status !== "paused" || state.impl.runId !== event.runId) return [];
 				return [
-					{ type: "append-progress", heading: "Blockers / Interruptions", message: state.impl.pausedReason },
-					{ type: "append-progress", heading: "Timeline", message: `Goal implementation paused: ${state.impl.pausedReason}` },
+					{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: state.impl.pausedReason },
+					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${state.impl.pausedReason}` },
 					{ type: "clear-continuation" },
 					{ type: "notify", level: "warning", message: "Goal implementation paused because the continuation could not be delivered. Retry /plan-goal-impl later." },
 					{ type: "refresh" },

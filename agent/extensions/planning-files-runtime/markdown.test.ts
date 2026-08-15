@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { finalizeProgressMarkdown, finalizeTaskPlanMarkdown } from "./markdown.ts";
+import { appendBulletToHeading, finalizeProgressMarkdown, finalizeTaskPlanMarkdown } from "./markdown.ts";
 
 const completion = { summary: "Goal shipped", evidence: ["focused tests pass"], runId: 7 };
 
@@ -24,12 +24,6 @@ describe("task-plan completion projection", () => {
 		assert.equal(finalizeTaskPlanMarkdown(once), once);
 	});
 
-	test("normalizes the legacy sole Next Action heading", () => {
-		const result = finalizeTaskPlanMarkdown(plan.replace("## Next Concrete Action", "## Next Action"));
-		assert.match(result, /## Next Concrete Action\n- None \(goal complete\)\./);
-		assert.doesNotMatch(result, /^## Next Action$/m);
-	});
-
 	test("appends missing live sections without regenerating content", () => {
 		const source = "# Task Plan\n\n## Findings\n- preserve\n";
 		const result = finalizeTaskPlanMarkdown(source);
@@ -39,13 +33,25 @@ describe("task-plan completion projection", () => {
 		assert.match(result, /## Blocker\n\[empty\]/);
 	});
 
-	test("rejects duplicate or conflicting live headings", () => {
+	test("rejects duplicate live headings", () => {
 		assert.throws(() => finalizeTaskPlanMarkdown(`${plan}\n## Blocker\nother\n`), /duplicate/);
-		assert.throws(() => finalizeTaskPlanMarkdown(plan.replace("## Next Concrete Action", "## Next Action\n\n## Next Concrete Action")), /duplicate or conflicting/);
+		assert.throws(() => finalizeTaskPlanMarkdown(`${plan}\n## Next Concrete Action\n- other\n`), /duplicate/);
+	});
+
+	test("rejects the removed legacy Next Action heading instead of duplicating sections", () => {
+		const source = "# Task Plan\n\n## Next Action\n- legacy\n";
+		assert.throws(() => finalizeTaskPlanMarkdown(source), /legacy "## Next Action" heading is no longer supported/);
+	});
+
+	test("append only strips a leading [empty] placeholder, not one inside a code fence", () => {
+		const source = "# Progress\n\n## Timeline\n```\n- [empty]\n```\n";
+		const result = appendBulletToHeading(source, "Timeline", "did work");
+		assert.match(result, /```\n- \[empty\]\n```/);
+		assert.match(result, /- did work/);
 	});
 
 	test("preserves CRLF and absence of a trailing newline", () => {
-		const source = "# Task Plan\r\n\r\n## Current Phase\r\nPhase 1\r\n\r\n## Next Action\r\n- work\r\n\r\n## Blocker\r\nold";
+		const source = "# Task Plan\r\n\r\n## Current Phase\r\nPhase 1\r\n\r\n## Next Concrete Action\r\n- work\r\n\r\n## Blocker\r\nold";
 		const result = finalizeTaskPlanMarkdown(source);
 		assert.ok(!result.includes("\n") || result.includes("\r\n"));
 		assert.ok(!result.endsWith("\n"));
@@ -88,5 +94,40 @@ describe("progress completion projection", () => {
 		const result = finalizeProgressMarkdown(source, completion, "2026-08-12T00:00:00.000Z");
 		assert.ok(result.includes(fenced));
 		assert.equal((result.match(/goal-completion:run-7/g) ?? []).length, 2);
+	});
+});
+
+describe("bullet appending", () => {
+	test("appends after an existing bullet and keeps blank-line separation", () => {
+		const source = "# Progress\n\n## Timeline\n- old\n\n## Verification\n- [empty]\n";
+		const result = appendBulletToHeading(source, "Timeline", "new");
+		assert.equal(result, "# Progress\n\n## Timeline\n- old\n- new\n\n## Verification\n- [empty]\n");
+	});
+
+	test("replaces the [empty] placeholder bullet", () => {
+		const source = "# Progress\n\n## Verification\n- [empty]\n";
+		const result = appendBulletToHeading(source, "Verification", "checked");
+		assert.equal(result, "# Progress\n\n## Verification\n- checked\n");
+	});
+
+	test("creates the heading when it is missing", () => {
+		const source = "# Progress\n\n## Timeline\n- old\n";
+		const result = appendBulletToHeading(source, "Verification", "checked");
+		assert.equal(result, "# Progress\n\n## Timeline\n- old\n\n## Verification\n- checked\n");
+	});
+
+	test("preserves CRLF line endings", () => {
+		const source = "# Progress\r\n\r\n## Timeline\r\n- old\r\n\r\n## Verification\r\n- [empty]\r\n";
+		const result = appendBulletToHeading(source, "Timeline", "new");
+		assert.equal(result, "# Progress\r\n\r\n## Timeline\r\n- old\r\n- new\r\n\r\n## Verification\r\n- [empty]\r\n");
+	});
+
+	test("ignores headings inside a fenced code block", () => {
+		const fenced = "```markdown\n## Timeline\n- example\n```";
+		const source = `# Progress\n\n## Notes\n${fenced}\n\n## Timeline\n- old\n`;
+		const result = appendBulletToHeading(source, "Timeline", "new");
+		assert.ok(result.includes(fenced));
+		assert.match(result, /## Timeline\n- old\n- new\n$/);
+		assert.equal((result.match(/- example/g) ?? []).length, 1);
 	});
 });

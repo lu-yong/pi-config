@@ -16,8 +16,7 @@ import {
 import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION } from "./types.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
 import { defaultGoalState, hasActiveGoal, writeGoalState } from "./state.ts";
-import { initializePlanningWorkspace } from "./workspace.ts";
-import { getPlanningSnapshot } from "./prompts.ts";
+import { getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
 import { buildWidgetLines } from "./ui.ts";
 
 const tempDirectories: string[] = [];

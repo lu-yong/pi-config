@@ -1,41 +1,6 @@
 import type { GoalDraft, GoalOverlayState, PlanningSnapshot } from "./types.ts";
-import {
-	extractSection,
-	firstMeaningfulLine,
-	getPaths,
-	readText,
-	tailLines,
-	truncate,
-} from "./utils.ts";
-import { readGoalState } from "./state.ts";
-import { hasPlanningFiles } from "./workspace.ts";
+import { readText, tailLines, truncate } from "./utils.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
-
-// ---- snapshot ----
-
-export function getPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
-	const paths = getPaths(cwd);
-	const taskPlan = readText(paths.files["task_plan.md"]);
-	const currentPhase = firstMeaningfulLine(extractSection(taskPlan, "Current Phase"));
-	const goalFromPlan = firstMeaningfulLine(extractSection(taskPlan, "Goal"));
-	const nextAction = firstMeaningfulLine(extractSection(taskPlan, "Next Concrete Action"))
-		?? firstMeaningfulLine(extractSection(taskPlan, "Next Action"));
-	const blocker = firstMeaningfulLine(extractSection(taskPlan, "Blocker"));
-	return {
-		planningRoot: paths.root,
-		files: paths.files,
-		goalDesignPath: paths.goalDesign,
-		tasksDir: paths.tasksDir,
-		goalStatePath: paths.goalState,
-		exists: hasPlanningFiles(cwd),
-		currentPhase,
-		goalFromPlan,
-		nextAction,
-		blocker,
-		goalState: readGoalState(cwd),
-		resumedFromPreviousSession,
-	};
-}
 
 // ---- draft summary ----
 

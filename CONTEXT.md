@@ -21,3 +21,6 @@ _避免_：命令白名单、bash 校验器
 
 **Drafting guard（草拟守卫）**：goal drafting 阶段裁决 write/edit/bash 工具调用的唯一守卫模块（`agent/extensions/planning-files-runtime/guards.ts` 的 `gateDraftingToolCall`）——drafting 状态判断、planning 目录判定、bash 委托 Read-only command policy 的 drafting profile，以及全部拒绝话术都在其后。Pi 适配层只转发它的判决。
 _避免_：工具拦截器、hook 校验
+
+**Planning workspace（规划工作区）**：持有 planning 文件格式全部知识（模板、标题名、解析、追加、完结、归档）的唯一深模块（`agent/extensions/planning-files-runtime/workspace.ts`）。调用方只见语义操作，不见 markdown 格式；Goal lifecycle 的效果执行委托它落盘。
+_避免_：markdown 工具集、文件助手

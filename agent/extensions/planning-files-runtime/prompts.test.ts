@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildGoalSetPrompt, buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
+import { buildGoalSetPrompt, buildPlanUpdatePrompt } from "./prompts.ts";
+import { getPlanningSnapshot } from "./workspace.ts";
 import { defaultGoalState } from "./state.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 

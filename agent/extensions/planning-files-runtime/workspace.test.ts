@@ -7,6 +7,8 @@ import { afterEach, test } from "node:test";
 import {
 	archivePlanningWorkspace,
 	finalizeGoalWorkspace,
+	getPlanningSnapshot,
+	initializePlanningWorkspace,
 	type GoalWorkspaceFileOps,
 	type PlanningArchiveFileOps,
 } from "./workspace.ts";
@@ -40,6 +42,39 @@ function seed(cwd: string): { taskPlan: string; progress: string; findings: stri
 	writeText(path.join(paths.tasksDir, "task-01.md"), taskCard);
 	return { taskPlan, progress, findings, goalDesign, taskCard };
 }
+
+test("initializes a workspace whose written files read back through the snapshot", () => {
+	const cwd = makeCwd();
+	const goal = {
+		objective: "Ship the facade",
+		successCriteria: ["all tests pass"],
+		constraints: ["no new deps"],
+		outOfScope: ["unrelated refactors"],
+		blockerRule: "Ask the user.",
+	};
+	initializePlanningWorkspace(cwd, goal, 4);
+
+	const snapshot = getPlanningSnapshot(cwd, false);
+	assert.equal(snapshot.exists, true);
+	assert.equal(snapshot.goalFromPlan, goal.objective);
+	assert.equal(snapshot.currentPhase, "Phase 1");
+	assert.equal(snapshot.nextAction, "[Describe the immediate next step]");
+	assert.equal(snapshot.blocker, "[empty]");
+
+	const paths = getPaths(cwd);
+	assert.match(readText(paths.files["findings.md"]), /## Goal Context\n- Objective: Ship the facade/);
+	assert.match(readText(paths.files["progress.md"]), /## Timeline\n- \[.+\] Goal implementation started \(run 4\): Ship the facade/);
+});
+
+test("initializes an empty workspace without a goal contract", () => {
+	const cwd = makeCwd();
+	initializePlanningWorkspace(cwd);
+
+	const snapshot = getPlanningSnapshot(cwd, false);
+	assert.equal(snapshot.goalFromPlan, "[One sentence describing the end state]");
+	assert.equal(snapshot.currentPhase, "Phase 1");
+	assert.match(readText(getPaths(cwd).files["progress.md"]), /Planning workspace initialized/);
+});
 
 test("finalizes task_plan.md and progress.md together, preserving unrelated sections", () => {
 	const cwd = makeCwd();
