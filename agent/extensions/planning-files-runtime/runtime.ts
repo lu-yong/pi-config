@@ -15,6 +15,7 @@ import type {
 import { normalizeString } from "./utils.ts";
 import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
+import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
@@ -192,13 +193,23 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.registerCommand("plan-new", {
 		description: "Initialize or reset .pi/planning and clear any current goal overlay.",
 		handler: async (_args, ctx) => {
-			archivePlanningWorkspace(ctx.cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-reset" });
-			initializePlanningWorkspace(ctx.cwd);
-			const lifecycle = lifecycleFor(ctx.cwd);
-			const result = lifecycle.handle({ type: "reset" }, contextFor(ctx));
-			notifyRejection(ctx, result);
-			if (result.failure || result.rejection) return;
-			ctx.ui.notify("Planning workspace reset. Goal overlay cleared.", "info");
+			runPlanNewCommand(
+				{
+					cwd: ctx.cwd,
+					isIdle: () => ctx.isIdle(),
+					notify: (message, level) => ctx.ui.notify(message, level),
+				},
+				{
+					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-reset" }),
+					initialize: (cwd) => initializePlanningWorkspace(cwd),
+					reset: () => {
+						const lifecycle = lifecycleFor(ctx.cwd);
+						const result = lifecycle.handle({ type: "reset" }, contextFor(ctx));
+						notifyRejection(ctx, result);
+						return !(result.failure || result.rejection);
+					},
+				},
+			);
 		},
 	});
 
