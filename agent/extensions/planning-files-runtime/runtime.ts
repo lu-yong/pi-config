@@ -17,23 +17,8 @@ import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspa
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
-import { isInPlanningDir, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
-import { explainUnsafeCommand, type UnsafeCommandReason } from "../command-policy/policy.ts";
+import { isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
 import { createGoalLifecycle, createSetTimeoutTimer, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
-
-const DRAFTING_BASH_ADVICE =
-	"Goal drafting bash is fail-closed: every segment of a compound command must be an approved read-only command, and network commands (curl, wget, ping, nslookup, traceroute, whois, host) are blocked. Prefer the read tool for file contents, and use save_plan_goal_draft / commit_plan_goal instead of mutating the workspace.";
-
-/**
- * Turn a policy rejection into a message that names the offending segment, so a
- * blocked compound command does not read as "compound commands are unsupported".
- */
-function draftingBashRejection(reason: UnsafeCommandReason): string {
-	if (reason.kind === "unparsable") {
-		return `Goal drafting blocked this bash command: it could not be parsed into plain read-only segments. Redirects other than stderr to /dev/null (2>/dev/null), backticks, $(), subshells, and unbalanced quotes are always rejected. ${DRAFTING_BASH_ADVICE}`;
-	}
-	return `Goal drafting blocked this bash command at segment \`${reason.segment}\`: that segment is not an approved read-only command. The remaining segments were not the problem — rerun without this one. ${DRAFTING_BASH_ADVICE}`;
-}
 
 /**
  * Pi is an adapter around the Goal lifecycle. goal-lifecycle.ts owns
@@ -289,28 +274,8 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
 		redirectPlanningPath(event as { toolName: string; input: Record<string, unknown> }, ctx.cwd);
-		const goalState = lifecycle.getState();
-		if (goalState.status === "drafting") {
-			if (event.toolName === "write") {
-				const filePath = typeof event.input.path === "string" ? event.input.path : "";
-				if (!isInPlanningDir(filePath, ctx.cwd)) {
-					return { block: true, reason: "Goal drafting does not allow creating files outside .pi/planning/. Use save_plan_goal_draft / commit_plan_goal." };
-				}
-			}
-			if (event.toolName === "edit") {
-				const filePath = typeof event.input.path === "string" ? event.input.path : "";
-				if (!isInPlanningDir(filePath, ctx.cwd)) {
-					return { block: true, reason: "Goal drafting only allows editing files within .pi/planning/." };
-				}
-			}
-			if (event.toolName === "bash") {
-				const command = typeof event.input.command === "string" ? event.input.command : "";
-				const unsafe = explainUnsafeCommand(command, "drafting");
-				if (unsafe) {
-					return { block: true, reason: draftingBashRejection(unsafe) };
-				}
-			}
-		}
+		const blocked = gateDraftingToolCall(lifecycle.getState().status, event.toolName, event.input as Record<string, unknown>, ctx.cwd);
+		if (blocked) return blocked;
 		if (isMeaningfulProgressToolCall(event.toolName, event.input as Record<string, unknown>)) {
 			lifecycle.handle({ type: "progress-tool-called" }, contextFor(ctx));
 		}

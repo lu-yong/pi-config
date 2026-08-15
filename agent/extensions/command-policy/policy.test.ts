@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { explainUnsafeCommand, isSafeShellCommand } from './policy.ts';
+import { explainUnsafeCommand, isSafeShellCommand, NETWORK_COMMANDS } from './policy.ts';
 
 describe('read-only command policy', () => {
   test('allows read-only shell commands and validates every compound segment', () => {
@@ -136,6 +136,16 @@ describe('read-only command policy', () => {
     // The same network reads stay allowed under the standard profile.
     assert.equal(isSafeShellCommand('curl -fsSL https://example.com'), true);
     assert.equal(isSafeShellCommand('ping -c 1 example.com', 'standard'), true);
+  });
+
+  test('exported network-command list pins the drafting profile surface', () => {
+    // Callers derive user-facing messages from this export; membership is the
+    // contract, so an accidental deletion must fail here, not silently shrink
+    // the drafting restrictions and every message describing them.
+    assert.deepEqual(
+      [...NETWORK_COMMANDS].sort(),
+      ['curl', 'host', 'nslookup', 'ping', 'traceroute', 'wget', 'whois'],
+    );
   });
 
   test('names the rejected segment so callers can explain the block', () => {

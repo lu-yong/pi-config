@@ -20,7 +20,12 @@ export type UnsafeCommandReason =
   | { kind: 'unparsable' }
   | { kind: 'segment'; segment: string };
 
-const NETWORK_COMMANDS = new Set([
+/**
+ * Commands the 'drafting' profile additionally forbids. Exported so callers
+ * that describe the policy to the model (rejection messages, prompts) can
+ * derive the list instead of hand-copying it.
+ */
+export const NETWORK_COMMANDS: ReadonlySet<string> = Object.freeze(new Set([
   'curl',
   'host',
   'nslookup',
@@ -28,7 +33,7 @@ const NETWORK_COMMANDS = new Set([
   'traceroute',
   'wget',
   'whois',
-]);
+]));
 
 const SAFE_COMMANDS = new Set([
   'apropos',

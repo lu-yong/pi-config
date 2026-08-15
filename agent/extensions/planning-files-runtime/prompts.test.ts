@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { buildGoalSetPrompt, buildPlanUpdatePrompt, getPlanningSnapshot } from "./prompts.ts";
 import { defaultGoalState } from "./state.ts";
+import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 test("goal drafting prompt explains the fail-closed bash policy", () => {
 	const state = defaultGoalState();
@@ -14,7 +15,7 @@ test("goal drafting prompt explains the fail-closed bash policy", () => {
 
 	assert.ok(prompt.includes("every segment is an approved read-only command"));
 	assert.ok(prompt.includes("Redirects other than stderr to /dev/null (`2>/dev/null`), backticks, $(), subshells, and unknown commands are always rejected."));
-	assert.ok(prompt.includes("curl, wget, ping, nslookup, traceroute, whois, host"));
+	assert.ok(prompt.includes(`Network commands are blocked during drafting: ${[...NETWORK_COMMANDS].join(", ")}.`));
 	assert.ok(prompt.includes("`pwd && git status --short`"));
 });
 

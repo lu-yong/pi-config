@@ -9,6 +9,7 @@ import {
 } from "./utils.ts";
 import { readGoalState } from "./state.ts";
 import { hasPlanningFiles } from "./workspace.ts";
+import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 // ---- snapshot ----
 
@@ -79,7 +80,7 @@ export function buildGoalSetPrompt(goalState: GoalOverlayState, supplementalInpu
 		"Read-only bash protocol for goal drafting:",
 		"  - Bash is fail-closed. Compound commands (&&, ||, ;, |, newlines) are allowed only when every segment is an approved read-only command.",
 		"  - Redirects other than stderr to /dev/null (`2>/dev/null`), backticks, $(), subshells, and unknown commands are always rejected.",
-		"  - Network commands are blocked during drafting: curl, wget, ping, nslookup, traceroute, whois, host.",
+		`  - Network commands are blocked during drafting: ${[...NETWORK_COMMANDS].join(", ")}.`,
 		"  - Prefer the read tool for file contents; do not assume helpers such as sed are whitelisted.",
 		"  - Example allowed: `pwd && git status --short`. Example rejected: `rg --files | sed -n '1,240p'` (sed not whitelisted).",
 		"",
