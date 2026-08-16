@@ -9,6 +9,8 @@ agent/sessions/
 # npm 依赖（可还原）
 agent/npm/node_modules/
 agent/npm/package-lock.json
+agent/extensions/node_modules/
+agent/extensions/package-lock.json
 
 # 本地配置（不入库）
 agent/settings.json
