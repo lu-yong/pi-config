@@ -1,6 +1,7 @@
 # 敏感信息 - API 密钥和认证凭据
 agent/auth.json
 agent/models-store.json
+agent/models.json
 agent/trust.json
 
 # 会话记录 - 个人聊天历史
@@ -20,3 +21,5 @@ agent/.pi-hermes-locks*
 agent/pi-hermes-memory
 
 agent/cache
+agent/fff
+agent/projects-memory
