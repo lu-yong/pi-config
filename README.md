@@ -70,7 +70,16 @@ OpenAI 模型使用 `openai-responses`，AnyRouter 的 Claude 模型使用 `anth
 
 - **文件**：`agent/extensions/qna/`
 - **功能**：普通 TUI 对话在 agent settled 后自动抽取回复中的用户问题，并通过共享 question-taking 界面收集答案；也可手动运行 `/qna`。
+- **触发判定**：自动触发前先剥离围栏代码块、行内代码和 URL，再只在净化后文本的**末尾 400 字符**内判定问号，避免 `a ? b : c`、`a?.b`、query string、正文中段的反问句造成误触发。去重指纹仍基于原始回复文本。
+- **配置**（`agent/settings.json` 顶层 `qna` 块，缺失/损坏一律安全降级到默认值）：
+
+  | 键 | 默认 | 说明 |
+  |---|---|---|
+  | `autoExtract` | `true` | 自动触发开关；关掉后 `/qna` 手动入口仍然可用 |
+  | `model` | 未设置 | 抽取用的廉价模型 `{ provider, id, thinking }`。未配置时静默使用主模型；已配置但解析不出或取不到 API key 时回退到主模型**并提示**。`thinking` 取 `minimal`/`low`/`medium`/`high`/`xhigh`/`max`，非法值保留该模型但丢弃 thinking 并提示 |
+
 - **目标模式限制**：当 planning-files-runtime 的 goal 状态为 `active` 时，自动 Q&A 被抑制，手动 `/qna` 会提示先暂停或完成目标，避免打断目标的自动 continuation。
+- **测试**：`node --test agent/extensions/qna/*.test.ts`
 
 ### readme-check
 
