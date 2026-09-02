@@ -3,11 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync-pi": "V=$(pi --version) && npm install --save-dev --save-exact @earendil-works/pi-ai@$V @earendil-works/pi-coding-agent@$V @earendil-works/pi-tui@$V"
+    "sync-pi": "V=$(npm exec --global --no -- pi --version) && [ -n \"$V\" ] && npm install --save-dev --save-exact @earendil-works/pi-ai@$V @earendil-works/pi-coding-agent@$V @earendil-works/pi-tui@$V"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-coding-agent": "0.84.2",
-    "@earendil-works/pi-tui": "0.84.2"
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1"
+  },
+  "allowScripts": {
+    "@google/genai@1.52.0": true,
+    "protobufjs@7.6.5": true
   }
 }
