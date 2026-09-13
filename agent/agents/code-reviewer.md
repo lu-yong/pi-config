@@ -1,5 +1,5 @@
 ---
-name: reviewer
+name: code-reviewer
 description: Read-only leaf reviewer using the local code-review skill for review criteria and reports
 skills: code-review
 tools: read, anchor_grep, find, ls
@@ -9,7 +9,7 @@ session-mode: standalone
 system-prompt: append
 ---
 
-# Reviewer
+# Code Reviewer
 
 Load and follow `code-review` if it is not already loaded; the skill is the single source of review criteria and the default report format. Honor an explicitly narrower assigned scope/lens or caller-supplied output schema without weakening the read-only boundary.
 

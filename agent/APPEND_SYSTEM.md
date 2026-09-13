@@ -1,21 +1,11 @@
-## Delegation — Pi Herdr Agents
+## Local Delegation Policy
 
-Use `pi-herdr-agents`' public `subagent` tools for delegated Pi work. They require Pi to run inside Herdr (`HERDR_ENV=1`). Do not launch child Pi processes through raw shell commands.
+Use `pi-herdr-agents`' own tool guidance for delegation, model selection, asynchronous delivery, and worktree lifecycle. Keep local policy limited to this environment's differences:
 
-- Give each child one bounded outcome, relevant context, allowed files, verification, and an explicit commit/no-commit instruction. Children are leaves unless explicitly authorized to delegate.
-- Select an exact authenticated `provider/model-id` from the live catalog and set a supported `thinking` level on every launch. Choose a fast model for bounded reconnaissance, a mid-tier model for ordinary implementation/review, and a frontier model for hard architecture/security/diagnosis. Check the model's supported levels; `low` and `medium` are not universal.
-- Independent review must use a different underlying model family from the producer. Changing only the provider for the same model family is not independent review.
-- `tools` overrides replace the role's entire allowlist; they do not merge with it or inherit the parent's restrictions. With the installed hashline editor, writers need `replace`, `insert`, `anchor_grep`, and `undo_last_change` rather than the bundled worker's `edit`. Verify required tools are registered; unknown names can be silently ignored.
-- Use ordinary panes (omit `worktree`) for read-only tasks and single/sequential writers. Record the existing diff before a shared-checkout writer runs; do not edit its assigned files concurrently.
-- Only parallelize independent writes in unique managed worktrees based on committed state. Uncommitted parent changes are not copied. The parent reviews, integrates, verifies, and explicitly cleans up retained worktrees; children must not push, merge, or remove them.
-- Calls return immediately; results arrive automatically. Continue independent work or end the turn. Do not poll, sleep, tail sessions, or use `subagents_list` to check progress; that tool is for discovering role definitions.
-- Use `subagent_send` only after a persistent specialist's result arrives. Use `subagent_resume` only for ordinary non-persistent sessions; worktree follow-up stays in the retained checkout. `subagent_interrupt` cancels a turn, not the process.
-
-### Read-only delegation
-
-The public `subagent` API has no arbitrary CLI-argument field and does not automatically propagate the parent's `--readonly` flag. Never bypass parent restrictions through a child.
-
-For read-only parents, exploration, and report-only review, explicitly use `tools: "read,anchor_grep,find,ls"`, omit `worktree`, and forbid edits, installs, commits, generated artifacts, and further delegation. The parent supplies any required Git diff or command evidence within its own restrictions. Do not add `bash` merely to work around this boundary: `read,bash` is not a read-only sandbox. Tool allowlists restrict model-callable tools, not the normal host permissions of Pi or installed extensions.
+- Reuse package roles unless a task calls for a purpose-specific local role. Local `code-reviewer` uses the `code-review` skill; it does not replace the package's generic `reviewer`.
+- For a write-enabled bundled `worker` in this hashline environment, supply `tools: "read,bash,write,replace,insert,anchor_grep,undo_last_change,find,ls"` instead of its `edit` defaults. Tool overrides replace the whole list; other specialists must retain their required registered capabilities without exceeding the parent's restrictions.
+- The local `--readonly` flag does not automatically propagate to children. For a read-only parent, exploration, or report-only review, explicitly restrict tools to `read,anchor_grep,find,ls` and prohibit writes, installs, commits, generated artifacts, and further delegation. Never use a child to bypass the parent's restrictions.
+- Supply required Git or command evidence to shell-less children within the parent's restrictions; `/goal-review` prepares this evidence for `code-reviewer`. Do not add `bash` merely to bypass a read-only boundary. Tool allowlists are not a process/extension sandbox.
 
 ## Blocking Commands — Use Herdr Panes
 

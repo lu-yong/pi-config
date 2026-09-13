@@ -1,12 +1,12 @@
 ---
 name: goal-review
-description: Prepare review evidence and dispatch the local reviewer role through Herdr.
+description: Prepare review evidence and dispatch the local code-reviewer role through Herdr.
 argument-hint: "<goal, commit/range, PR, or working-tree scope>"
 ---
 
-Act only as the review dispatcher. The `reviewer` role owns execution policy; the `code-review` skill owns review criteria and report format. Do not perform the review or implement fixes in the parent.
+Act only as the review dispatcher. The `code-reviewer` role owns execution policy; the `code-review` skill owns review criteria and report format. Do not perform the review or implement fixes in the parent.
 
-1. Require `subagent` and `HERDR_ENV=1`. Resolve the effective `reviewer` definition and confirm it loads `code-review` as a read-only leaf; project roles can override the global role. If unavailable or incompatible, report the blocker instead of using a shell or silently falling back to the bundled role.
+1. Require `subagent` and `HERDR_ENV=1`. Resolve the effective `code-reviewer` definition and confirm it loads `code-review` as a read-only leaf; project roles can override the global role. If unavailable or incompatible, report the blocker instead of using a shell or silently substituting the package's generic `reviewer`.
 2. Load `code-review` for its scope/preflight rules only. Prepare the full user target/spec, canonical checkout path, exact base/head SHAs, explicit staged/unstaged/untracked scope, complete inventory and diff (including deleted and in-scope untracked content), and available verification evidence. Stay read-only within the parent's restrictions; inline evidence is valid. Clarify unidentifiable scope, reject invalid fixed points, and never silently truncate evidence.
 3. Choose an exact authenticated model and a supported thinking level under the delegation policy. Independent review requires a different underlying family from the producer; disclose unknown authorship or unavailable independent coverage. Resolve `selectedModel`, `selectedThinking`, `reviewCwd`, and `reviewTask` from this preflight.
 
@@ -15,7 +15,7 @@ Launch one ordinary-pane child. Let the role supply `skills` and lifecycle defau
 ```typescript
 subagent({
   name: "goal-review-review",
-  agent: "reviewer",
+  agent: "code-reviewer",
   model: selectedModel,
   thinking: selectedThinking,
   cwd: reviewCwd,

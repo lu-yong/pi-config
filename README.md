@@ -123,7 +123,7 @@ provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 
 | `grilling` | 对计划或设计进行全面压力测试 |
 | `handoff` | 将当前会话整理成交接文档供其他 agent 继续工作 |
 | `herdr` | 用户明确要求时，通过 Herdr CLI 检查/控制 pane、tab、workspace 和普通终端进程（本地软链接） |
-| `impl-with-spawn` | 通过 Herdr `subagent` 编排实现、修复和审查；保留原技能名，仅显式调用 |
+| `impl-with-spawn` | 父 agent 的实现编排：拆分任务、按需选择角色、排序、派发、验证与整合；仅显式调用 |
 | `improve-codebase-architecture` | 扫描代码库、生成架构改进报告并通过质询推进选择的改进项 |
 | `prototype` | 构建一次性原型验证设计问题 |
 | `redmine` | 查询、创建、更新、分析和组织 Nationalchip Redmine 工作项 |
@@ -146,40 +146,43 @@ provider 扩展中的 API Key 均通过环境变量注入；`agent/models.json` 
 
 ### pi-herdr-agents
 
-- **运行环境**：安装 Herdr 及其 CLI，并从 Herdr 内启动 Pi（`HERDR_ENV=1`）；安装或改动资源后执行 `/reload` 或重启 Pi。
-- **配置状态**：本地 `agent/settings.json` 已安装 `npm:pi-herdr-agents`；原 overlay/spawn 配置已删除，不再使用旧的 dispatch、hands-free、monitor 模式。
-- **调用方式**：`subagent` 返回启动确认，完成结果自动唤醒父 agent；不需要轮询、读取运行中的会话日志或调用 `subagents_list` 查进度。后者仅用于发现可用角色。
-- **角色发现**：项目 `.pi/agents/` > 全局 `agent/agents/` > 包内定义；常用叶子角色为 `scout`、`worker`、`reviewer`。
-- **本地 reviewer**：`agent/agents/reviewer.md` 覆盖包内同名角色，自动加载 `code-review` skill；角色只维护只读工具、独立会话、禁止继续委派和自动结束策略。审查标准与默认报告格式由 skill 统一维护，三条审查轴在同一个子 agent 内串行执行；不固定模型默认值。
-- **配置位置**：包的可选覆盖文件是安装根目录的 `config.json`（当前 npm 路径为 `agent/npm/node_modules/pi-herdr-agents/config.json`），不是旧 spawn 配置的改名版。它可能被包更新覆盖；本仓库的编排入口逐次显式传参，不修改已安装包。
-- **交互与恢复**：`subagent_interrupt` 只中断当前 turn，不终止会话；普通非持久子会话用 `subagent_resume` 继续，持久专家收到结果后用 `subagent_send` 追加工作，结束时用 `subagent_stop`。`interactive` 控制状态通知，不等于后台服务托管。
+已采用 `pi-herdr-agents` 作为 Pi 子 agent 的运行机制。需要安装 Herdr 及其 CLI，并从 Herdr 内启动 Pi（`HERDR_ENV=1`）；修改 prompt/全局说明后执行 `/reload` 或重启 Pi。
 
-### 模型、工具与只读边界
+扩展的工具说明已包含任务拆分、模型与 thinking 选择、异步回传、worktree 和恢复/清理规则。本地不再维护第二份通用委派手册；`agent/APPEND_SYSTEM.md` 只补充 hashline、只读边界和普通终端进程等本地策略。
 
-- 每次显式指定实时认证目录中的完整 `provider/model-id` 和该模型支持的 `thinking`，不再依赖固定的旧 provider 路由表。先按任务选 fast / mid / frontier 档，再选推理强度；并非所有模型都支持 `low` 或 `medium`。
-- 独立审查必须与产出模型属于不同底层模型家族；仅更换同家族模型的 API provider 不算独立审查。无法满足时应报告覆盖缺口。
-- `tools` 参数**替换**角色的整份工具列表，不与父会话限制求交。当前 hashline 编辑器下，实现流程显式使用 `read,bash,write,replace,insert,anchor_grep,undo_last_change,find,ls`，而不是包内 worker 的 `edit` 默认值。
-- 探索/只读审查显式限制为 `read,anchor_grep,find,ls`，并禁止写入、安装、提交和继续派生 agent。需要的 Git diff、命令与测试证据由父 agent 在自身权限内提供。
-- 父会话的 `--readonly` **不会自动传递**给子进程，公开 `subagent` 参数也没有任意 CLI flags。`read,bash` 不构成只读沙箱；工具列表同样不是针对进程、扩展及其内部状态写入的安全沙箱。
+### 角色与本地适配
 
-### 并发与 worktree
+`scout`、`worker`、`reviewer` 使用包内定义，不再提供同名本地覆盖。只保留专用 `code-reviewer`，与包内通用 reviewer 并存。项目 `.pi/agents/` 仍优先于全局 `agent/agents/` 和包内定义。
 
-- 只读任务使用普通 pane，省略 `worktree`；单个或串行写任务可用父 checkout，但要记录原有 diff 并避免父子同时改文件。
-- 仅独立的并行写任务使用各自唯一分支的 managed worktree；默认基于**已提交的 HEAD**，不会复制父工作区未提交/未跟踪内容。存在依赖或共同接口的修改仍需串行。
-- 父 agent 负责检查实际 diff、验证和整合；共享 planning/progress 文件也只由父 agent 更新。子 agent 默认不 push、merge、deploy 或自行清理工作树。
-- worktree 完成后会保留，且不支持 `subagent_resume` 或模型 fallback 列表。后续工作留在原 checkout，确认成果已保留后才显式清理；审查该结果只需把普通 reviewer 的 `cwd` 指向原 worktree。
+| 角色 | 来源 | 职责 |
+|---|---|---|
+| `scout` | 包内 | 代码调查、定位相关文件与证据 |
+| `worker` | 包内 | 执行明确任务、验证并交接 |
+| `reviewer` | 包内 | 使用包内通用审查规范 |
+| `code-reviewer` | `agent/agents/code-reviewer.md` | 无 shell 的专用评审，加载 `code-review` skill，使用其审查标准与默认报告格式 |
 
-### 编排入口与试用
+`code-reviewer` 保持独立会话、禁止继续委派、完成后自动结束；skill 的审查轴在一个子 agent 内串行执行，不固定模型或 thinking 默认值。重命名只区分角色用途，不增加工具权限。
+
+原生 scout/reviewer 的默认工具包含 `bash`，worker 的默认工具包含 `edit`。hashline 兼容和只读限制由 `agent/APPEND_SYSTEM.md` 的本地调用策略处理，不通过复制角色说明实现：写任务按需覆盖编辑工具，探索/只读评审显式收窄为 `read,anchor_grep,find,ls`。最终能力取决于有效角色与本次调用参数；`tools` 覆盖会替换整份列表，不是合并。
+
+父会话的 `--readonly` 不会自动传给子进程，工具列表也不是进程/扩展沙箱。无 shell 的子 agent 所需的 Git diff、命令或测试证据由父 agent 在自身权限内提供。
+
+包级可选配置位于安装根目录的 `config.json`（当前 npm 路径：`agent/npm/node_modules/pi-herdr-agents/config.json`），可能被包更新覆盖。本地角色直接维护在 `agent/agents/`，不修改安装包。
+
+### 原生入口与保留的工作流
 
 | 入口 | 用途 |
 |---|---|
-| `/subagent list` | 查看包内、全局和项目角色定义 |
-| `/explore-codebase [主题]` | 在普通 pane 中派出 2–4 个只读 scout，自动收齐结果后汇总 |
-| `/skill:impl-with-spawn <任务>` | 按依赖拆分实现/修复任务，显式配置 hashline 工具并由父 agent 验证 |
-| `/goal-review <目标或变更范围>` | 薄入口：按 `code-review` 做范围预检、准备证据并派发本地 `reviewer`；不重复定义审查规范 |
-| `/skill:orchestrate <审查范围>` | 使用包提供的多审查者流程，父 agent 汇总证据 |
+| `/subagent list` | 查看有效角色及其来源 |
+| `/subagent scout <问题>` | 使用包内 scout 调查代码；需要并行调查时向父 agent 说明 |
+| `/subagent worker <明确任务>` | 使用包内 worker 实现任务，启动时应用本地工具适配 |
+| `/subagent reviewer <范围与证据>` | 使用包内通用 reviewer |
+| `/subagent code-reviewer <范围与证据>` | 直接使用本地 `code-review` 专用评审者 |
+| `/skill:impl-with-spawn <任务>` | 拆分任务并为各子任务选择合适角色，再排序、派发、检查与整合；不限于 worker |
+| `/goal-review <目标或变更范围>` | 先准备范围与差异证据，再派发本地 `code-reviewer` |
+| `/skill:orchestrate <审查范围>` | 使用包提供的多审查者流程 |
 
-例如可先试 `/explore-codebase 当前仓库的扩展加载与测试入口`，观察 pane 启动和完成后结果自动回传。
+`/subagent` 快捷命令会请求父 agent 调用工具，不会原生执行完整的证据准备或多阶段流水线。`code-reviewer` 不依赖 `/goal-review` 才能运行，但直接调用时仍需完整范围和差异证据；需要父 agent 先准备这些输入时使用 `/goal-review`。包内 reviewer 同样要求明确范围与证据，不能把其默认 shell 能力理解为自动补齐所有输入。
 
 ### 普通交互命令与长期进程
 

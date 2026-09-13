@@ -166,7 +166,7 @@ Work   →  在已有 Map 上前进
 
 | 类型 | 用途 | 常见本地能力 |
 |---|---|---|
-| `research` | 查清事实 | `/explore-codebase` 等 |
+| `research` | 查清事实 | `/subagent scout <问题>`，只读调查当前代码库 |
 | `grilling` | 和你对决策 | `grill-with-docs` |
 | `prototype` | 廉价验证手感 | `prototype` |
 | `setup` | 解锁后续决策的准备工作 | 无固定 skill |
@@ -224,7 +224,7 @@ Work   →  在已有 Map 上前进
 | 场景 | 更好选择 |
 |---|---|
 | 「帮我实现这个已定方案」 | Planning / 直接实现 |
-| 「这段代码怎么读」 | `/explore-codebase` |
+| 「这段代码怎么读」 | `/subagent scout <问题>` |
 | 「列一下今天要改的文件」 | 普通清单，不必开 Map |
 | 「顺手把 planning-files-runtime 也融进来」 | 明确 Out of Scope，另开图或以后再说 |
 

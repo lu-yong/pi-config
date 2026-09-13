@@ -152,7 +152,7 @@ Each Ticket is a taskmd record under the Active Map.
 
 | Type | Intent | Default local capability |
 |---|---|---|
-| `research` | Gather facts needed for a decision | `/explore-codebase` for in-repo research |
+| `research` | Gather facts needed for a decision | `/subagent scout <question>` for read-only in-repo research |
 | `prototype` | Cheap concrete artifact to react to | `prototype` skill |
 | `grilling` | Live decision interview | `grill-with-docs` (fallback `/grill-me`) |
 | `setup` | Prep work that unblocks a later decision | no dedicated skill; checklist / shell / manual prep |
@@ -303,7 +303,7 @@ Smart entry routing:
 | Personal Wayfinder | Decision map while foggy |
 | taskmd | Local backend + human Web UI |
 | Planning Files Runtime | Execution-phase progress after decisions are clear |
-| `grill-with-docs` / `prototype` / `/explore-codebase` | Local capabilities used by Ticket types |
+| `grill-with-docs` / `prototype` / `scout` subagent | Local capabilities used by Ticket types |
 
 Never confuse:
 
