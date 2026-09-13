@@ -23,3 +23,7 @@ agent/pi-hermes-memory
 agent/cache
 agent/fff
 agent/projects-memory
+
+.DS_Store
+agent/extensions/herdr-agent-state.ts
+
