@@ -55,9 +55,9 @@ Parse the user arguments (`$@`) as follows:
 
 ### `ui`
 - ensure workspace exists (or explain that init/chart is required)
-- start taskmd Web UI for human inspection with:
-  `interactive_shell({ command: "taskmd -d .pi/wayfinder/tickets web start --port 8080 --open", mode: "dispatch", background: true })`
-- report URL (`http://localhost:8080`) and session id; user can `/attach` if needed
+- follow the `Open Web UI` procedure in `TASKMD-CONVENTION.md`: use a dedicated Herdr terminal pane with cwd preserved and no focus change, not a Pi subagent
+- if Herdr is unavailable, provide the foreground command for the user's terminal instead of silently starting a background job
+- report the actual startup/readiness evidence, URL (default `http://localhost:8080`), pane ID, and how to stop it; command submission alone does not prove the server is ready
 - agent keeps using CLI for mutations
 
 ### `help`

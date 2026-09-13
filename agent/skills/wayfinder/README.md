@@ -99,7 +99,7 @@ Work   →  在已有 Map 上前进
 | `/wayfinder chart <topic>` | 开新图（需要 topic；会先短澄清再落盘） |
 | `/wayfinder work [名字]` | 推进一张 Current Ticket（可点名） |
 | `/wayfinder status` | 只读状态，不改数据 |
-| `/wayfinder ui` | 后台开 taskmd Web UI（给人看） |
+| `/wayfinder ui` | 在独立 Herdr pane 开 taskmd Web UI（给人看，不切走焦点） |
 | `/wayfinder help` | 命令说明 |
 
 数据目录（本地，通常被 `.pi/` gitignore）：
@@ -145,7 +145,8 @@ Work   →  在已有 Map 上前进
 /wayfinder ui
 ```
 
-默认后台启动，浏览器打开 `http://localhost:8080`（端口以实际为准）。  
+在 Herdr 内运行 Pi（`HERDR_ENV=1`）时，默认在独立终端 pane 启动，不切走当前焦点；浏览器打开 `http://localhost:8080`（端口以实际为准）。agent 会报告 pane ID 和启动证据，不能仅凭命令已发送就宣称服务就绪。
+没有 Herdr 时提供手动终端命令；没有 taskmd 时先按前置条件处理，不会静默安装。可在服务 pane 中按 Ctrl+C 停止；该服务不是 Pi 子 agent，也不由子 agent 完成通知管理。
 **人**用 Web UI 查看/偶尔手改；**agent** 仍用 CLI 改状态。
 
 ### 决策够清了

@@ -238,24 +238,33 @@ Use when the Ticket is abandoned or mis-scoped before resolution:
 
 ### Open Web UI
 
-Human inspection surface. Default launch path for `/wayfinder ui`:
+Human inspection surface. This is a long-running **ordinary process**, not a Pi subagent. Keep the agent's mutations on the taskmd CLI; never drive the web UI to change state.
+
+1. Confirm taskmd is installed and the Wayfinder workspace exists. Check the installed `taskmd web start --help` before relying on flags. If taskmd is missing, follow the prerequisite rule above; do not install silently.
+2. For automated launch, require `HERDR_ENV=1` and the `herdr` CLI. Follow the installed Herdr skill/CLI syntax (`herdr --help`, `herdr pane`). Do not control a focused Herdr session from outside it.
+3. Inspect `herdr pane layout --current`, then create a sibling pane with the current project's cwd and no focus change. Choose `right` for a wide pane or `down` for a narrow/tall one; for example:
+
+   ```bash
+   herdr pane split --current --direction right --cwd "$PWD" --no-focus
+   ```
+
+4. Read `.result.pane.pane_id` from the successful response and use that exact value as `pane_id` below. Do not target the caller or guess an ID. Submit the server command in the new pane:
+
+   ```bash
+   herdr pane run "$pane_id" 'taskmd -d .pi/wayfinder/tickets web start --port 8080 --open'
+   herdr pane read "$pane_id" --source recent-unwrapped --lines 60
+   ```
+
+5. Report the pane ID, actual startup output, and URL (default `http://localhost:8080`, actual port wins). A successful `pane run` only confirms submission, not readiness. If output does not yet establish readiness, say so; on failure report it rather than claiming the UI is running.
+6. The user can inspect the pane and press Ctrl+C to stop the server. For agent-assisted cleanup, use `herdr pane send-keys "$pane_id" ctrl+c`, then close only this task-created pane once its process/output is no longer needed. Do not close user panes or workspaces.
+
+The Herdr control commands are one-shot `bash` calls; the server itself runs in its terminal pane. Do not host it inside `subagent`, block the parent with the foreground server, or use `nohup`/an untracked background shell job.
+
+If Herdr is unavailable, do not pretend a pane was created. Give this command for the user to run in a separate terminal at the project root, and explain that Ctrl+C stops it:
 
 ```bash
 taskmd -d .pi/wayfinder/tickets web start --port 8080 --open
 ```
-
-How the agent should start it:
-
-1. Prefer `interactive_shell` with:
-   - `mode: "dispatch"`
-   - `background: true`
-2. Report:
-   - URL (default `http://localhost:8080`)
-   - session id for later `/attach`
-3. Do **not** use plain `bash`/nohup as the primary path — long-lived web servers are unreliable there.
-4. Agent still mutates state via CLI, never by driving the web UI.
-
-Foreground overlay (`hands-free` / interactive) is optional when the user wants to watch the process. Background dispatch is the default.
 
 
 ## Status report fields

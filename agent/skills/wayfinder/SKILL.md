@@ -286,7 +286,7 @@ Thin prompt shortcut: `/wayfinder` (see `pi/agent/prompts/wayfinder.md`).
 | `/wayfinder chart <topic>` | Clarification gate + create Map |
 | `/wayfinder work` | Advance one Current Ticket |
 | `/wayfinder status` | Report state only; no mutation |
-| `/wayfinder ui` | Open taskmd Web UI for human inspection (background by default) |
+| `/wayfinder ui` | Open taskmd Web UI in a dedicated Herdr pane for human inspection |
 
 Smart entry routing:
 
@@ -317,7 +317,7 @@ Never confuse:
 
 - keep fog and out-of-scope explicit
 - operate through taskmd CLI as agent backend
-- open Web UI when the human wants inspection/manual override (default: `interactive_shell` dispatch + background)
+- open Web UI when the human wants inspection/manual override (default: dedicated Herdr terminal pane without changing focus; manual terminal command when Herdr is unavailable)
 - recommend only locally available skills on handoff
 - keep one Current Ticket focus
 

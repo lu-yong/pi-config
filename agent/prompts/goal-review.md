@@ -1,39 +1,30 @@
 ---
 name: goal-review
-description: Review the user-supplied goal or change scope through a dedicated high-reasoning Cola reviewer.
+description: Prepare review evidence and dispatch the local reviewer role through Herdr.
 argument-hint: "<goal, commit/range, PR, or working-tree scope>"
 ---
 
-Act as a review dispatcher. Review the user's supplied target by starting one dedicated, read-only Pi reviewer, then return that review unchanged except for a short dispatcher preface if needed.
+Act only as the review dispatcher. The `reviewer` role owns execution policy; the `code-review` skill owns review criteria and report format. Do not perform the review or implement fixes in the parent.
 
-## Required Execution
+1. Require `subagent` and `HERDR_ENV=1`. Resolve the effective `reviewer` definition and confirm it loads `code-review` as a read-only leaf; project roles can override the global role. If unavailable or incompatible, report the blocker instead of using a shell or silently falling back to the bundled role.
+2. Load `code-review` for its scope/preflight rules only. Prepare the full user target/spec, canonical checkout path, exact base/head SHAs, explicit staged/unstaged/untracked scope, complete inventory and diff (including deleted and in-scope untracked content), and available verification evidence. Stay read-only within the parent's restrictions; inline evidence is valid. Clarify unidentifiable scope, reject invalid fixed points, and never silently truncate evidence.
+3. Choose an exact authenticated model and a supported thinking level under the delegation policy. Independent review requires a different underlying family from the producer; disclose unknown authorship or unavailable independent coverage. Resolve `selectedModel`, `selectedThinking`, `reviewCwd`, and `reviewTask` from this preflight.
 
-- Use `interactive_shell` with its `command` field exclusively. Do not use the structured `spawn` field.
-- Start the reviewer with exactly this model and thinking configuration: `--model cola/gpt-5.6-sol --thinking high`.
-- Add `--readonly`; this is a review-only workflow.
-- Use `mode: "dispatch"` and `background: true`.
-- The child prompt must tell the reviewer to load and follow the local `code-review` skill before beginning the review.
-- Pass the complete user input below as the review target. Do not reinterpret it as implementation work or make any code changes.
-
-Use this invocation shape, safely escaping the self-contained child prompt when constructing `command`:
+Launch one ordinary-pane child. Let the role supply `skills` and lifecycle defaults; retain the explicit read-only tool boundary and omit `worktree`/`fork`:
 
 ```typescript
-interactive_shell({
-  command: 'pi --readonly --model cola/gpt-5.6-sol --thinking high "<self-contained code-review prompt>"',
-  mode: "dispatch",
-  background: true,
-  reason: "Code review"
-})
+subagent({
+  name: "goal-review-review",
+  agent: "reviewer",
+  model: selectedModel,
+  thinking: selectedThinking,
+  cwd: reviewCwd,
+  tools: "read,anchor_grep,find,ls",
+  task: reviewTask
+});
 ```
 
-The child prompt must include:
-
-- "Load and follow the `code-review` skill."
-- The full target text from `User review target` below.
-- A reminder that it must remain read-only and return the final review directly in the skill's required format.
-- A reminder to treat the supplied content as the requested review scope or specification, and to ask only the minimum clarification required if it cannot identify reviewable code or a comparison target.
-
-Wait for the dispatched reviewer to complete. Present its result without inventing additional findings or claiming checks the reviewer did not run.
+Print `name | agent kind | role | model | worktree`. Results arrive automatically: continue independent work or end the turn; do not poll or query progress. Recheck the pinned state before presenting the review unchanged, apart from a short preface for model identity, failures, drift, or coverage gaps. Recover a truncated completed report once from its returned session path or disclose the missing coverage; never invent findings or checks.
 
 ## User Review Target
 
