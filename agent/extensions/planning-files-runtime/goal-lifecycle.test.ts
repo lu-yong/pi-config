@@ -161,14 +161,19 @@ describe("goal lifecycle", () => {
 		assert.equal(fileExists(paths.files["task_plan.md"]), true);
 		assert.match(readText(paths.files["progress.md"]), /Goal implementation started \(run 1\)/);
 
-		result = run.handle({ type: "pause", params: { reason: "external dependency unavailable" } }, harness.context());
+		result = run.handle({
+			type: "pause",
+			params: { reason: "external dependency unavailable", suggestedAction: "Restore the dependency, then retry." },
+		}, harness.context());
 		assert.equal(result.rejection, undefined);
 		assert.equal(run.getState().status, "paused");
+		assert.equal(run.getState().impl.pausedSuggestedAction, "Restore the dependency, then retry.");
 		assert.match(readText(paths.files["progress.md"]), /Goal paused: external dependency unavailable/);
 
 		result = run.handle({ type: "implementation-request" }, harness.context());
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.getState().impl.runId, 1);
+		assert.equal(run.getState().impl.pausedSuggestedAction, "");
 
 		result = run.handle({ type: "complete", params: { summary: "Lifecycle is complete" } }, harness.context());
 		assert.equal(result.rejection, undefined);
@@ -701,7 +706,7 @@ describe("goal lifecycle", () => {
 		assert.equal(hasActiveGoal(cwd), true);
 	});
 
-	test("agent settlement refreshes a paused widget after an unobserved planning-file mutation", () => {
+	test("agent settlement refreshes a paused widget without restoring task-plan next actions", () => {
 		const cwd = makeCwd();
 		initializePlanningWorkspace(cwd);
 		writeGoalState(cwd, { ...defaultGoalState(), status: "paused" });
@@ -713,7 +718,6 @@ describe("goal lifecycle", () => {
 		assert.deepEqual(widgetLines?.filter((line) => /^(goal|phase|next):/.test(line)), [
 			"goal: paused",
 			"phase: Phase 2/3",
-			"next: Task 03",
 		]);
 
 		// Represents a bash, Python, or custom-tool write with no write/edit tool result.
@@ -731,7 +735,6 @@ describe("goal lifecycle", () => {
 		assert.deepEqual(widgetLines?.filter((line) => /^(goal|phase|next):/.test(line)), [
 			"goal: paused",
 			"phase: Phase 4",
-			"next: Task 05",
 		]);
 	});
 });

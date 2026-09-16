@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { defaultGoalState } from "./state.ts";
-import type { PlanningSnapshot } from "./types.ts";
+import type { GoalOverlayStatus, PlanningSnapshot } from "./types.ts";
 import { buildWidgetLines } from "./ui.ts";
 
-function snapshot(status: "complete" | "active"): PlanningSnapshot {
+function snapshot(status: GoalOverlayStatus): PlanningSnapshot {
 	return {
 		planningRoot: "/project/.pi/planning",
 		files: { "task_plan.md": "/project/.pi/planning/task_plan.md", "findings.md": "/project/.pi/planning/findings.md", "progress.md": "/project/.pi/planning/progress.md" },
@@ -36,4 +36,17 @@ test("non-complete Goal widget keeps task-plan-derived values", () => {
 	assert.ok(lines.includes("phase: Phase 5"));
 	assert.ok(lines.includes("next: complete_plan_goal: stale action"));
 	assert.ok(lines.includes("blocker: stale blocker"));
+});
+
+test("paused Goal widget projects persisted pause context over stale task-plan fields", () => {
+	const state = snapshot("paused");
+	state.goalState.impl.pausedReason = "SVD tuner service crashed during PAT filter configuration";
+	state.goalState.impl.pausedSuggestedAction = "Repair the service, then rerun Task 05.";
+	const lines = buildWidgetLines(state) ?? [];
+	assert.ok(lines.includes("goal: paused"));
+	assert.ok(lines.includes("phase: Phase 5"));
+	assert.ok(lines.includes("next: Repair the service, then rerun Task 05."));
+	assert.ok(lines.includes("blocker: SVD tuner service crashed during PAT filter configuration"));
+	assert.ok(!lines.includes("next: complete_plan_goal: stale action"));
+	assert.ok(!lines.includes("blocker: stale blocker"));
 });

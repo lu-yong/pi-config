@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { getPaths } from "./utils.ts";
-import { gateDraftingToolCall } from "./guards.ts";
+import { gateDraftingToolCall, isLivePlanningMutation } from "./guards.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 function makeCwd(): string {
@@ -54,4 +54,18 @@ test("drafting gate rejection advice derives the network list from command-polic
 	const blocked = gateDraftingToolCall("drafting", "bash", { command: "wget https://example.com" }, cwd);
 	assert.equal(blocked?.block, true);
 	assert.ok(blocked!.reason.includes([...NETWORK_COMMANDS].join(", ")));
+});
+
+test("planning mutation predicate refreshes goal and hashline mutations only", () => {
+	const cwd = makeCwd();
+	const planningFile = path.join(getPaths(cwd).root, "task_plan.md");
+	assert.equal(isLivePlanningMutation("pause_plan_goal", {}, cwd), true);
+	assert.equal(isLivePlanningMutation("write", { path: planningFile }, cwd), true);
+	assert.equal(isLivePlanningMutation("edit", { path: planningFile }, cwd), true);
+	assert.equal(isLivePlanningMutation("replace", {}, cwd), true);
+	assert.equal(isLivePlanningMutation("insert", {}, cwd), true);
+	assert.equal(isLivePlanningMutation("undo_last_change", {}, cwd), true);
+	assert.equal(isLivePlanningMutation("write", { path: "src/app.ts" }, cwd), false);
+	assert.equal(isLivePlanningMutation("read", { path: planningFile }, cwd), false);
+	assert.equal(isLivePlanningMutation("bash", { command: "pwd" }, cwd), false);
 });

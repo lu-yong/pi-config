@@ -58,3 +58,17 @@ test("invalid status with a committed goal normalizes to ready", () => {
 	assert.equal(hasActiveGoal(cwd), false);
 });
 
+test("legacy paused state defaults a missing suggested action", () => {
+	const cwd = makeCwd();
+	const state = defaultGoalState();
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({
+		...state,
+		status: "paused",
+		impl: { ...state.impl, pausedReason: "blocked" },
+	}, null, 2)}\n`);
+	const restored = readGoalState(cwd);
+	assert.equal(restored.status, "paused");
+	assert.equal(restored.impl.pausedReason, "blocked");
+	assert.equal(restored.impl.pausedSuggestedAction, "");
+});
+

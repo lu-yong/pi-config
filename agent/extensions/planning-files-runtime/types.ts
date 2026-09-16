@@ -59,6 +59,7 @@ export type GoalImplState = {
 	initializedAt: string | null;
 	lastResumedAt: string | null;
 	pausedReason: string;
+	pausedSuggestedAction: string;
 	completedSummary: string;
 };
 

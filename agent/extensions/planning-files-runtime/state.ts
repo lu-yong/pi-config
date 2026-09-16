@@ -32,6 +32,7 @@ export function defaultGoalState(): GoalOverlayState {
 			initializedAt: null,
 			lastResumedAt: null,
 			pausedReason: "",
+			pausedSuggestedAction: "",
 			completedSummary: "",
 		},
 	};
@@ -99,6 +100,7 @@ export function normalizeGoalState(value: unknown): GoalOverlayState {
 			initializedAt: normalizeString(implRaw.initializedAt) || null,
 			lastResumedAt: normalizeString(implRaw.lastResumedAt) || null,
 			pausedReason: normalizeString(implRaw.pausedReason),
+			pausedSuggestedAction: normalizeString(implRaw.pausedSuggestedAction),
 			completedSummary: normalizeString(implRaw.completedSummary),
 		},
 	};

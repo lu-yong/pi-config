@@ -290,7 +290,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						...current,
 						status: "drafting",
 						draft: { ...defaultGoalDraft(), sourceTopic: input, supplementalInputs: [input] },
-						impl: { ...current.impl, planningResetRequired: false, pausedReason: "", completedSummary: "" },
+						impl: { ...current.impl, planningResetRequired: false, pausedReason: "", pausedSuggestedAction: "", completedSummary: "" },
 					}));
 				} else if (state.status === "drafting") {
 					mutate((current) => ({
@@ -321,6 +321,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 							nextRecommendedQuestion: current.draft.nextRecommendedQuestion,
 							draftingStage: "as-is",
 						},
+						impl: { ...current.impl, pausedReason: "", pausedSuggestedAction: "", completedSummary: "" },
 					}));
 				}
 
@@ -375,7 +376,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						nextRecommendedQuestion: "",
 						draftingStage: "as-is",
 					},
-					impl: { ...current.impl, planningResetRequired: true, pausedReason: "", completedSummary: "" },
+					impl: { ...current.impl, planningResetRequired: true, pausedReason: "", pausedSuggestedAction: "", completedSummary: "" },
 				}));
 				turnStopped = "commit_plan_goal";
 				queuedRunId = null;
@@ -412,6 +413,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 							initializedAt: nowIso(),
 							lastResumedAt: nowIso(),
 							pausedReason: "",
+							pausedSuggestedAction: "",
 						},
 					}));
 					queuedRunId = null;
@@ -429,7 +431,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				mutate((current) => ({
 					...current,
 					status: "active",
-					impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "" },
+					impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "", pausedSuggestedAction: "" },
 				}));
 				queuedRunId = null;
 				return [
@@ -447,7 +449,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				const reason = normalizeString(event.params.reason);
 				if (!reason) return reject("pause_plan_goal", "pause_plan_goal rejected: reason is required.");
 				const suggestedAction = normalizeString(event.params.suggestedAction);
-				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+				mutate((current) => ({
+					...current,
+					status: "paused",
+					impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: suggestedAction },
+				}));
 				turnStopped = "pause_plan_goal";
 				queuedRunId = null;
 				recoveryPending = false;
@@ -466,7 +472,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				const summary = normalizeString(event.params.summary);
 				if (!summary) return reject("complete_plan_goal", "complete_plan_goal rejected: summary is required.");
 				const evidence = normalizeStringArray(event.params.evidence);
-				mutate((current) => ({ ...current, status: "complete", impl: { ...current.impl, completedSummary: summary, pausedReason: "" } }));
+				mutate((current) => ({
+					...current,
+					status: "complete",
+					impl: { ...current.impl, completedSummary: summary, pausedReason: "", pausedSuggestedAction: "" },
+				}));
 				turnStopped = "complete_plan_goal";
 				queuedRunId = null;
 				recoveryPending = false;
@@ -495,7 +505,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalErrorMessage = normalizeString(event.errorMessage);
 				if (state.status === "active" && event.stopReason === "aborted") {
 					const reason = "The goal run was interrupted by the user.";
-					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
 					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [
@@ -518,7 +528,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				if (terminalStopReason === "error") {
 					const detail = terminalErrorMessage || "unknown provider error";
 					const reason = `LLM request failed and Pi will not retry automatically: ${detail}`;
-					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
 					progressSeenThisRun = false;
 					queuedRunId = null;
 					return [
@@ -554,7 +564,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				// separate best-effort step that must never roll this back.
 				if (state.status !== "active" || !state.goal || state.impl.runId !== event.runId) return [];
 				const reason = `Continuation delivery failed and Pi will not retry automatically: ${event.detail}`;
-				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason } }));
+				mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
 				progressSeenThisRun = false;
 				queuedRunId = null;
 				return [];

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
+import { GOAL_TOOL_NAMES, MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
 import type { GoalOverlayStatus } from "./types.ts";
 import { ensureDir, getPaths } from "./utils.ts";
 import { explainUnsafeCommand, NETWORK_COMMANDS, type UnsafeCommandReason } from "../command-policy/policy.ts";
@@ -47,6 +47,23 @@ function isInPlanningDir(filePath: string, cwd: string): boolean {
 	const resolved = path.resolve(cwd, filePath);
 	const relative = path.relative(planningRoot, resolved);
 	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+const PATHED_PLANNING_MUTATION_TOOLS = new Set(["write", "edit"]);
+const ANCHOR_PLANNING_MUTATION_TOOLS = new Set(["replace", "insert", "undo_last_change", "undo_last_replace"]);
+
+/**
+ * Determine whether a completed tool may have changed live planning state.
+ *
+ * Anchor tools deliberately refresh without a path: their target file is resolved
+ * from an opaque anchor, so path-based detection would miss real mutations.
+ */
+export function isLivePlanningMutation(toolName: string, input: Record<string, unknown>, cwd: string): boolean {
+	if ((GOAL_TOOL_NAMES as readonly string[]).includes(toolName)) return true;
+	if (ANCHOR_PLANNING_MUTATION_TOOLS.has(toolName)) return true;
+	if (!PATHED_PLANNING_MUTATION_TOOLS.has(toolName)) return false;
+	const filePath = typeof input.path === "string" ? input.path : "";
+	return Boolean(filePath) && isInPlanningDir(filePath, cwd);
 }
 
 /**

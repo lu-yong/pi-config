@@ -2,7 +2,6 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
-	GOAL_TOOL_NAMES,
 	MESSAGE_TYPE_PLAN_UPDATE,
 	WIDGET_KEY,
 } from "./types.ts";
@@ -18,7 +17,7 @@ import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
-import { isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
+import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
 import { createGoalLifecycle, createSetTimeoutTimer, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
 
 /**
@@ -52,9 +51,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		};
 	}
 	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
-		state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
-		if (!ctx.hasUI) return;
-		ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
+		try {
+			state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
+			if (!ctx.hasUI) return;
+			ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
+		} catch {
+			// Widget publication is best-effort; it must not roll back persisted goal state.
+		}
 	}
 	function notifyRejection(ctx: ExtensionContext, result: GoalLifecycleResult): void {
 		const message = result.failure?.reason ?? result.rejection?.reason;
@@ -293,7 +296,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (["write", "edit", ...GOAL_TOOL_NAMES].includes(event.toolName)) refresh(ctx, false);
+		if (isLivePlanningMutation(event.toolName, event.input as Record<string, unknown>, ctx.cwd)) refresh(ctx, false);
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
