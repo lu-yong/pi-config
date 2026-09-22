@@ -17,7 +17,7 @@
 |---|---|---|
 | `pi-web-access` | 网络搜索与网页内容抓取 | `pi install npm:pi-web-access` |
 | `pi-open-tui` | 终端用户界面增强 | `pi install npm:pi-open-tui` |
-| `@tmustier/pi-files-widget` | TUI 文件浏览器 | `pi install npm:@tmustier/pi-files-widget` |
+| `pi-files-widget-overlay` | 浮动文件浏览器、查看器与 Git diff overlay，入口 `/readfiles`，是 tmustier files-widget 的 overlay 化分支 | `pi install npm:pi-files-widget-overlay` |
 | `pi-herdr-agents` | 在 Herdr pane 中异步运行 Pi 子 agent，自动回传结果，支持持久专家和隔离 worktree | `pi install npm:pi-herdr-agents` |
 | `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`insert`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
 | `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
@@ -40,6 +40,13 @@
 
 当前 `ssrf.allowRanges` 为 TUN/fake-IP 代理使用的 `198.18.0.0/15` 合成地址段放行。它是本机网络适配，不是通用推荐配置；迁移时应按实际代理需求保留最小范围，不应关闭 SSRF 校验或把 API Key 写入版本控制。
 
+### 其他本机设置（`settings.json`，不入库）
+
+- `compaction.enabled: true`：启用自动上下文压缩。
+- `observational-memory`：按 token 阈值安排观察、反思与压缩，并为本机配置了独立的处理模型；具体提供商与模型不入库。
+- `retry`：请求自动重试启用，最多 5 次，基础退避 15 秒。
+- 默认模型、默认 thinking 与 `enabledModels` 轮换列表同为易变本机信息，以 `settings.json` 为准，不在此记录。
+
 ## 扩展（Extensions）
 
 `agent/extensions/` 下的 `*.ts` 和 `*/index.ts` 会被 Pi 自动发现并全局加载；不需要再在 `settings.json` 中重复声明。没有入口文件的共享模块和测试目录不独立加载。
@@ -47,10 +54,8 @@
 ### readonly-mode
 
 - **文件**：`agent/extensions/readonly-mode/`
-- **功能**：按工具名拦截本地文件修改；当前代码阻止 `edit`、`write`、`replace` 和 `undo_last_replace`，并对 `bash` 采用 fail-closed 检查。
 - **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`
 - **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
-- **当前限制**：拦截名单尚未适配 hashline 的 `insert` 和 `undo_last_change`，不能据此认为全部写工具都已被禁用。只读子 agent 仍需遵循下文的显式工具限制。
 - **测试**：`node --test agent/extensions/readonly-mode/*.test.ts`
 
 ### command-policy
@@ -79,7 +84,6 @@
   | `autoExtract` | `true` | 自动触发开关；关掉后 `/qna` 手动入口仍然可用 |
   | `model` | 未设置 | 抽取用的廉价模型 `{ provider, id, thinking }`。未配置时静默使用主模型；已配置但解析不出或取不到 API key 时回退到主模型**并提示**。`thinking` 取 `minimal`/`low`/`medium`/`high`/`xhigh`/`max`，非法值保留该模型但丢弃 thinking 并提示 |
 
-- **本机设置**：`autoExtract: true`，抽取模型为 `openrouter/deepseek/deepseek-v4.1-flash`，`thinking: low`。
 - **目标模式限制**：当 planning-files-runtime 的 goal 状态为 `active` 时，自动 Q&A 被抑制，手动 `/qna` 会提示先暂停或完成目标，避免打断目标的自动 continuation。
 - **测试**：`node --test agent/extensions/qna/*.test.ts`
 
@@ -160,7 +164,7 @@
 
 父会话的 `--readonly` 不会自动传给子进程，工具列表也不是进程/扩展沙箱。无 shell 的子 agent 所需的 Git diff、命令或测试证据由父 agent 在自身权限内提供。
 
-包级可选配置位于安装根目录的 `config.json`（当前 npm 路径：`agent/npm/node_modules/pi-herdr-agents/config.json`），可能被包更新覆盖。本地角色直接维护在 `agent/agents/`，不修改安装包。
+包级可选配置持久化在本机 `agent/herdr-agents/config.json`（已被 `.gitignore` 排除）：当前记录状态上报开关、coding/review/recon/qa/architecture/docs 各任务类别的模型候选、`roles.bundled` 启用包内角色、persistent agent 上限（3 个）与 pane 分组布局。本地角色仍直接维护在 `agent/agents/`，不修改安装包。
 
 ### 原生入口与保留的工作流
 
@@ -186,6 +190,21 @@
 `/wayfinder ui` 也按此规则启动 taskmd Web UI，而不是为服务器派一个 Pi 子 agent；报告 URL、pane ID、启动证据和 Ctrl+C 停止方式。taskmd 仍是显式前置依赖，不会自动安装。
 
 临时仓库检索仍优先使用 `rg`、`fd` 和 `rg --files`；仅在需要精确语义或替代工具不可用时回退到 shell `grep`/`find`，不限制 Pi 内置同名工具。
+
+## Prompt 模板（`agent/prompts/`）
+
+`agent/prompts/` 下的 Markdown 模板注册为自定义 prompt 命令，面向所有项目，与 `extensions/` 的自动发现机制无关：
+
+| 命令 | 文件 | 用途 |
+|---|---|---|
+| `/goal-review` | `goal-review.md` | 评审派发入口：父会话先准备目标/范围与完整差异证据，再以只读工具边界派发本地 `code-reviewer` 子 agent；父会话只做派发，不自行评审或修复 |
+| `/wayfinder` | `wayfinder.md` | 进入 Personal Wayfinder 技能的薄封装，支持 `init`、`chart`、`work`、`status`、`ui` 等快捷入口；方法论以 `wayfinder` 技能为准 |
+
+上文「原生入口」表中的 `/goal-review` 与 `/wayfinder` 即来自这里的模板，其余入口由包或本地扩展提供。
+
+## 架构决策记录（`docs/adr/`）
+
+影响仓库设计的决策记录在 `docs/adr/`。当前仅 ADR-0001：provider 扩展保持独立配置、不提取共享模型目录；文中提到的 provider 扩展目录现已不在本仓库，该篇按历史决策保留。
 
 ## TUI 配置
 
@@ -239,7 +258,7 @@ node --test agent/extensions/*/*.test.ts
 
 | 路径 | 内容 |
 |---|---|
-| `agent/settings.json` | 本机默认模型、包列表、Q&A / 记忆等设置 |
+| `agent/settings.json` | 本机默认模型、包列表、Q&A / 记忆 / 重试等设置 |
 | `agent/models.json` | 本机 provider / 模型定义及可能包含的认证配置 |
 | `agent/auth.json` | Provider 认证凭据 |
 | `agent/models-store.json` | 模型目录缓存 |
@@ -249,5 +268,9 @@ node --test agent/extensions/*/*.test.ts
 | `agent/extensions/node_modules/`、`agent/extensions/package-lock.json` | 本地扩展开发依赖与 lockfile |
 | `agent/extensions/herdr-agent-state.ts` | Herdr 管理的本机集成 |
 | `agent/cache`、`agent/projects-memory`、`agent/fff`、`agent/.pi-hermes-locks*`、`agent/pi-hermes-memory` | 本地缓存、记忆与历史运行状态 |
+| `agent/crashes.json` | Pi 崩溃记录 |
+| `agent/herdr-agents/` | pi-herdr-agents 本机包配置（`config.json`） |
+| `web-search-cache/`、`agent/web-search-cache/` | 网络搜索缓存 |
+| `.claude/` | Claude Code 本地设置，由全局 gitignore 排除 |
 
 不要把真实 API Key、认证头或会话内容复制进 README。修改本机配置后，以实际文件和运行时目录为准更新本文，不应仅根据历史清单推断已安装或已可用。

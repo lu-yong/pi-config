@@ -27,3 +27,6 @@ agent/projects-memory
 .DS_Store
 agent/extensions/herdr-agent-state.ts
 
+agent/crashes.json
+agent/herdr-agents/
+web-search-cache/
