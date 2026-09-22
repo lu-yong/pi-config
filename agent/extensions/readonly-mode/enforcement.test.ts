@@ -35,7 +35,7 @@ describe('read-only enforcement', () => {
       {
         type: 'notify',
         level: 'info',
-        message: 'Read-only mode ON - edit/write/replace blocked, bash restricted to approved commands',
+        message: 'Read-only mode ON - edit/write/replace/insert blocked, bash restricted to approved commands',
       },
       { type: 'send-user-message', content: 'review this' },
     ]);
@@ -51,11 +51,11 @@ describe('read-only enforcement', () => {
     ]);
   });
 
-  test('blocks built-in file mutation tools but leaves custom tools outside its scope', () => {
+  test('blocks file mutation tools including hashline-pro edit tools but leaves custom tools outside its scope', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
-    for (const toolName of ['edit', 'write', 'replace', 'undo_last_replace']) {
+    for (const toolName of ['edit', 'write', 'replace', 'insert', 'undo_last_change', 'undo_last_replace']) {
       assert.deepEqual(
         enforcement.handle({ type: 'tool-call', toolName, input: {} }),
         [

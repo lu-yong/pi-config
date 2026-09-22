@@ -36,6 +36,18 @@ export interface ReadonlyEnforcement {
 const STATE_ENTRY = 'readonly-mode';
 const CONTEXT_ENTRY = 'readonly-mode-context';
 
+// File-mutating tools blocked in read-only mode. 'edit' and 'write' are pi built-ins;
+// 'replace', 'insert', and 'undo_last_change' are registered by the pi-hashline-edit-pro
+// package, which also disables the built-in 'edit' tool. 'undo_last_replace' is kept for
+// older pi builds that shipped it as a built-in (same list as planning-files-runtime).
+const FILE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
+  'edit',
+  'write',
+  'replace',
+  'insert',
+  'undo_last_change',
+  'undo_last_replace',
+]);
 const FILE_MUTATION_REASON =
   'Read-only mode: file modifications are not allowed. Use /readonly to exit read-only mode first.';
 
@@ -43,7 +55,7 @@ const READONLY_INSTRUCTIONS = `[READ-ONLY MODE ACTIVE]
 You are in local read-only mode for exploration, planning, code review, and architecture analysis.
 
 Enforced core-tool restrictions:
-- Pi's built-in edit, write, replace, and undo_last_replace tools are blocked.
+- File-mutating tools are blocked: pi's built-in edit and write, plus the pi-hashline-edit-pro replace, insert, and undo_last_change tools.
 - Bash commands are fail-closed. Approved read commands, tests, and static checks are allowed; installs, builds, publishing, arbitrary scripts, all redirection except stderr to /dev/null (2>/dev/null), background execution, and command substitution are blocked.
 - Every segment of a pipeline or compound command is checked independently.
 - Pi's built-in read, grep, find, and ls tools remain available.
@@ -89,7 +101,7 @@ class Enforcement implements ReadonlyEnforcement {
         ? {
             type: 'notify',
             level: 'info',
-            message: 'Read-only mode ON - edit/write/replace blocked, bash restricted to approved commands',
+            message: 'Read-only mode ON - edit/write/replace/insert blocked, bash restricted to approved commands',
           }
         : {
             type: 'notify',
@@ -108,7 +120,7 @@ class Enforcement implements ReadonlyEnforcement {
   private handleToolCall(toolName: string, input: unknown): ReadonlyEffect[] {
     if (!this.enabled) return [];
 
-    if (toolName === 'edit' || toolName === 'write' || toolName === 'replace' || toolName === 'undo_last_replace') {
+    if (FILE_MUTATION_TOOLS.has(toolName)) {
       return [{ type: 'block-tool', reason: FILE_MUTATION_REASON }];
     }
 
