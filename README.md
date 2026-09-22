@@ -96,44 +96,6 @@
 
 `agent/extensions/herdr-agent-state.ts` 由 Herdr 安装和管理，用于上报 Pi 会话与运行状态。它在本机存在并被自动发现，但已被 `.gitignore` 排除，不是本仓库维护的扩展源码；更新 Herdr 集成可能覆盖它。
 
-## 模型提供商（Providers）
-
-### 本机自定义 provider（`agent/models.json`）
-
-模型来自 Pi 的 provider 目录与本机 `agent/models.json`。原先的 `anyrouter-provider`、`cola-provider`、`micu-provider`、`micu-xai-provider` 扩展目录已不存在；当前自定义 provider 如下，均使用 `openai-responses`：
-
-| Provider ID | Base URL | 当前定义的模型 | 上下文窗口（token） |
-|---|---|---|---|
-| `colaai` | `https://code28.ccwu.cc/v1` | `gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol` | Luna 为 1,000,000；Terra / Sol 为 272,000 |
-| `cc-switch-deep-seek` | `https://api.deepseek.com/v1` | `deepseek-v4-flash` | 1,000,000 |
-| `anyrouter` | `https://anyrouter.top/v1` | `gpt-6-astra` | 1,000,000 |
-| `fastai` | `https://www.fastaitoken.com/v1` | `gpt-5.6-terra`、`gpt-5.6-sol` | 272,000 |
-| `jucode` | `https://api.jucode.cn/v1` | `gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol` | 1,000,000 |
-
-上述 DeepSeek Flash 的 `maxTokens` 为 384,000，其余模型为 128,000。这里记录的是本机配置，不是服务端能力保证；实际可用模型、认证与限制应以本机 `/model` 和服务端为准。凭据由本机认证/provider 配置提供，不应复制到 README 或版本控制中。
-
-### 快捷轮换范围（`agent/settings.json` 的 `enabledModels`）
-
-`enabledModels` 是 `Ctrl+P` / `Shift+Ctrl+P` 的轮换范围，不是所有已认证模型的完整目录。当前配置为：
-
-| 模型 ID | 本地配置状态 |
-|---|---|
-| `cc-switch-deep-seek/deepseek-v4-flash` | 已在 `models.json` 定义 |
-| `cc-switch-deep-seek/deepseek-v4-pro` | 已列入轮换范围，但该 provider 下尚无对应定义 |
-| `colaai/gpt-5.6-luna` | 已在 `models.json` 定义 |
-| `colaai/gpt-5.6-terra` | 已在 `models.json` 定义 |
-| `colaai/gpt-5.6-sol` | 已在 `models.json` 定义 |
-| `fastai/gpt-5.6-terra` | 已在 `models.json` 定义 |
-| `fastai/gpt-5.6-sol` | 已在 `models.json` 定义 |
-| `jucode/gpt-5.6-luna` | 已在 `models.json` 定义 |
-| `jucode/gpt-5.6-terra` | 已在 `models.json` 定义 |
-| `jucode/gpt-5.6-sol` | 已在 `models.json` 定义 |
-| `anyrouter/gpt-6-astra` | 已在 `models.json` 定义 |
-
-当前默认启动模型为 `fastai/gpt-5.6-terra`，默认 thinking 为 `high`；会话选择或 CLI 参数可以覆盖启动默认值。
-
-**已知配置不一致**：`cc-switch-deep-seek/deepseek-v4-pro` 目前无法匹配模型，需另行补充定义或调整轮换列表；本 README 仅记录现状，不把它描述为已可用模型。可用 `/model` 或 `pi --list-models` 检查实时目录。
-
 ## 安装的技能（Skills）
 
 当前 `agent/skills/` 有以下 19 个技能入口。Pi 会发现这些目录和软链接，按需读取技能内容；标记 **†** 的 9 个技能配置了 `disable-model-invocation: true`，不进入模型的默认技能提示列表，需通过 `/skill:<名称>` 显式调用。
