@@ -1,5 +1,5 @@
 import path from "node:path";
-import { GOAL_TOOL_NAMES, MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
+import { ANCHOR_MUTATION_TOOLS, GOAL_TOOL_NAMES, MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
 import type { GoalOverlayStatus } from "./types.ts";
 import { ensureDir, getPaths } from "./utils.ts";
 import { explainUnsafeCommand, NETWORK_COMMANDS, type UnsafeCommandReason } from "../command-policy/policy.ts";
@@ -50,7 +50,7 @@ function isInPlanningDir(filePath: string, cwd: string): boolean {
 }
 
 const PATHED_PLANNING_MUTATION_TOOLS = new Set(["write", "edit"]);
-const ANCHOR_PLANNING_MUTATION_TOOLS = new Set(["replace", "insert", "undo_last_change", "undo_last_replace"]);
+const ANCHOR_PLANNING_MUTATION_TOOLS = new Set<string>(ANCHOR_MUTATION_TOOLS);
 
 /**
  * Determine whether a completed tool may have changed live planning state.

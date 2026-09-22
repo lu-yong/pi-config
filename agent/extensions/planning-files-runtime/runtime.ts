@@ -51,13 +51,34 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		};
 	}
 	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
+		// Widget projection is best-effort; a failure here must never roll back
+		// persisted goal state, but it must be visible instead of silently leaving
+		// a stale widget in place.
 		try {
 			state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
-			if (!ctx.hasUI) return;
-			ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
-		} catch {
-			// Widget publication is best-effort; it must not roll back persisted goal state.
+		} catch (error) {
+			reportRefreshFailure(ctx, "读取 planning 快照失败", error);
+			return;
 		}
+		if (!ctx.hasUI) return;
+		try {
+			ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
+		} catch (error) {
+			reportRefreshFailure(ctx, "更新 planning widget 失败", error);
+		}
+	}
+	function reportRefreshFailure(ctx: ExtensionContext, label: string, error: unknown): void {
+		const detail = error instanceof Error ? error.message : String(error);
+		const message = `${label}: ${detail}`;
+		if (ctx.hasUI) {
+			try {
+				ctx.ui.notify(message, "warning");
+				return;
+			} catch {
+				// fall through to stderr
+			}
+		}
+		console.error(`[planning-files-runtime] ${message}`);
 	}
 	function notifyRejection(ctx: ExtensionContext, result: GoalLifecycleResult): void {
 		const message = result.failure?.reason ?? result.rejection?.reason;

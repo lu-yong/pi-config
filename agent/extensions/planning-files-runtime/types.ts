@@ -17,7 +17,9 @@ export const GOAL_TOOL_NAMES = [
 	"complete_plan_goal",
 ] as const;
 export const CONTINUATION_DELAY_MS = 50;
-export const MEANINGFUL_PROGRESS_TOOLS = new Set(["bash", "edit", "write", "grep", "find"]);
+/** Hashline anchor tools: they mutate files without a path in their input. */
+export const ANCHOR_MUTATION_TOOLS = ["replace", "insert", "undo_last_change", "undo_last_replace"] as const;
+export const MEANINGFUL_PROGRESS_TOOLS = new Set(["bash", "edit", "write", "grep", "find", ...ANCHOR_MUTATION_TOOLS]);
 
 // ---- types ----
 

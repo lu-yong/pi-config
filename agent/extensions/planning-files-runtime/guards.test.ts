@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { getPaths } from "./utils.ts";
-import { gateDraftingToolCall, isLivePlanningMutation } from "./guards.ts";
+import { gateDraftingToolCall, isLivePlanningMutation, isMeaningfulProgressToolCall } from "./guards.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 function makeCwd(): string {
@@ -68,4 +68,13 @@ test("planning mutation predicate refreshes goal and hashline mutations only", (
 	assert.equal(isLivePlanningMutation("write", { path: "src/app.ts" }, cwd), false);
 	assert.equal(isLivePlanningMutation("read", { path: planningFile }, cwd), false);
 	assert.equal(isLivePlanningMutation("bash", { command: "pwd" }, cwd), false);
+});
+
+test("hashline anchor tools count as meaningful progress", () => {
+	assert.equal(isMeaningfulProgressToolCall("replace", {}), true);
+	assert.equal(isMeaningfulProgressToolCall("insert", {}), true);
+	assert.equal(isMeaningfulProgressToolCall("undo_last_change", {}), true);
+	assert.equal(isMeaningfulProgressToolCall("undo_last_replace", {}), true);
+	assert.equal(isMeaningfulProgressToolCall("read", { path: "src/app.ts" }), false);
+	assert.equal(isMeaningfulProgressToolCall("bash", { command: "echo hi" }), false);
 });
