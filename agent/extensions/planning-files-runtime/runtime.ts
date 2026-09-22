@@ -254,7 +254,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("plan-update", {
-		description: "检查当前进展和发现是否与 planning files 记录的内容对齐延续。如果是，让 agent 更新 planning files；如果不是，询问用户是否要 reset 再写，还是先中断。",
+		description: "Check whether current progress and findings stay aligned with the planning files. If aligned, have the agent update the planning files; if not, ask the user whether to reset and rewrite, or pause first.",
 		handler: async (_args, ctx) => {
 			const snapshot = getPlanningSnapshot(ctx.cwd, state.resumedFromPreviousSession);
 			state = snapshot;
