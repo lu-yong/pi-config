@@ -238,11 +238,12 @@
 
 ## 本地扩展开发与验证
 
-`agent/extensions/package.json` 为本地扩展开发声明 Pi 依赖，当前 `pi-ai`、`pi-coding-agent`、`pi-tui` 都固定为 `0.85.1`。升级全局 Pi 后，可从仓库根目录同步这些开发依赖：
+`agent/extensions/package.json` 为本地扩展开发声明 Pi 依赖，当前 `pi-ai`、`pi-coding-agent`、`pi-tui` 都固定为 `0.87.1`。升级全局 Pi 后，进入 `agent/extensions/` 同步这些开发依赖：
 
 ```bash
-npm --prefix agent/extensions run sync-pi
+cd agent/extensions && npm run sync-pi
 ```
+不要改用 `npm --prefix agent/extensions run sync-pi` 从根目录运行：`--prefix` 会连全局 prefix 一起覆盖，脚本内层的 `npm exec --global --no -- pi --version` 因此找不到全局 `pi`，转而尝试安装无关的同名 registry 包 `pi@2.0.5`，再被 `--no` 拦截报错。
 
 在开发依赖已安装、Node.js 支持直接运行 TypeScript 的环境中，从仓库根目录运行：
 
