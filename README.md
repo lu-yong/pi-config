@@ -94,6 +94,13 @@
 
 `qna` 是回复结束后的问题抽取；包提供的 `ask_user_question` 则由 agent 在执行中主动调用，两者不是同一个入口。`agent/extensions/question-taking/` 是 qna 使用的共享交互模块，没有 `index.ts`，不独立加载。
 
+### extmgr
+
+- **文件**：`agent/extensions/extmgr/`
+- **功能**：扩展加载管理器——`/extmgr` 交互式 picker（分组显示 global/project/effective/loaded 四列合并视图）与 `manage_extensions` 工具（list/enable/disable）。切换写入原生 Pi settings（独立扩展 `-extensions/<rel>` 精确模式、整包对象条目、项目层 delta 条目），写入形式与 `pi config` 逐字一致；不可达的原生限制格（如项目层控制全局独立扩展）明确返回 unavailable 原因而不是伪造写入。
+- **交互**：`j/k` 或方向键移动、`Enter` 在活动写入层切换、`Tab` 切换 global/project 写入层、`/` 子串过滤（文件名与包源）、`a` 应用并恰好触发一次 reload、`q`/`Esc` 关闭；禁用 extmgr 自身需确认并提示 `pi config` 恢复路径。非 TUI 模式调用 `/extmgr` 会提示改用工具。
+- **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 proper-lockfile/typebox/minimatch）
+
 ### readme-check
 
 - **文件**：`.pi/extensions/readme-check.ts`
@@ -254,10 +261,10 @@ cd agent/extensions && npm run sync-pi
 
 ```bash
 node --test agent/extensions/*/*.test.ts
+npm --prefix agent/extensions/extmgr test
 ```
 
-测试包括只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性；`dev-deps/` 只有测试，不是运行时扩展。
-
+前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 只有测试，不是运行时扩展）；后者用 vitest 运行 extmgr 的测试（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
 ## 未入库文件与安全
 
 忽略规则见 [`.gitignore`](.gitignore) 与 [`agent/npm/.gitignore`](agent/npm/.gitignore)。以下内容只保存在本机，不随本仓库提交：
@@ -272,6 +279,7 @@ node --test agent/extensions/*/*.test.ts
 | `agent/sessions/` | 个人会话历史 |
 | `agent/npm/`（除 `.gitignore`） | 包安装清单、lockfile 和 `node_modules`，由 Pi 包管理维护 |
 | `agent/extensions/node_modules/`、`agent/extensions/package-lock.json` | 本地扩展开发依赖与 lockfile |
+| `agent/extensions/extmgr/node_modules/`、`agent/extensions/extmgr/package-lock.json` | extmgr 独立测试依赖与 lockfile |
 | `agent/extensions/herdr-agent-state.ts` | Herdr 管理的本机集成 |
 | `agent/cache`、`agent/projects-memory`、`agent/fff`、`agent/.pi-hermes-locks*`、`agent/pi-hermes-memory` | 本地缓存、记忆与历史运行状态 |
 | `agent/crashes.json` | Pi 崩溃记录 |

@@ -12,6 +12,8 @@ agent/npm/node_modules/
 agent/npm/package-lock.json
 agent/extensions/node_modules/
 agent/extensions/package-lock.json
+agent/extensions/extmgr/node_modules/
+agent/extensions/extmgr/package-lock.json
 
 # 本地配置（不入库）
 agent/settings.json
@@ -30,3 +32,12 @@ agent/extensions/herdr-agent-state.ts
 agent/crashes.json
 agent/herdr-agents/
 web-search-cache/
+
+.pi/skills/openspec-apply-change/
+.pi/skills/openspec-archive-change/
+.pi/skills/openspec-explore/
+.pi/skills/openspec-propose/
+.pi/skills/openspec-sync-specs/
+.pi/skills/openspec-update-change/
+openspec/
+.pi/prompts/
