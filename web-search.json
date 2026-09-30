@@ -1,5 +1,8 @@
 {
-  "provider": "tavily",
+  "provider": "zai",
+  "zaiApiKey": "$ZAI_CODING_CN_API_KEY",
+  "zaiEndpoint": "china",
+  "summaryModel": "cc-switch-zhipu-glm/glm-5.3-flash:low",
   "workflow": "summary-review",
   "ssrf": {
     "allowRanges": ["198.18.0.0/15"]
