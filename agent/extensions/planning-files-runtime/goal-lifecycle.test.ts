@@ -289,7 +289,7 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /Goal implementation started \(run 1\)/);
 	});
 
-	test("a failed goal-state write does not publish the transition and a retry is not a no-op", () => {
+	test("an unreadable goal-state path does not publish the transition and a repaired retry is not a no-op", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = createGoalLifecycle(cwd, harness.deps);
@@ -310,6 +310,7 @@ describe("goal lifecycle", () => {
 
 		// Once the storage problem is removed, the request proceeds instead of being an active no-op.
 		fs.rmSync(goalStatePath, { recursive: true, force: true });
+		writeGoalState(cwd, run.getState()); // restore the file, not just directory access
 		const retry = run.handle({ type: "implementation-request" }, harness.context());
 		assert.equal(retry.failure, undefined);
 		assert.equal(retry.rejection, undefined);
@@ -317,7 +318,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, 1);
 	});
 
-	test("a failed goal-state write during completion leaves the run active and the workspace untouched", () => {
+	test("an unreadable goal-state path during completion leaves the run active and the workspace untouched", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -339,6 +340,7 @@ describe("goal lifecycle", () => {
 
 		// Retrying after the storage problem is fixed completes normally.
 		fs.rmSync(goalStatePath, { recursive: true, force: true });
+		writeGoalState(cwd, run.getState());
 		const retry = run.handle({ type: "complete", params: { summary: "cannot persist" } }, harness.context());
 		assert.equal(retry.failure, undefined);
 		assert.equal(run.getState().status, "complete");
@@ -736,5 +738,169 @@ describe("goal lifecycle", () => {
 			"goal: paused",
 			"phase: Phase 4",
 		]);
+	});
+
+	test("resume uses externally updated goal and draft without overwriting them", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
+		const external = run.getState();
+		external.goal!.constraints = ["Updated delegation policy"];
+		external.draft.constraints = ["Updated delegation policy"];
+		writeGoalState(cwd, external);
+		harness.clearSent();
+		const result = run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(result.failure, undefined);
+		assert.equal(result.rejection, undefined);
+		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
+		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.draft.constraints, external.draft.constraints);
+		assert.match(harness.sent[0].message.content, /Updated delegation policy/);
+		assert.equal(run.getState().impl.runId, external.impl.runId);
+	});
+
+	for (const status of ["paused", "complete"] as const) {
+		test(`external ${status} cancels a queued continuation without reviving the run`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			harness.clearSent();
+			settleWithProgress(run, harness);
+			writeGoalState(cwd, { ...run.getState(), status });
+			const before = readText(getPaths(cwd).goalState);
+			harness.timer.fire();
+			assert.equal(harness.sent.length, 0);
+			assert.equal(run.getState().status, status);
+			assert.equal(readText(getPaths(cwd).goalState), before);
+		});
+	}
+
+	test("contract-only disk updates preserve progress and refresh the continuation prompt", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		const external = run.getState();
+		external.goal!.constraints = ["Use the new policy"];
+		writeGoalState(cwd, external);
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		assert.equal(harness.timer.hasPending(), true);
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 1);
+		assert.match(harness.sent[0].message.content, /Use the new policy/);
+	});
+
+	test("sync imports external state without resetting the turn-stop gate", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareDraft(cwd, harness);
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		const external = run.getState();
+		external.goal!.constraints = ["Latest constraint"];
+		writeGoalState(cwd, external);
+		const result = run.handle({ type: "sync" }, harness.context());
+		assert.equal(result.failure, undefined);
+		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
+		assert.equal(run.turnStoppedBy(), "commit_plan_goal");
+	});
+
+	test("an external run change cannot inherit old progress or a pending continuation", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+		const external = run.getState();
+		external.impl.runId++;
+		writeGoalState(cwd, external);
+		run.handle({ type: "sync" }, harness.context());
+		assert.equal(harness.timer.hasPending(), false);
+		run.handle({ type: "agent-settled" }, harness.context());
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 0);
+	});
+
+	for (const badState of ["{", "null", "{}", "[]"]) {
+		test(`invalid state ${badState} is not overwritten by sync, resume or continuation`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			harness.clearSent();
+			settleWithProgress(run, harness);
+			const before = run.getState();
+			writeText(getPaths(cwd).goalState, badState);
+			harness.timer.fire();
+			for (const type of ["sync", "implementation-request", "agent-settled"] as const) {
+				const result = run.handle({ type }, harness.context());
+				assert.equal(result.failure?.operation, "state-sync");
+			}
+			assert.equal(readText(getPaths(cwd).goalState), badState);
+			assert.deepEqual(run.getState(), before);
+			assert.equal(harness.sent.length, 0);
+			assert.equal(harness.timer.hasPending(), false);
+			assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
+			writeGoalState(cwd, before);
+			assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
+			assert.equal(harness.sent.length, 1);
+		});
+	}
+
+	test("deleted state is not recreated from stale memory", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		fs.rmSync(getPaths(cwd).goalState);
+		const result = run.handle({ type: "pause", params: { reason: "do not recreate" } }, harness.context());
+		assert.equal(result.failure?.operation, "state-sync");
+		assert.equal(fileExists(getPaths(cwd).goalState), false);
+	});
+
+	test("effect rollback preserves the externally updated contract", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareDraft(cwd, harness);
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		const external = run.getState();
+		external.goal!.constraints = ["Keep the revised contract on failure"];
+		writeGoalState(cwd, external);
+		harness.setFailSends(true);
+		const result = run.handle({ type: "implementation-request" }, harness.context());
+		assert.match(result.failure?.reason ?? "", /state restored/);
+		assert.equal(run.getState().status, "ready");
+		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.goal!.constraints, external.goal!.constraints);
+	});
+
+	test("sync failure before timer firing keeps an explicit recovery path after repair", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+		const before = run.getState();
+		writeText(getPaths(cwd).goalState, "{");
+		assert.equal(run.handle({ type: "sync" }, harness.context()).failure?.operation, "state-sync");
+		assert.equal(harness.timer.hasPending(), false);
+		writeGoalState(cwd, before);
+		assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
+		assert.equal(harness.sent.length, 1);
+		assert.equal(harness.sent[0].message.customType, MESSAGE_TYPE_CONTINUATION);
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(harness.sent.length, 1);
+	});
+
+	test("a new turn releases the previous stop gate even when goal state is unreadable", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
+		writeText(getPaths(cwd).goalState, "{");
+		run.handle({ type: "sync" }, harness.context());
+		assert.equal(run.turnStoppedBy(), "pause_plan_goal"); // same turn remains stopped
+		const result = run.handle({ type: "turn-start" }, harness.context());
+		assert.equal(result.failure?.operation, "state-sync");
+		assert.equal(run.turnStoppedBy(), null); // the next turn can repair the file
+		assert.equal(readText(getPaths(cwd).goalState), "{");
 	});
 });

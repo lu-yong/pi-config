@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { DraftingStage, GoalContract, GoalDraft, GoalOverlayState, GoalOverlayStatus } from "./types.ts";
 import { fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, writeTextAtomic } from "./utils.ts";
 
@@ -108,6 +109,29 @@ export function normalizeGoalState(value: unknown): GoalOverlayState {
 
 // ---- I/O ----
 
+/** Read for lifecycle decisions: never turn corrupt/unreadable state into an empty goal. */
+export function readGoalStateForUpdate(cwd: string): GoalOverlayState | null {
+	const target = getPaths(cwd).goalState;
+	let text: string;
+	try {
+		text = fs.readFileSync(target, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	const raw = JSON.parse(text);
+	const isRecord = (value: unknown): value is Record<string, unknown> =>
+		value !== null && typeof value === "object" && !Array.isArray(value);
+	if (!isRecord(raw) || raw.version !== 1
+		|| !["none", "drafting", "ready", "active", "paused", "complete"].includes(raw.status as string)
+		|| !isRecord(raw.draft) || !isRecord(raw.impl)
+		|| (raw.goal !== null && (!isRecord(raw.goal) || !normalizeGoalContract(raw.goal)))
+		|| !Number.isSafeInteger(raw.impl.runId) || (raw.impl.runId as number) < 0) {
+		throw new Error(`Invalid goal state in ${target}; repair the file before continuing.`);
+	}
+	return normalizeGoalState(raw);
+}
+
 export function readGoalState(cwd: string): GoalOverlayState {
 	const target = getPaths(cwd).goalState;
 	if (!fileExists(target)) return defaultGoalState();
@@ -123,7 +147,7 @@ export function hasActiveGoal(cwd: string): boolean {
 	return readGoalState(cwd).status === "active";
 }
 
-export function writeGoalState(cwd: string, state: GoalOverlayState): void {
+export function writeGoalState(cwd: string, state: GoalOverlayState): GoalOverlayState {
 	const target = getPaths(cwd).goalState;
 	const next: GoalOverlayState = {
 		...state,
@@ -132,4 +156,5 @@ export function writeGoalState(cwd: string, state: GoalOverlayState): void {
 	// Atomic replacement: a failed write must never truncate or corrupt the
 	// persisted goal state (memory and disk must agree on the prior state).
 	writeTextAtomic(target, `${JSON.stringify(next, null, 2)}\n`);
+	return next;
 }

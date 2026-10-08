@@ -47,15 +47,22 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			resumedFromPreviousSession,
 			isIdle: () => ctx.isIdle(),
 			notify: (message, level) => ctx.ui.notify(message, level),
-			refresh: () => refresh(ctx, resumedFromPreviousSession),
+			refresh: () => refresh(ctx, resumedFromPreviousSession, false),
 		};
 	}
-	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession): void {
+	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession, syncGoal = true): void {
 		// Widget projection is best-effort; a failure here must never roll back
 		// persisted goal state, but it must be visible instead of silently leaving
 		// a stale widget in place.
 		try {
+			const lifecycle = lifecycleFor(ctx.cwd);
+			// Lifecycle effects already own an in-flight transaction; do not re-enter it.
+			if (syncGoal) {
+				const result = lifecycle.handle({ type: "sync" }, contextFor(ctx, resumedFromPreviousSession));
+				if (result.failure) throw new Error(result.failure.reason);
+			}
 			state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
+			state.goalState = lifecycle.getState();
 		} catch (error) {
 			reportRefreshFailure(ctx, "读取 planning 快照失败", error);
 			return;
@@ -309,6 +316,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
 		redirectPlanningPath(event as { toolName: string; input: Record<string, unknown> }, ctx.cwd);
+		// Keep drafting decisions current too; a failed read leaves the last-known gate
+		// in place while file tools remain available to repair the state file.
+		notifyRejection(ctx, lifecycle.handle({ type: "sync" }, contextFor(ctx)));
 		const blocked = gateDraftingToolCall(lifecycle.getState().status, event.toolName, event.input as Record<string, unknown>, ctx.cwd);
 		if (blocked) return blocked;
 		if (isMeaningfulProgressToolCall(event.toolName, event.input as Record<string, unknown>)) {

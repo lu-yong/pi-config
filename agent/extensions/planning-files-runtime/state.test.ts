@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 
-import { defaultGoalState, hasActiveGoal, readGoalState } from "./state.ts";
+import { defaultGoalState, hasActiveGoal, readGoalState, readGoalStateForUpdate } from "./state.ts";
 import type { GoalOverlayStatus } from "./types.ts";
 import { getPaths, writeText } from "./utils.ts";
 
@@ -70,5 +70,22 @@ test("legacy paused state defaults a missing suggested action", () => {
 	assert.equal(restored.status, "paused");
 	assert.equal(restored.impl.pausedReason, "blocked");
 	assert.equal(restored.impl.pausedSuggestedAction, "");
+});
+
+test("lifecycle reads reject unreadable state while read-only queries remain compatible", () => {
+	const cwd = makeCwd();
+	assert.equal(readGoalStateForUpdate(cwd), null);
+	persistStatus(cwd, "paused");
+	const target = getPaths(cwd).goalState;
+	const original = fs.readFileSync(target, "utf8");
+	fs.chmodSync(target, 0o000);
+	try {
+		assert.throws(() => readGoalStateForUpdate(cwd), { code: "EACCES" });
+		assert.equal(hasActiveGoal(cwd), false);
+	} finally {
+		fs.chmodSync(target, 0o600);
+	}
+	assert.equal(fs.readFileSync(target, "utf8"), original);
+	assert.equal(readGoalStateForUpdate(cwd)?.status, "paused");
 });
 

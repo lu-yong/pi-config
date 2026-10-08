@@ -13,7 +13,7 @@ import {
 	MESSAGE_TYPE_GOAL_IMPL,
 	MESSAGE_TYPE_GOAL_SET,
 } from "./types.ts";
-import { defaultGoalDraft, defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
+import { defaultGoalDraft, defaultGoalState, readGoalState, readGoalStateForUpdate, writeGoalState } from "./state.ts";
 import { goalContractFromDraft, mergeDraft } from "./draft.ts";
 import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
 import {
@@ -84,6 +84,7 @@ export interface GoalLifecycleDeps {
 
 export type GoalLifecycleEvent =
 	| { type: "restore" }
+	| { type: "sync" }
 	| { type: "reset" }
 	| { type: "start-drafting"; input?: string }
 	| { type: "save-draft"; params: SaveGoalDraftParams }
@@ -213,6 +214,26 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	// /plan-goal-impl re-sends the same run's continuation once storage works.
 	let recoveryPending = false;
 
+	/** Import disk changes at event boundaries, not just into the widget projection. */
+	const syncState = (): void => {
+		const next = readGoalStateForUpdate(cwd);
+		if (!next) {
+			if (state.status !== "none") throw new Error(".goal-state.json disappeared; restore it or use /plan-new before continuing.");
+			return;
+		}
+		if (next.status !== state.status || next.impl.runId !== state.impl.runId
+			|| next.impl.planningResetRequired !== state.impl.planningResetRequired) {
+			deps.timer.clear();
+			queuedRunId = null;
+			progressSeenThisRun = false;
+			terminalStopReason = undefined;
+			terminalErrorMessage = "";
+			recoveryPending = false;
+		}
+		// Contract-only edits must not erase progress or the current turn-stop gate.
+		state = next;
+	};
+
 	/**
 	 * Persist before publishing: a goal-state write failure must not leave
 	 * memory ahead of disk, and must not install a rollback target for a
@@ -220,9 +241,9 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	 */
 	const persist = (next: GoalOverlayState): void => {
 		const previous = state;
-		writeGoalState(cwd, next);
+		const persisted = writeGoalState(cwd, next);
 		rollbackState = cloneState(previous);
-		state = next;
+		state = persisted;
 	};
 
 	/**
@@ -259,8 +280,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	const transition = (event: InternalEvent): GoalLifecycleEffect[] => {
 		rollbackState = null;
 		switch (event.type) {
+			case "sync":
+				return [];
+
 			case "restore":
-				state = readGoalState(cwd);
+				state = readGoalStateForUpdate(cwd) ?? defaultGoalState();
 				rollbackState = null;
 				progressSeenThisRun = false;
 				terminalStopReason = undefined;
@@ -492,7 +516,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				return [{ type: "clear-continuation" }];
 
 			case "turn-start":
-				turnStopped = null;
 				recoveryPending = false;
 				return [];
 
@@ -657,6 +680,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 								return;
 							}
 							const result = runInternal({ type: "continuation-fired", runId }, context);
+							if (result.failure?.operation === "state-sync") {
+								// Never recover a read failure by overwriting the unreadable file.
+								recoveryPending = true;
+								execute([{ type: "notify", level: "warning", message: result.failure.reason }], context);
+								return;
+							}
 							if (result.failure) {
 								// The follow-up could not be delivered. Commit the
 								// deterministic paused state first; the progress/UI
@@ -714,6 +743,24 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	 * (e.g. goal-state writes) into a result instead of an uncaught throw.
 	 */
 	const runInternal = (event: InternalEvent, context: GoalLifecycleContext): GoalLifecycleResult => {
+		// The turn boundary is independent of disk health: a new turn must be able
+		// to repair a bad state file instead of inheriting the previous stop gate.
+		if (event.type === "turn-start") turnStopped = null;
+		// A failed read must not roll back a previous, already successful operation.
+		rollbackState = null;
+		if (event.type !== "restore" && event.type !== "reset") {
+			try {
+				syncState();
+			} catch (error) {
+				// Every sync entry point can cancel a continuation, not just its timer.
+				// Keep an explicit retry route once the file has been repaired.
+				if (state.status === "active") recoveryPending = true;
+				deps.timer.clear();
+				queuedRunId = null;
+				const detail = error instanceof Error ? error.message : String(error);
+				return { failure: { operation: "state-sync", reason: `Goal run failed: cannot read current goal state; no state was written. ${detail}` } };
+			}
+		}
 		try {
 			return execute(transition(event), context);
 		} catch (error) {

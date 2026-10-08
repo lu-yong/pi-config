@@ -78,3 +78,15 @@ test("hashline anchor tools count as meaningful progress", () => {
 	assert.equal(isMeaningfulProgressToolCall("read", { path: "src/app.ts" }), false);
 	assert.equal(isMeaningfulProgressToolCall("bash", { command: "echo hi" }), false);
 });
+
+for (const toolName of ["replace_match", "copy", "move"]) {
+	test(`${toolName} refreshes planning and counts as progress without an input path`, () => {
+		const cwd = makeCwd();
+		try {
+			assert.equal(isLivePlanningMutation(toolName, {}, cwd), true);
+			assert.equal(isMeaningfulProgressToolCall(toolName, {}), true);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+}
