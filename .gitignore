@@ -41,3 +41,11 @@ web-search-cache/
 .pi/skills/openspec-update-change/
 openspec/
 .pi/prompts/
+
+agent/bin/
+agent/install/
+agent/mcp-cache.json
+agent/mcp-npx-cache.json
+agent/mcp-onboarding.json
+agent/mcp-project-approvals.json
+agent/patches-om-98-3.1.4.patch
