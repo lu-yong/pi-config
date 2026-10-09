@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { completeSimple, type Model, type ProviderHeaders, type ThinkingLevel, type UserMessage } from "@earendil-works/pi-ai/compat";
+import type { Model, ThinkingLevel, UserMessage } from "@earendil-works/pi-ai";
 import { BorderedLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { askExtractedQuestions } from "../question-taking/interaction.ts";
@@ -80,8 +80,6 @@ function lastAssistantText(ctx: ExtensionContext): string | undefined {
 	return getLastAssistantText(ctx.sessionManager.getBranch() as unknown as BranchEntry[]);
 }
 
-type ExtractionAuth = { apiKey?: string; headers?: ProviderHeaders; env?: Record<string, string> };
-
 /**
  * 选出本次抽取用的模型并解析鉴权。自动路径和 /qna 共用这一条链路。
  * 任何一步失败都退回 ctx.model，并给一条可见提示；主模型也失败才算真的失败。
@@ -89,7 +87,7 @@ type ExtractionAuth = { apiKey?: string; headers?: ProviderHeaders; env?: Record
 async function prepareExtraction(
 	ctx: ExtensionContext,
 	settings: QnaSettings,
-): Promise<{ model: Model<any>; thinking: ThinkingLevel | undefined; auth: ExtractionAuth } | null> {
+): Promise<{ model: Model<any>; thinking: ThinkingLevel | undefined } | null> {
 	const mainModel = ctx.model!;
 	const registry = ctx.modelRegistry;
 	const choice = resolveExtractionModel<Model<any>>({
@@ -101,37 +99,31 @@ async function prepareExtraction(
 	});
 	if (choice.notice) ctx.ui.notify(choice.notice, "warning");
 
-	const auth = await resolveAuth(ctx, choice.model);
-	if (auth) return { model: choice.model, thinking: choice.thinking ?? undefined, auth };
+	if (await hasResolvedAuth(ctx, choice.model)) return { model: choice.model, thinking: choice.thinking ?? undefined };
 
 	// hasConfiguredAuth 只看 provider 级配置，真正取 key 仍可能失败（OAuth 过期等）。
 	if (!choice.usedFallback) {
 		ctx.ui.notify(authFallbackNotice(`${choice.model.provider}/${choice.model.id}`, mainModel.id), "warning");
-		const mainAuth = await resolveAuth(ctx, mainModel);
-		if (mainAuth) return { model: mainModel, thinking: undefined, auth: mainAuth };
+		if (await hasResolvedAuth(ctx, mainModel)) return { model: mainModel, thinking: undefined };
 	}
 	ctx.ui.notify(`无法为主模型 ${mainModel.id} 取得 API key`, "error");
 	return null;
 }
 
-async function resolveAuth(ctx: ExtensionContext, model: Model<any>): Promise<ExtractionAuth | null> {
+async function hasResolvedAuth(ctx: ExtensionContext, model: Model<any>): Promise<boolean> {
 	try {
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		// ok 且没有 apiKey 是一条合法路径：provider 不要求 Authorization 头时
-		// （model-registry 的 compatibility.authHeader 为假，这是默认值），
-		// registry 只回 headers。本地 llama.cpp / ollama、以及在 models.json 里
-		// 自带 Authorization 头的 provider 走的都是它。
-		// ProviderRequestOptions.apiKey 本来就是可选的，原样透传即可。
-		if (!auth.ok) return null;
-		return { apiKey: auth.apiKey, headers: auth.headers, env: auth.env };
+		// Preserve the existing auth-failure fallback preflight, but never carry its
+		// credential snapshot into a request. streamSimple resolves native provider
+		// auth again at request time (including endpoint, headers and provider env).
+		return (await ctx.modelRegistry.getApiKeyAndHeaders(model)).ok;
 	} catch {
-		return null;
+		return false;
 	}
 }
 
 /**
  * 抽取的三种结局。刻意不用 `string | null`：
- * completeSimple 走的是 stream*(...).result()，而 .result() 在**错误和中止时都 resolve**
+ * modelRegistry.streamSimple(...).result()，而 .result() 在**错误和中止时都 resolve**
  * （pi-ai/dist/utils/event-stream.js 的 AssistantMessageEventStream），provider 把整个流循环
  * 包在 try/catch 里，catch 中先把 stopReason 置为 "aborted"/"error" 再 push error 事件。
  * 所以 429/402/500 这类失败会以 `stopReason === "error"` + 空 content 的形式**正常返回** ——
@@ -146,10 +138,10 @@ function errorMessageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function runQna(ctx: ExtensionContext, lastText: string, settings: QnaSettings): Promise<void> {
+export async function runQna(ctx: ExtensionContext, lastText: string, settings: QnaSettings): Promise<void> {
 	const prepared = await prepareExtraction(ctx, settings);
 	if (!prepared) return;
-	const { model, thinking, auth } = prepared;
+	const { model, thinking } = prepared;
 
 	const outcome = await ctx.ui.custom<ExtractionOutcome>((tui, theme, _keybindings, done) => {
 		// 显示实际使用的模型，回退发生时不会误导。
@@ -162,18 +154,13 @@ async function runQna(ctx: ExtensionContext, lastText: string, settings: QnaSett
 				content: [{ type: "text", text: lastText }],
 				timestamp: Date.now(),
 			};
-			// completeSimple（而非 complete）才接受归一化的 thinking level。
-			const response = await completeSimple(
+			// The current runtime owns provider dispatch and request-time auth.
+			// streamSimple accepts the normalized thinking level, unlike stream.
+			const response = await ctx.modelRegistry.streamSimple(
 				model,
 				{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-				{
-					apiKey: auth.apiKey,
-					headers: auth.headers,
-					env: auth.env,
-					reasoning: thinking,
-					signal: loader.signal,
-				},
-			);
+				{ reasoning: thinking, signal: loader.signal },
+			).result();
 			if (response.stopReason === "aborted") return { kind: "aborted" };
 			if (response.stopReason === "error") {
 				return { kind: "error", message: response.errorMessage ?? "provider 返回了错误但没有给出错误信息" };
@@ -185,8 +172,8 @@ async function runQna(ctx: ExtensionContext, lastText: string, settings: QnaSett
 			return { kind: "text", text };
 		};
 
-		// provider 的错误不走 reject（见 ExtractionOutcome 的注释），这里的 reject 分支
-		// 只兜同步抛出：resolveApiProvider 找不到 api provider、getClientApiKey 既无 key 又无 auth 头。
+		// Terminal error/aborted responses resolve; also cover a synchronous throw
+		// or a rejected result from an extension-provided registry implementation.
 		doExtract().then(done, (error) => done({ kind: "error", message: errorMessageOf(error) }));
 		return loader;
 	});

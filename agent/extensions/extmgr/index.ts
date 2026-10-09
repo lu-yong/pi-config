@@ -102,6 +102,20 @@ export function buildSnapshot(env: ExtmgrEnv): Snapshot {
 
 	const packages: Snapshot["packages"] = [];
 	const manifests: Snapshot["manifests"] = {};
+	const collectManifests = (root: string, files: string[]) => {
+		for (const rel of files) {
+			if (rel !== "package.json" && !rel.endsWith("/package.json")) continue;
+			const dir = rel === "package.json" ? root : join(root, rel.slice(0, -"/package.json".length));
+			const manifest = readPiManifest(dir);
+			if (manifest) manifests[dir] = manifest;
+		}
+	};
+	const globalExtensionRoot = join(env.agentDir, "extensions");
+	const projectExtensionRoot = join(projectBase, "extensions");
+	const globalListing = listFilesRecursive(globalExtensionRoot);
+	const projectListing = listFilesRecursive(projectExtensionRoot);
+	collectManifests(globalExtensionRoot, globalListing);
+	collectManifests(projectExtensionRoot, projectListing);
 	const collectPackages = (settings: Record<string, unknown>, scope: "global" | "project") => {
 		const raw = settings.packages;
 		if (!Array.isArray(raw)) return;
@@ -121,20 +135,19 @@ export function buildSnapshot(env: ExtmgrEnv): Snapshot {
 		if (!root) continue;
 		pkg.root = root;
 		pkg.rootFiles = listFilesRecursive(root);
-		const manifest = readPiManifest(root);
-		if (manifest) manifests[root] = manifest;
+		collectManifests(root, pkg.rootFiles);
 	}
 
 	return {
 		global: {
 			baseDir: env.agentDir,
 			settings: globalSettings,
-			extensionListing: listFilesRecursive(join(env.agentDir, "extensions")),
+			extensionListing: globalListing,
 		},
 		project: {
 			baseDir: projectBase,
 			settings: projectSettings,
-			extensionListing: listFilesRecursive(join(projectBase, "extensions")),
+			extensionListing: projectListing,
 		},
 		packages,
 		manifests,

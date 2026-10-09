@@ -39,6 +39,7 @@ Goal overlay state:
 - `commit_plan_goal` validates `goal-design.md` exists and non-empty
 - `/plan-archive` rejects while the agent is running; once idle, it archives all managed files and goal state without reinitializing at any goal status; `/plan-new` archives them and creates a fresh workspace
 - Execution follows Task hard/soft deps + TDD (red → green → refactor, 1 commit per Task)
+- Cancellation pauses an `active` goal and clears any pending continuation, including cancellation during Pi cleanup after the last assistant message ended normally; the goal does not resume automatically
 
 ## Dotfiles integration
 

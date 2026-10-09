@@ -19,7 +19,7 @@
 | `pi-open-tui` | 终端用户界面增强 | `pi install npm:pi-open-tui` |
 | `pi-files-widget-overlay` | 浮动文件浏览器、查看器与 Git diff overlay，入口 `/readfiles`，是 tmustier files-widget 的 overlay 化分支 | `pi install npm:pi-files-widget-overlay` |
 | `pi-herdr-agents` | 在 Herdr pane 中异步运行 Pi 子 agent，自动回传结果，支持持久专家和隔离 worktree | `pi install npm:pi-herdr-agents` |
-| `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`insert`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
+| `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`replace_match`、`insert`、`copy`、`move`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
 | `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
 | `@firstpick/pi-themes-bundle` | 提供多套熟悉的浅色和深色主题 | `pi install npm:@firstpick/pi-themes-bundle` |
 | `@juicesharp/rpiv-ask-user-question` | 提供 `ask_user_question` 结构化提问工具，支持单选、多选、自定义回答和选项预览 | `pi install npm:@juicesharp/rpiv-ask-user-question` |
@@ -60,6 +60,7 @@
 
 - **文件**：`agent/extensions/readonly-mode/`
 - **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`
+- **拦截**：启用时拦截具名文件变更工具 `edit`、`write`、`replace`、`replace_match`、`insert`、`copy`、`move`、`undo_last_change` 和旧版 `undo_last_replace`，直接调用和嵌套调用（如通过 codemode）均受限制；`bash` 另按只读命令策略检查。
 - **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
 - **测试**：`node --test agent/extensions/readonly-mode/*.test.ts`
 
@@ -75,6 +76,7 @@
 - **文件**：`agent/extensions/planning-files-runtime/`
 - **功能**：在项目 `.pi/planning/` 中持久化当前计划、发现、进度和目标状态。
 - **命令**：`/plan-archive`（agent 空闲时仅归档、不新建模板，且不受目标状态限制）、`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
+- **取消行为**：即使最后一条 assistant 消息已正常结束，Pi 收尾时的取消仍会将 `active` goal 暂停并清除待执行的 continuation，不自动续跑。
 - **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
 
 ### qna
@@ -82,6 +84,7 @@
 - **文件**：`agent/extensions/qna/`
 - **功能**：普通 TUI 对话在 agent settled 后自动抽取回复中的用户问题，并通过共享 question-taking 界面收集答案；也可手动运行 `/qna`。
 - **触发判定**：自动触发前先剥离围栏/缩进代码块、行内代码和 URL，再只在净化后文本的**末尾 400 字符**内判定问号，避免 `a ? b : c`、`a?.b`、query string、正文中段的反问句造成误触发。去重指纹仍基于原始回复文本。
+- **模型调用**：通过 `ctx.modelRegistry.streamSimple(...).result()` 交由当前原生模型运行时调用 native/virtual provider，运行时在请求时解析鉴权及路由；保留现有模型配置和鉴权预检回退。请求阶段的错误、取消或空响应不触发主模型重试，不是所有请求失败都回退。
 - **配置**（`agent/settings.json` 顶层 `qna` 块，缺失/损坏一律安全降级到默认值）：
 
   | 键 | 默认 | 说明 |
@@ -99,6 +102,7 @@
 - **文件**：`agent/extensions/extmgr/`
 - **功能**：扩展加载管理器——`/extmgr` 交互式 picker（分组显示 global/project/effective/loaded 四列合并视图）与 `manage_extensions` 工具（list/enable/disable）。切换写入原生 Pi settings（独立扩展 `-extensions/<rel>` 精确模式、整包对象条目、项目层 delta 条目），写入形式与 `pi config` 逐字一致；不可达的原生限制格（如项目层控制全局独立扩展）明确返回 unavailable 原因而不是伪造写入。
 - **交互**：`j/k` 或方向键移动、`Enter` 在活动写入层切换、`Tab` 切换 global/project 写入层、`/` 子串过滤（文件名与包源）、`a` 应用并恰好触发一次 reload、`q`/`Esc` 关闭；禁用 extmgr 自身需确认并提示 `pi config` 恢复路径。非 TUI 模式调用 `/extmgr` 会提示改用工具。
+- **解析与回归边界**：目录自身和直接子目录按有效 `package.json` 的 `pi.extensions` 入口、`index.ts`、`index.js` 的顺序选择；目录自身有入口时优先于同级文件扫描。目录入口优先级与 package manifest 过滤已通过离线临时 fixture 对照当前 Pi 原生 `DefaultPackageManager` resolver 回归；差分测试仅覆盖这些场景，不代表整个解析器与原生完全等价。
 - **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 proper-lockfile/typebox/minimatch）
 
 ### readme-check
@@ -264,7 +268,7 @@ node --test agent/extensions/*/*.test.ts
 npm --prefix agent/extensions/extmgr test
 ```
 
-前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展）；后者用 vitest 运行 extmgr 的测试（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
+前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展），包括 Q&A 使用原生 `ModelRuntime` 的离线回归，验证 native/virtual provider 调用、请求时鉴权、预检回退和错误/取消处理；后者用 vitest 运行 extmgr 的测试，包括目录入口优先级与 manifest 过滤对照原生 resolver 的离线差分回归（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
 ## 未入库文件与安全
 
 忽略规则见 [`.gitignore`](.gitignore) 与 [`agent/npm/.gitignore`](agent/npm/.gitignore)。以下内容只保存在本机，不随本仓库提交：

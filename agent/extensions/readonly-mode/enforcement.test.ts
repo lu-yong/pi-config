@@ -35,7 +35,7 @@ describe('read-only enforcement', () => {
       {
         type: 'notify',
         level: 'info',
-        message: 'Read-only mode ON - edit/write/replace/insert blocked, bash restricted to approved commands',
+        message: 'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change/undo_last_replace blocked, bash restricted to approved commands',
       },
       { type: 'send-user-message', content: 'review this' },
     ]);
@@ -55,7 +55,7 @@ describe('read-only enforcement', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
-    for (const toolName of ['edit', 'write', 'replace', 'insert', 'undo_last_change', 'undo_last_replace']) {
+    for (const toolName of ['edit', 'write', 'replace', 'replace_match', 'insert', 'copy', 'move', 'undo_last_change', 'undo_last_replace']) {
       assert.deepEqual(
         enforcement.handle({ type: 'tool-call', toolName, input: {} }),
         [
@@ -152,6 +152,11 @@ describe('read-only enforcement', () => {
       injection[0]?.type === 'inject-context' ? injection[0].content : '',
       /custom tools are outside this mode's enforcement scope/,
     );
+    const instructions = injection[0]?.type === 'inject-context' ? injection[0].content : '';
+    for (const toolName of ['replace_match', 'copy', 'move', 'undo_last_replace']) {
+      assert.match(instructions, new RegExp(`\\b${toolName}\\b`));
+    }
+    assert.match(instructions, /including nested calls/);
 
     enforcement.handle({ type: 'toggle' });
     assert.deepEqual(

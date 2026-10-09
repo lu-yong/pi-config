@@ -96,7 +96,7 @@ export type GoalLifecycleEvent =
 	| { type: "turn-start" }
 	| { type: "progress-tool-called" }
 	| { type: "turn-end"; stopReason?: string; errorMessage?: string }
-	| { type: "agent-settled" };
+	| { type: "agent-settled"; aborted?: boolean };
 
 export interface GoalLifecycle {
 	handle(event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult;
@@ -273,6 +273,19 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
 		persist(mutation(state));
+	};
+
+	const pauseForUserInterruption = (): GoalLifecycleEffect[] => {
+		const reason = "The goal run was interrupted by the user.";
+		mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
+		progressSeenThisRun = false;
+		queuedRunId = null;
+		return [
+			{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
+			{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
+			{ type: "clear-continuation" },
+			{ type: "refresh" },
+		];
 	};
 
 	// ---- state machine: GoalLifecycleEvent -> internal effects ----
@@ -527,16 +540,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalStopReason = event.stopReason;
 				terminalErrorMessage = normalizeString(event.errorMessage);
 				if (state.status === "active" && event.stopReason === "aborted") {
-					const reason = "The goal run was interrupted by the user.";
-					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
-					progressSeenThisRun = false;
-					queuedRunId = null;
-					return [
-						{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
-						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
-						{ type: "clear-continuation" },
-						{ type: "refresh" },
-					];
+					return pauseForUserInterruption();
 				}
 				if (state.status !== "active" || event.stopReason === "error") return [{ type: "clear-continuation" }];
 				return [{ type: "refresh" }];
@@ -548,6 +552,9 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					queuedRunId = null;
 					return [{ type: "clear-continuation" }, { type: "refresh" }];
 				}
+				// Cancellation can happen during Pi cleanup after a normal final message.
+				// Prefer the run-level signal over the last message's provider error.
+				if (event.aborted) return pauseForUserInterruption();
 				if (terminalStopReason === "error") {
 					const detail = terminalErrorMessage || "unknown provider error";
 					const reason = `LLM request failed and Pi will not retry automatically: ${detail}`;

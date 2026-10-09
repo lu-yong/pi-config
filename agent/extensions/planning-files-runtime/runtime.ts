@@ -340,8 +340,8 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		notifyRejection(ctx, result);
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		const lifecycle = lifecycleFor(ctx.cwd);
-		notifyRejection(ctx, lifecycle.handle({ type: "agent-settled" }, contextFor(ctx, state.resumedFromPreviousSession)));
+		notifyRejection(ctx, lifecycle.handle({ type: "agent-settled", aborted: event.aborted }, contextFor(ctx, state.resumedFromPreviousSession)));
 	});
 }

@@ -442,6 +442,46 @@ describe("goal lifecycle", () => {
 		assert.deepEqual(harness.timer.scheduledDelays(), [CONTINUATION_DELAY_MS]);
 	});
 
+	test("aborted settlement clears a pending continuation and pauses only once", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+		assert.equal(harness.timer.hasPending(), true);
+
+		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
+		assert.equal(result.failure, undefined);
+		assert.equal(result.rejection, undefined);
+		assert.equal(run.getState().status, "paused");
+		assert.equal(harness.timer.hasPending(), false);
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 0);
+		const progressPath = getPaths(cwd).files["progress.md"];
+		const before = readText(progressPath);
+		assert.equal(before.match(/Goal implementation paused: The goal run was interrupted by the user\./g)?.length, 1);
+		run.handle({ type: "agent-settled", aborted: true }, harness.context());
+		assert.equal(readText(progressPath), before);
+	});
+
+	test("aborted settlement preserves pause effect rollback and clears its timer", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+		settleWithProgress(run, harness);
+		assert.equal(harness.timer.hasPending(), true);
+		harness.setFailRefresh(true);
+		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
+		assert.match(result.failure?.reason ?? "", /Goal run failed; state restored.*refresh exploded/);
+		assert.equal(run.getState().status, "active");
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "active");
+		assert.equal(harness.timer.hasPending(), false);
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 0);
+	});
+
 	test("an aborted turn pauses immediately", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();

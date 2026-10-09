@@ -2,12 +2,13 @@
  * Pure enumeration + effective-state computation for Pi extensions.
  *
  * Replicates Pi's resource-resolution semantics (pattern precedence, per-tier
- * filtering, union, package replace/delta dedupe) as pinned by
- * `test/fixtures/resolution-rules.ts` (ported from pi-coding-agent 0.87.1).
+ * filtering, union, package replace/delta dedupe). Historical fixtures live in
+ * `test/fixtures/resolution-rules.ts`; `test/native-resolution.test.ts` checks
+ * directory discovery and manifest filtering against the current Pi host.
  * No I/O: the snapshot is assembled by the caller (index.ts).
  */
 
-import { basename } from "node:path";
+import { basename, posix } from "node:path";
 import { minimatch } from "minimatch";
 
 // ---------------------------------------------------------------------------
@@ -134,30 +135,35 @@ export function isEnabledByOverrides(
 
 const CODE_EXT = /\.(ts|js)$/;
 
-/** Turn a tier's recursive `extensions/` listing into the files Pi loads. */
-export function discoverStandaloneFiles(listing: string[]): string[] {
+/** Turn a recursive directory listing into the entries Pi loads. Package entries
+ * take precedence over index.ts, then index.js, both at the root and in immediate
+ * subdirectories. Manifests are keyed by absolute directory, as in Snapshot. */
+export function discoverStandaloneFiles(
+	listing: string[],
+	manifests: Snapshot["manifests"] = {},
+	root = "",
+): string[] {
+	const files = new Set(listing);
+	const exists = (rel: string) => files.has(rel) || listing.some((f) => f.startsWith(`${rel}/`));
+	const directoryEntries = (dir: string): string[] | undefined => {
+		const prefix = dir ? `${dir}/` : "";
+		const manifest = manifests[dir ? `${root}/${dir}` : root];
+		const explicit = (manifest?.extensions ?? [])
+			.map((entry) => posix.normalize(`${prefix}${entry}`))
+			.filter(exists);
+		// Pi's directory entry resolver checks literal paths, not manifest globs
+		// or filters. Package-root manifest expansion is handled separately below.
+		if (explicit.length > 0) return explicit;
+		if (files.has(`${prefix}index.ts`)) return [`${prefix}index.ts`];
+		if (files.has(`${prefix}index.js`)) return [`${prefix}index.js`];
+		return undefined;
+	};
+	const ownEntries = directoryEntries("");
+	if (ownEntries) return ownEntries.sort();
 	const top = listing.filter((rel) => !rel.includes("/") && CODE_EXT.test(rel));
-	const byDir = new Map<string, string[]>();
-	for (const rel of listing) {
-		const idx = rel.lastIndexOf("/");
-		if (idx === -1) continue;
-		const dir = rel.slice(0, idx);
-		if (!byDir.has(dir)) byDir.set(dir, []);
-		byDir.get(dir)!.push(rel.slice(idx + 1));
-	}
-	const subResults: string[] = [];
-	for (const [dir, files] of byDir) {
-		// Only immediate subdirectories of the tier's extensions/ root.
-		if (dir.includes("/")) continue;
-		if (files.includes("index.ts")) {
-			subResults.push(`${dir}/index.ts`);
-			continue;
-		}
-		if (files.includes("index.js")) {
-			subResults.push(`${dir}/index.js`);
-		}
-	}
-	return [...top, ...subResults].sort();
+	const dirs = new Set(listing.filter((rel) => rel.includes("/")).map((rel) => rel.split("/")[0]));
+	for (const dir of dirs) top.push(...(directoryEntries(dir) ?? []));
+	return top.sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +172,7 @@ export function discoverStandaloneFiles(listing: string[]): string[] {
 
 /** Extension files of an installed package: manifest entries, else the
  * conventional `extensions/` subtree (smart discovery). */
-export function packageExtensionFiles(pkg: PackageSourceSnapshot, manifest?: PiManifest): string[] {
+export function packageExtensionFiles(pkg: PackageSourceSnapshot, manifest?: PiManifest, manifests: Snapshot["manifests"] = {}): string[] {
 	if (!pkg.root) return [];
 	const entries = manifest?.extensions;
 	if (entries && entries.length > 0) {
@@ -191,17 +197,18 @@ export function packageExtensionFiles(pkg: PackageSourceSnapshot, manifest?: PiM
 			// collectResourceFiles → collectAutoExtensionEntries).
 			const prefix = `${e}/`;
 			const sub = [...rootFiles].filter((rel) => rel.startsWith(prefix)).map((rel) => rel.slice(prefix.length));
-			for (const rel of discoverStandaloneFiles(sub)) {
+			for (const rel of discoverStandaloneFiles(sub, manifests, `${pkg.root}/${e}`)) {
 				out.push(`${pkg.root}/${prefix}${rel}`);
 			}
 		}
-		return out;
+		const allowed = applyPackagePatterns(out, entries.filter((p) => /^[!+-]/.test(p)), pkg.root);
+		return [...new Set(out)].filter((file) => allowed.get(file));
 	}
 	const strip = "extensions/";
 	const conventional = (pkg.rootFiles ?? [])
 		.filter((rel) => rel.startsWith(strip))
 		.map((rel) => rel.slice(strip.length));
-	return discoverStandaloneFiles(conventional).map((rel) => `${pkg.root}/${strip}${rel}`);
+	return discoverStandaloneFiles(conventional, manifests, `${pkg.root}/extensions`).map((rel) => `${pkg.root}/${strip}${rel}`);
 }
 
 function asStrings(value: unknown): string[] {
@@ -297,11 +304,11 @@ function resolvePackageFiles(pkg: PackageSourceSnapshot, snapshot: Snapshot): { 
 		const base = snapshot.packages.find((p) => p.scope === "global" && packageIdentity(p.source) === identity);
 		const root = base?.root ?? pkg.root;
 		if (!root) return { root: undefined, files: [], fileTier: "global" };
-		const files = packageExtensionFiles({ ...pkg, root, rootFiles: base?.rootFiles ?? pkg.rootFiles }, snapshot.manifests[root]);
+		const files = packageExtensionFiles({ ...pkg, root, rootFiles: base?.rootFiles ?? pkg.rootFiles }, snapshot.manifests[root], snapshot.manifests);
 		return { root, files, fileTier: "global" };
 	}
 	if (!pkg.root) return { root: undefined, files: [], fileTier: pkg.scope };
-	return { root: pkg.root, files: packageExtensionFiles(pkg, snapshot.manifests[pkg.root]), fileTier: pkg.scope };
+	return { root: pkg.root, files: packageExtensionFiles(pkg, snapshot.manifests[pkg.root], snapshot.manifests), fileTier: pkg.scope };
 }
 
 /** Pi's dedupePackages over [project entries..., user entries...]: first
@@ -357,7 +364,7 @@ export function resolveExtensions(snapshot: Snapshot): ExtensionEntry[] {
 	for (const tier of ["global", "project"] as const) {
 		const t = snapshot[tier];
 		const overrides = asStrings(t.settings.extensions);
-		for (const rel of discoverStandaloneFiles(t.extensionListing)) {
+		for (const rel of discoverStandaloneFiles(t.extensionListing, snapshot.manifests, `${t.baseDir}/extensions`)) {
 			const abs = `${t.baseDir}/extensions/${rel}`;
 			const on = isEnabledByOverrides(abs, overrides, t.baseDir);
 			entries.push({

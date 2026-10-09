@@ -15,7 +15,7 @@ afterEach(() => {
 	for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-function harness(status: "active" | "paused" | "ready" = "active") {
+function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "complete" = "active") {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "planning-runtime-"));
 	directories.push(cwd);
 	const goal = {
@@ -86,6 +86,136 @@ for (const toolName of ["replace_match", "copy", "move"]) {
 		t.mock.timers.tick(CONTINUATION_DELAY_MS);
 		assert.equal(h.messages.length, 1);
 		assert.equal(h.messages[0].customType, MESSAGE_TYPE_CONTINUATION);
+	});
+}
+
+test("normal settlement with progress continues after the delay", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("agent_start");
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "stop" } });
+	await h.event("agent_settled", { aborted: false });
+	assert.equal(h.messages.length, 0);
+	t.mock.timers.tick(CONTINUATION_DELAY_MS - 1);
+	assert.equal(h.messages.length, 0);
+	t.mock.timers.tick(1);
+	assert.equal(readGoalState(h.cwd).status, "active");
+	assert.equal(h.messages.length, 1);
+	assert.equal(h.messages[0].customType, MESSAGE_TYPE_CONTINUATION);
+});
+
+for (const progress of [true, false]) {
+	test(`settlement cancellation after a normal stop pauses with progress=${progress}`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = harness();
+		await h.event("session_start", { reason: "new" });
+		await h.event("agent_start");
+		await h.event("turn_start");
+		if (progress) await h.event("tool_call", { toolName: "replace_match", input: {} });
+		await h.event("turn_end", { message: { stopReason: "stop" } });
+		await h.event("agent_settled", { aborted: true });
+		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+		assert.equal(h.messages.length, 0);
+		const state = readGoalState(h.cwd);
+		assert.equal(state.status, "paused");
+		assert.equal(state.impl.pausedReason, "The goal run was interrupted by the user.");
+		assert.equal(state.impl.pausedSuggestedAction, "");
+		assert.ok(h.widget()?.includes("goal: paused"));
+		const progressPath = getPaths(h.cwd).files["progress.md"];
+		const before = fs.readFileSync(progressPath, "utf8");
+		assert.equal(before.match(/Goal implementation paused: The goal run was interrupted by the user\./g)?.length, 1);
+		await h.event("agent_settled", { aborted: true });
+		assert.equal(fs.readFileSync(progressPath, "utf8"), before);
+		assert.deepEqual(h.warnings, []);
+	});
+}
+
+test("settlement cancellation takes precedence over a terminal provider error", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "error", errorMessage: "provider overloaded" } });
+	assert.equal(readGoalState(h.cwd).status, "active");
+	await h.event("agent_settled", { aborted: true });
+	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+	assert.equal(h.messages.length, 0);
+	assert.equal(readGoalState(h.cwd).status, "paused");
+	assert.equal(readGoalState(h.cwd).impl.pausedReason, "The goal run was interrupted by the user.");
+	assert.deepEqual(h.warnings, []);
+	assert.doesNotMatch(fs.readFileSync(getPaths(h.cwd).files["progress.md"], "utf8"), /LLM request failed/);
+});
+
+test("settlement cancellation clears an already pending continuation", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "stop" } });
+	await h.event("agent_settled", { aborted: false });
+	await h.event("agent_settled", { aborted: true });
+	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+	assert.equal(h.messages.length, 0);
+	assert.equal(readGoalState(h.cwd).status, "paused");
+});
+
+test("an aborted turn followed by aborted settlement does not log a second pause", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "aborted" } });
+	assert.equal(readGoalState(h.cwd).status, "paused");
+	const progressPath = getPaths(h.cwd).files["progress.md"];
+	const before = fs.readFileSync(progressPath, "utf8");
+	await h.event("agent_settled", { aborted: true });
+	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+	assert.equal(h.messages.length, 0);
+	assert.equal(fs.readFileSync(progressPath, "utf8"), before);
+});
+
+for (const status of ["none", "drafting", "ready", "paused", "complete"] as const) {
+	test(`aborted settlement preserves an already ${status} goal`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = harness(status);
+		await h.event("session_start", { reason: "new" });
+		const before = readGoalState(h.cwd);
+		const progressPath = getPaths(h.cwd).files["progress.md"];
+		const progressBefore = fs.readFileSync(progressPath, "utf8");
+		await h.event("turn_end", { message: { stopReason: "stop" } });
+		await h.event("agent_settled", { aborted: true });
+		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+		assert.equal(h.messages.length, 0);
+		assert.deepEqual(readGoalState(h.cwd), before);
+		assert.equal(fs.readFileSync(progressPath, "utf8"), progressBefore);
+		assert.deepEqual(h.warnings, []);
+	});
+}
+
+for (const toolName of ["pause_plan_goal", "complete_plan_goal"]) {
+	test(`aborted settlement preserves the result of ${toolName}`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = harness();
+		await h.event("session_start", { reason: "new" });
+		await h.event("turn_start");
+		await h.event("tool_call", { toolName: "replace_match", input: {} });
+		await h.tool(toolName, { reason: "External blocker", summary: "Done", evidence: ["Tests pass"] });
+		const before = readGoalState(h.cwd);
+		const progressPath = getPaths(h.cwd).files["progress.md"];
+		const progressBefore = fs.readFileSync(progressPath, "utf8");
+		await h.event("turn_end", { message: { stopReason: "stop" } });
+		await h.event("agent_settled", { aborted: true });
+		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
+		assert.equal(h.messages.length, 0);
+		assert.deepEqual(readGoalState(h.cwd), before);
+		assert.equal(fs.readFileSync(progressPath, "utf8"), progressBefore);
+		assert.deepEqual(h.warnings, []);
 	});
 }
 

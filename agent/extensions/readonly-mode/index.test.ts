@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import {
+  createExtensionRuntime,
+  ExtensionRunner,
+  SessionManager,
+  type ToolCallEvent,
+} from '@earendil-works/pi-coding-agent';
 import readonlyMode from './index.ts';
 
 test('Pi adapter registers the public controls and lifecycle hooks', () => {
@@ -100,9 +106,94 @@ test('Pi adapter applies toggle effects in order', async () => {
     ['persist', 'readonly-mode', { readonlyMode: true }],
     [
       'notify',
-      'Read-only mode ON - edit/write/replace/insert blocked, bash restricted to approved commands',
+      'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change/undo_last_replace blocked, bash restricted to approved commands',
       'info',
     ],
     ['send-user-message', 'review this'],
   ]);
 });
+
+// Keep policy assertions at Pi's real event-dispatch boundary, not just enforcement.handle().
+function createReadonlyRunner() {
+  const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
+  let toggle: (args: string, ctx: any) => Promise<void>;
+  readonlyMode({
+    on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, [handler]),
+    registerCommand: (_name: string, command: { handler: typeof toggle }) => {
+      toggle = command.handler;
+    },
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  } as never);
+
+  const runner = new ExtensionRunner(
+    [{ path: 'readonly-mode', handlers } as never],
+    createExtensionRuntime(),
+    process.cwd(),
+    SessionManager.inMemory(),
+    {} as never, // No model access is needed for tool_call dispatch.
+  );
+  return { runner, toggle: () => toggle('', runner.createContext()) };
+}
+
+const mutationInputs: Record<string, Record<string, unknown>> = {
+  edit: { path: 'example.txt', oldText: 'old', newText: 'new' },
+  write: { path: 'example.txt', content: 'new' },
+  replace: { remove_from: 'abcd', remove_to: 'abcd', text: 'new' },
+  replace_match: { replace_from: 'abcd', replace_to: 'abcd', old_string: 'old', new_string: 'new' },
+  insert: { anchor: 'abcd', direction: 'after', text: 'new' },
+  copy: { source_from: 'abcd', source_to: 'abcd', insert_after: 'efgh' },
+  move: { source_from: 'abcd', source_to: 'abcd', insert_after: 'efgh' },
+  undo_last_change: { path: 'example.txt' },
+  undo_last_replace: { path: 'example.txt' },
+};
+
+for (const parentToolCallId of [undefined, 'codemode-call']) {
+  const route = parentToolCallId ? 'nested' : 'direct';
+  const toolEvent = (toolName: string, input: Record<string, unknown>): ToolCallEvent => ({
+    type: 'tool_call',
+    toolName,
+    toolCallId: parentToolCallId ? `${parentToolCallId}/1` : 'model-call',
+    ...(parentToolCallId ? { parentToolCallId } : {}),
+    input,
+  });
+
+  for (const [toolName, input] of Object.entries(mutationInputs)) {
+    test(`Pi runner blocks ${route} ${toolName} only while readonly is enabled`, async () => {
+      const { runner, toggle } = createReadonlyRunner();
+      const event = toolEvent(toolName, input);
+      assert.equal(await runner.emitToolCall(event), undefined);
+      await toggle();
+      assert.deepEqual(await runner.emitToolCall(event), {
+        block: true,
+        reason: 'Read-only mode: file modifications are not allowed. Use /readonly to exit read-only mode first.',
+      });
+      await toggle();
+      assert.equal(await runner.emitToolCall(event), undefined);
+    });
+  }
+
+  test(`Pi runner preserves ${route} non-mutating and custom tool boundaries`, async () => {
+    const { runner, toggle } = createReadonlyRunner();
+    await toggle();
+    for (const toolName of ['read', 'grep', 'find', 'ls', 'anchor_grep', 'custom_deploy', 'codemode', 'mcp__example__write']) {
+      assert.equal(await runner.emitToolCall(toolEvent(toolName, {})), undefined, toolName);
+    }
+  });
+
+  test(`Pi runner preserves ${route} bash command policy`, async () => {
+    const { runner, toggle } = createReadonlyRunner();
+    await toggle();
+    for (const command of ['git status && git diff -- README.md', 'npm test', 'tsc --noEmit']) {
+      assert.equal(await runner.emitToolCall(toolEvent('bash', { command })), undefined, command);
+    }
+    for (const input of [{ command: 'git status && rm -rf tmp' }, { command: 'echo changed > example.txt' }, { command: 'node script.js' }, {}]) {
+      const result = await runner.emitToolCall(toolEvent('bash', input));
+      assert.equal(result?.block, true);
+      assert.match(result?.reason ?? '', /Read-only mode: command blocked/);
+    }
+  });
+}
