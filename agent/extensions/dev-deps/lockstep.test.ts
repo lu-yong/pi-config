@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getInstalledPiVersion } from "./installed-pi.mjs";
 
 // 测试依赖里的 pi 包必须与本机 pi 版本锁步,否则测的是过时 API。
 // 漂移时运行:cd agent/extensions && npm run sync-pi
@@ -16,7 +16,7 @@ const PACKAGES = [
 ];
 
 test("devDependencies 与已安装 pi 版本锁步", () => {
-  const piVersion = execFileSync("pi", ["--version"], { encoding: "utf8", timeout: 15000 }).trim();
+  const piVersion = getInstalledPiVersion();
   for (const pkg of PACKAGES) {
     const manifest = JSON.parse(readFileSync(path.join(nodeModules, pkg, "package.json"), "utf8"));
     assert.equal(

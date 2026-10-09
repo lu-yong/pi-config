@@ -3,12 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync-pi": "V=$(npm exec --global --no -- pi --version) && [ -n \"$V\" ] && npm install --save-dev --save-exact @earendil-works/pi-ai@$V @earendil-works/pi-coding-agent@$V @earendil-works/pi-tui@$V"
+    "sync-pi": "node dev-deps/sync-pi.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.1",
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@earendil-works/pi-tui": "0.87.1"
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0"
   },
   "allowScripts": {
     "@google/genai@1.52.0": true,

@@ -250,12 +250,12 @@
 
 ## 本地扩展开发与验证
 
-`agent/extensions/package.json` 为本地扩展开发声明 Pi 依赖，当前 `pi-ai`、`pi-coding-agent`、`pi-tui` 都固定为 `0.87.1`。升级全局 Pi 后，进入 `agent/extensions/` 同步这些开发依赖：
+`agent/extensions/package.json` 为本地扩展开发声明 Pi 依赖，`pi-ai`、`pi-coding-agent`、`pi-tui` 均固定为本机 Pi 的确切版本。升级 Pi 后，同步这些开发依赖：
 
 ```bash
 cd agent/extensions && npm run sync-pi
 ```
-不要改用 `npm --prefix agent/extensions run sync-pi` 从根目录运行：`--prefix` 会连全局 prefix 一起覆盖，脚本内层的 `npm exec --global --no -- pi --version` 因此找不到全局 `pi`，转而尝试安装无关的同名 registry 包 `pi@2.0.5`，再被 `--no` 拦截报错。
+也可以从仓库根目录运行 `npm --prefix agent/extensions run sync-pi`。脚本从 PATH 查找已安装的 `pi`，跳过 npm 注入的 `node_modules/.bin`，避免读到开发依赖里的旧版本；支持 Pi 独立安装入口和 npm 全局安装，不再通过 `npm exec` 查找同名 registry 包。运行前应确保终端中的 `pi --version` 可正常执行。
 
 在开发依赖已安装、Node.js 支持直接运行 TypeScript 的环境中，从仓库根目录运行：
 
@@ -264,7 +264,7 @@ node --test agent/extensions/*/*.test.ts
 npm --prefix agent/extensions/extmgr test
 ```
 
-前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 只有测试，不是运行时扩展）；后者用 vitest 运行 extmgr 的测试（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
+前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展）；后者用 vitest 运行 extmgr 的测试（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
 ## 未入库文件与安全
 
 忽略规则见 [`.gitignore`](.gitignore) 与 [`agent/npm/.gitignore`](agent/npm/.gitignore)。以下内容只保存在本机，不随本仓库提交：
