@@ -254,9 +254,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	pi.registerCommand("plan-goal-impl", {
 		description: "Start or resume implementing the committed goal using planning files as the execution tracker.",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
 			const lifecycle = lifecycleFor(ctx.cwd);
-			notifyRejection(ctx, lifecycle.handle({ type: "implementation-request" }, contextFor(ctx)));
+			notifyRejection(ctx, lifecycle.handle({ type: "implementation-request", supplementalInput: args }, contextFor(ctx)));
 		},
 	});
 

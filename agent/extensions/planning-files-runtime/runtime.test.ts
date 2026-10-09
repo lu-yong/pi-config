@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { OutgoingGoalMessage, OutgoingGoalMessageOptions } from "./goal-lifecycle.ts";
 import planningFilesRuntime from "./runtime.ts";
 import { defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
-import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION } from "./types.ts";
+import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_IMPL } from "./types.ts";
 import { getPaths, writeText } from "./utils.ts";
 import { initializePlanningWorkspace } from "./workspace.ts";
 
@@ -37,7 +38,7 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	const hooks = new Map<string, (event: any, ctx: ExtensionContext) => Promise<unknown>>();
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
-	const messages: Array<{ customType: string; content: string }> = [];
+	const messages: Array<OutgoingGoalMessage & { options: OutgoingGoalMessageOptions }> = [];
 	const warnings: string[] = [];
 	let widget: string[] | undefined;
 	let failSend = false;
@@ -45,9 +46,9 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 		on: (name: string, callback: (event: any, ctx: ExtensionContext) => Promise<unknown>) => hooks.set(name, callback),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
-		sendMessage: (message: { customType: string; content: string }) => {
+		sendMessage: (message: OutgoingGoalMessage, options: OutgoingGoalMessageOptions) => {
 			if (failSend) throw new Error("send failed");
-			messages.push(message);
+			messages.push({ ...message, options });
 		},
 	} as unknown as ExtensionAPI;
 	const ctx = {
@@ -63,9 +64,9 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	return {
 		cwd, ctx, messages, warnings,
 		widget: () => widget,
-		failSend: () => { failSend = true; },
+		failSend: (fail = true) => { failSend = fail; },
 		event: (name: string, event: unknown = {}) => hooks.get(name)!(event, ctx),
-		command: (name: string) => commands.get(name)!.handler("", ctx),
+		command: (name: string, args = "") => commands.get(name)!.handler(args, ctx),
 		tool: (name: string, params: unknown) => tools.get(name)!.execute("test", params, new AbortController().signal, undefined, ctx),
 	};
 }
@@ -299,3 +300,109 @@ test("a corrupt state file does not carry a previous turn stop into the repair t
 	assert.equal(await h.event("tool_call", repair), undefined);
 	assert.equal(fs.readFileSync(getPaths(h.cwd).goalState, "utf8"), "{");
 });
+
+for (const status of ["ready", "paused"] as const) {
+	for (const input of ["我使用重置卡，额度已恢复\n  请核验后继续，不要部署。", " \t\n　"]) {
+		test(`/plan-goal-impl forwards ${input.trim() ? "multiline input" : "no supplement for whitespace"} from ${status}`, async (t) => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const h = harness(status);
+			const paths = getPaths(h.cwd);
+			const taskPlan = "# Task Plan\n\n## Next action\n等待明天额度重置\n\n## Blocker\n额度耗尽；另有待核验依赖\n";
+			writeText(paths.files["task_plan.md"], taskPlan);
+			writeText(paths.files["progress.md"], "# Progress\n\n## Timeline\n- 曾因额度耗尽中断\n");
+			await h.event("session_start", { reason: "resume" });
+			const before = readGoalState(h.cwd);
+			await h.command("plan-goal-impl", ` ${input}\n`);
+			assert.equal(h.messages.length, 1);
+			assert.equal(h.messages[0].customType, MESSAGE_TYPE_GOAL_IMPL);
+			assert.equal(h.messages[0].display, false);
+			assert.deepEqual(h.messages[0].options, { triggerTurn: true });
+			assert.match(h.messages[0].content, new RegExp(`mode=${status === "ready" ? "start" : "resume"}`));
+			if (input.trim()) {
+				assert.ok(h.messages[0].content.includes(`Current user supplement for this implementation request:\n${input}\n`));
+			} else {
+				assert.doesNotMatch(h.messages[0].content, /Current user supplement/);
+			}
+			assert.equal(readGoalState(h.cwd).status, "active");
+			assert.equal(readGoalState(h.cwd).impl.runId, status === "ready" ? 4 : 3);
+			assert.deepEqual(readGoalState(h.cwd).goal, before.goal);
+			assert.doesNotMatch(fs.readFileSync(paths.goalState, "utf8"), /重置卡|"supplementalInput"/);
+			if (status === "paused") {
+				// Runtime forwards facts, but does not heuristically clear real planning blockers.
+				assert.equal(fs.readFileSync(paths.files["task_plan.md"], "utf8"), taskPlan);
+				assert.match(fs.readFileSync(paths.files["progress.md"], "utf8"), /曾因额度耗尽中断/);
+				assert.match(h.messages[0].content, /等待明天额度重置/);
+			}
+			assert.deepEqual(h.warnings, []);
+			await h.event("agent_start");
+			await h.event("turn_start");
+			await h.event("tool_call", { toolName: "replace_match", input: {} });
+			await h.event("turn_end", { message: { stopReason: "stop" } });
+			await h.event("agent_settled");
+			t.mock.timers.tick(CONTINUATION_DELAY_MS);
+			assert.equal(h.messages.length, 2);
+			assert.equal(h.messages[1].customType, MESSAGE_TYPE_CONTINUATION);
+			assert.doesNotMatch(h.messages[1].content, /Current user supplement|重置卡/);
+		});
+	}
+}
+
+for (const idle of [true, false]) {
+	test(`/plan-goal-impl explicitly rejects active input without affecting the pending continuation (idle=${idle})`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = harness();
+		await h.event("session_start", { reason: "new" });
+		await h.event("turn_start");
+		await h.event("tool_call", { toolName: "replace_match", input: {} });
+		await h.event("turn_end", { message: { stopReason: "stop" } });
+		await h.event("agent_settled");
+		const before = fs.readFileSync(getPaths(h.cwd).goalState, "utf8");
+		h.ctx.isIdle = () => idle;
+		await h.command("plan-goal-impl", "额度已恢复\n继续执行");
+		assert.equal(h.warnings.length, 1);
+		assert.match(h.warnings[0], /not accepted.*normal message.*pause.*plan-goal-impl/);
+		await h.command("plan-goal-impl");
+		await h.command("plan-goal-impl", " \t\n　");
+		assert.equal(h.warnings.length, 1);
+		assert.equal(h.messages.length, 0);
+		assert.equal(fs.readFileSync(getPaths(h.cwd).goalState, "utf8"), before);
+		h.ctx.isIdle = () => true;
+		t.mock.timers.tick(CONTINUATION_DELAY_MS);
+		assert.equal(h.messages.length, 1);
+		assert.doesNotMatch(h.messages[0].content, /Current user supplement|额度已恢复/);
+	});
+}
+
+for (const input of ["我使用重置卡，额度已恢复\n请继续核验", " \t\n　"]) {
+	test(`/plan-goal-impl recovery forwards ${input.trim() ? "supplemental facts" : "whitespace as no supplement"}`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = harness();
+		await h.event("session_start", { reason: "new" });
+		await h.event("turn_start");
+		await h.event("tool_call", { toolName: "replace_match", input: {} });
+		await h.event("turn_end", { message: { stopReason: "stop" } });
+		await h.event("agent_settled");
+		const before = readGoalState(h.cwd);
+		writeText(getPaths(h.cwd).goalState, "{");
+		t.mock.timers.tick(CONTINUATION_DELAY_MS);
+		assert.equal(h.messages.length, 0);
+		assert.equal(h.warnings.length, 1);
+		const repaired = writeGoalState(h.cwd, before);
+		h.failSend();
+		await h.command("plan-goal-impl", "失败的旧补充");
+		assert.match(h.warnings.at(-1)!, /state preserved.*send failed/);
+		h.failSend(false);
+		await h.command("plan-goal-impl", input);
+		assert.equal(h.messages.length, 1);
+		assert.equal(h.messages[0].customType, MESSAGE_TYPE_CONTINUATION);
+		assert.deepEqual(h.messages[0].options, { triggerTurn: true, deliverAs: "followUp" });
+		assert.equal(h.messages[0].display, false);
+		assert.match(h.messages[0].content, /mode=continue/);
+		if (input.trim()) assert.ok(h.messages[0].content.includes(input));
+		else assert.doesNotMatch(h.messages[0].content, /Current user supplement/);
+		assert.doesNotMatch(h.messages[0].content, /失败的旧补充/);
+		assert.deepEqual(readGoalState(h.cwd), repaired);
+		await h.command("plan-goal-impl");
+		assert.equal(h.messages.length, 1);
+	});
+}

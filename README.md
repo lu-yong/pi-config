@@ -76,6 +76,8 @@
 - **文件**：`agent/extensions/planning-files-runtime/`
 - **功能**：在项目 `.pi/planning/` 中持久化当前计划、发现、进度和目标状态。
 - **命令**：`/plan-archive`（agent 空闲时仅归档、不新建模板，且不受目标状态限制）、`/plan-new`、`/plan-goal-set`、`/plan-goal-impl`、`/plan-update`
+- **实施补充**：`/plan-goal-impl [补充信息]` 将非空参数传入本次启动、恢复或故障恢复重发的执行提示词，例如 `/plan-goal-impl 我已使用重置卡恢复额度，请核对并更新旧的等待条件后继续`。提示模型先核对 `Blocker` / `Next action`，保留历史中断记录与未解决阻塞，不自动覆盖目标硬约束；扩展不按自然语言直接改写规划文件。
+- **参数边界**：空白参数等同无参数；补充仅随本次请求传递，不写入 goal state，也不会作为“本次补充”再次注入后续自动 continuation。普通 `active` 状态下，无参数重复调用不做操作，带参数则明确提示改发普通消息或暂停后再恢复；故障恢复重发路径除外。
 - **取消行为**：即使最后一条 assistant 消息已正常结束，Pi 收尾时的取消仍会将 `active` goal 暂停并清除待执行的 continuation，不自动续跑。
 - **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
 

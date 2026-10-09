@@ -943,4 +943,147 @@ describe("goal lifecycle", () => {
 		assert.equal(run.turnStoppedBy(), null); // the next turn can repair the file
 		assert.equal(readText(getPaths(cwd).goalState), "{");
 	});
+
+	for (const status of ["ready", "paused"] as const) {
+		test(`${status} implementation input is request-local, not durable state or automatic continuation input`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareDraft(cwd, harness);
+			run.handle({ type: "commit", params: contractParams }, harness.context());
+			if (status === "paused") {
+				run.handle({ type: "implementation-request" }, harness.context());
+				run.handle({ type: "pause", params: { reason: "额度耗尽", suggestedAction: "等待重置" } }, harness.context());
+			}
+			harness.clearSent();
+			const input = "我使用重置卡，额度已恢复\n  请核验后继续。";
+			const result = run.handle({ type: "implementation-request", supplementalInput: ` \n${input}\n ` }, harness.context());
+			assert.deepEqual(result, { rejection: undefined, failure: undefined });
+			assert.equal(run.getState().status, "active");
+			assert.equal(run.getState().impl.runId, 1);
+			assert.equal(harness.sent.length, 1);
+			assert.ok(harness.sent[0].message.content.includes(`Current user supplement for this implementation request:\n${input}\n`));
+			assert.deepEqual(harness.sent[0].options, { triggerTurn: true });
+			assert.equal(harness.sent[0].message.display, false);
+			assert.deepEqual(run.getState().goal, contractParams);
+			assert.ok(!JSON.stringify(run.getState()).includes(input.split("\n")[0]));
+			assert.ok(!readText(getPaths(cwd).goalState).includes(input.split("\n")[0]));
+			assert.ok(!readText(getPaths(cwd).goalState).includes('"supplementalInput"'));
+			if (status === "paused") assert.match(readText(getPaths(cwd).files["progress.md"]), /Goal paused: 额度耗尽/);
+
+			run.handle({ type: "agent-start" }, harness.context());
+			run.handle({ type: "turn-start" }, harness.context());
+			settleWithProgress(run, harness);
+			harness.timer.fire();
+			assert.equal(harness.sent.length, 2);
+			assert.equal(harness.sent[1].message.customType, MESSAGE_TYPE_CONTINUATION);
+			assert.doesNotMatch(harness.sent[1].message.content, /Current user supplement|重置卡/);
+
+			// Neither a later resume nor a different implementation run re-injects the input.
+			run.handle({ type: "pause", params: { reason: "other blocker" } }, harness.context());
+			run.handle({ type: "implementation-request", supplementalInput: " \t\n　" }, harness.context());
+			assert.doesNotMatch(harness.sent.at(-1)!.message.content, /Current user supplement|重置卡/);
+			run.handle({ type: "start-drafting", input: "new goal" }, harness.context());
+			run.handle({ type: "commit", params: contractParams }, harness.context());
+			run.handle({ type: "implementation-request" }, harness.context());
+			assert.equal(run.getState().impl.runId, 2);
+			assert.doesNotMatch(harness.sent.at(-1)!.message.content, /Current user supplement|重置卡/);
+		});
+
+		for (const retryInput of [undefined, "本次重试补充\n请重新核验"] as const) {
+			test(`${status} send failure rolls back and retries with only the new input (${retryInput ? "supplied" : "omitted"})`, () => {
+				const cwd = makeCwd();
+				const harness = createHarness();
+				const run = prepareDraft(cwd, harness);
+				run.handle({ type: "commit", params: contractParams }, harness.context());
+				if (status === "paused") {
+					run.handle({ type: "implementation-request" }, harness.context());
+					run.handle({ type: "pause", params: { reason: "额度耗尽" } }, harness.context());
+				}
+				const before = run.getState();
+				harness.clearSent();
+				harness.setFailSends(true);
+				const failed = run.handle({ type: "implementation-request", supplementalInput: "失败请求的补充" }, harness.context());
+				assert.match(failed.failure?.reason ?? "", /state restored/);
+				assert.deepEqual(run.getState(), before);
+				// Rollback persists the prior contract/run with a fresh write timestamp.
+				assert.deepEqual({ ...createGoalLifecycle(cwd, harness.deps).getState(), updatedAt: before.updatedAt }, before);
+				assert.equal(harness.sent.length, 0);
+				assert.equal(harness.timer.hasPending(), false);
+				harness.setFailSends(false);
+				const retry = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
+				assert.deepEqual(retry, { rejection: undefined, failure: undefined });
+				assert.equal(run.getState().impl.runId, 1);
+				assert.equal(harness.sent.length, 1);
+				assert.doesNotMatch(harness.sent[0].message.content, /失败请求的补充/);
+				if (retryInput) assert.ok(harness.sent[0].message.content.includes(retryInput));
+				else assert.doesNotMatch(harness.sent[0].message.content, /Current user supplement/);
+			});
+		}
+	}
+
+	test("active input rejection preserves state and pending continuation; blank input stays a no-op", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		settleWithProgress(run, harness);
+		harness.clearSent();
+		const before = run.getState();
+		const diskBefore = readText(getPaths(cwd).goalState);
+		const logBefore = [...harness.log];
+		const rejected = run.handle({ type: "implementation-request", supplementalInput: "额度已恢复" }, harness.context());
+		assert.equal(rejected.rejection?.operation, "plan-goal-impl");
+		assert.match(rejected.rejection?.reason ?? "", /not accepted.*normal message.*pause.*plan-goal-impl/);
+		assert.equal(rejected.failure, undefined);
+		const blank = run.handle({ type: "implementation-request", supplementalInput: " \t\n　" }, harness.context());
+		assert.deepEqual(blank, { rejection: undefined, failure: undefined });
+		assert.deepEqual(run.getState(), before);
+		assert.equal(readText(getPaths(cwd).goalState), diskBefore);
+		assert.deepEqual(harness.log, logBefore);
+		assert.equal(harness.sent.length, 0);
+		assert.equal(harness.timer.hasPending(), true);
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 1);
+		assert.doesNotMatch(harness.sent[0].message.content, /Current user supplement|额度已恢复/);
+	});
+
+	for (const retryInput of [undefined, "恢复重发补充\n额度已恢复"] as const) {
+		test(`active recovery send failures remain retryable without caching input (${retryInput ? "supplied" : "omitted"})`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			harness.clearSent();
+			settleWithProgress(run, harness);
+			const before = run.getState();
+			writeText(getPaths(cwd).goalState, "{");
+			harness.timer.fire();
+			const repaired = writeGoalState(cwd, before);
+			harness.setFailSends(true);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const result = run.handle({ type: "implementation-request", supplementalInput: "未发送的旧补充" }, harness.context());
+				assert.match(result.failure?.reason ?? "", /state preserved.*send exploded/);
+				assert.deepEqual(run.getState(), repaired);
+				assert.equal(harness.sent.length, 0);
+				assert.equal(harness.timer.hasPending(), false);
+			}
+			harness.setFailSends(false);
+			const result = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
+			assert.deepEqual(result, { rejection: undefined, failure: undefined });
+			assert.deepEqual(run.getState(), repaired);
+			assert.deepEqual(createGoalLifecycle(cwd, harness.deps).getState(), repaired);
+			assert.equal(harness.sent.length, 1);
+			assert.equal(harness.sent[0].message.customType, MESSAGE_TYPE_CONTINUATION);
+			assert.deepEqual(harness.sent[0].options, { triggerTurn: true, deliverAs: "followUp" });
+			assert.doesNotMatch(harness.sent[0].message.content, /未发送的旧补充/);
+			if (retryInput) assert.ok(harness.sent[0].message.content.includes(retryInput));
+			else assert.doesNotMatch(harness.sent[0].message.content, /Current user supplement/);
+			run.handle({ type: "implementation-request" }, harness.context());
+			assert.equal(harness.sent.length, 1); // Recovery consumed only by successful delivery.
+			run.handle({ type: "agent-start" }, harness.context());
+			run.handle({ type: "turn-start" }, harness.context());
+			settleWithProgress(run, harness);
+			harness.timer.fire();
+			assert.equal(harness.sent.length, 2);
+			assert.doesNotMatch(harness.sent[1].message.content, /Current user supplement|恢复重发补充|未发送的旧补充/);
+		});
+	}
 });

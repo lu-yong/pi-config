@@ -89,7 +89,7 @@ export type GoalLifecycleEvent =
 	| { type: "start-drafting"; input?: string }
 	| { type: "save-draft"; params: SaveGoalDraftParams }
 	| { type: "commit"; params: CommitGoalParams }
-	| { type: "implementation-request" }
+	| { type: "implementation-request"; supplementalInput?: string }
 	| { type: "pause"; params: PauseGoalParams }
 	| { type: "complete"; params: CompleteGoalParams }
 	| { type: "agent-start" }
@@ -117,9 +117,9 @@ type GoalLifecycleEffect =
 	| { type: "finalize-goal-workspace"; completion: GoalCompletion }
 	| { type: "refresh" }
 	| { type: "send-goal-set"; supplementalInput?: string }
-	| { type: "send-goal-impl"; mode: "start" | "resume" }
+	| { type: "send-goal-impl"; mode: "start" | "resume"; supplementalInput?: string }
 	| { type: "schedule-continuation"; runId: number }
-	| { type: "send-continuation"; runId: number }
+	| { type: "send-continuation"; runId: number; supplementalInput?: string }
 	| { type: "notify"; level: "warning"; message: string }
 	| { type: "reject"; operation: string; reason: string };
 
@@ -423,14 +423,17 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				];
 			}
 
-			case "implementation-request":
+			case "implementation-request": {
+				const supplementalInput = normalizeString(event.supplementalInput) || undefined;
 				if (state.status === "active") {
 					// A stalled run — its Continuation was lost to a failed
 					// delivery and the pause recovery could not be persisted —
 					// is recoverable by re-sending the same run's continuation.
 					if (recoveryPending && state.goal) {
-						recoveryPending = false;
-						return [{ type: "send-continuation", runId: state.impl.runId }];
+						return [{ type: "send-continuation", runId: state.impl.runId, supplementalInput }];
+					}
+					if (supplementalInput) {
+						return reject("plan-goal-impl", "Goal implementation is already active; this supplemental input was not accepted. Send it as a normal message, or pause the run and retry /plan-goal-impl with the input.");
 					}
 					return [];
 				}
@@ -460,7 +463,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation started (run ${runId})` },
 						{ type: "clear-continuation" },
 						{ type: "refresh" },
-						{ type: "send-goal-impl", mode: "start" },
+						{ type: "send-goal-impl", mode: "start", supplementalInput },
 					];
 				}
 
@@ -476,8 +479,9 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation resumed (run ${runId})` },
 					{ type: "clear-continuation" },
 					{ type: "refresh" },
-					{ type: "send-goal-impl", mode: "resume" },
+					{ type: "send-goal-impl", mode: "resume", supplementalInput },
 				];
+			}
 
 			case "pause": {
 				if (state.status !== "active") {
@@ -666,7 +670,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_GOAL_IMPL,
-								content: buildGoalImplPrompt(snapshot, effect.mode),
+								content: buildGoalImplPrompt(snapshot, effect.mode, effect.supplementalInput),
 								display: false,
 							},
 							{ triggerTurn: true },
@@ -721,11 +725,13 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_CONTINUATION,
-								content: buildGoalImplPrompt(getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false), "continue"),
+								content: buildGoalImplPrompt(getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false), "continue", effect.supplementalInput),
 								display: false,
 							},
 							{ triggerTurn: true, deliverAs: "followUp" },
 						);
+						// Consume explicit recovery only after delivery succeeds, so failed retries remain retryable.
+						recoveryPending = false;
 						break;
 					case "notify":
 						context.notify(effect.message, effect.level);

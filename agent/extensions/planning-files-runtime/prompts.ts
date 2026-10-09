@@ -64,7 +64,12 @@ export function buildGoalSetPrompt(goalState: GoalOverlayState, supplementalInpu
 	].join("\n");
 }
 
-export function buildGoalImplPrompt(state: PlanningSnapshot, mode: "start" | "resume" | "continue"): string {
+export function buildGoalImplPrompt(
+	state: PlanningSnapshot,
+	mode: "start" | "resume" | "continue",
+	supplementalInput?: string,
+): string {
+	const input = supplementalInput?.trim();
 	const goal = state.goalState.goal;
 	if (!goal) {
 		return "[PLAN GOAL IMPL]\nNo committed goal exists. Stop and tell the user to run /plan-goal-set first.";
@@ -111,6 +116,18 @@ export function buildGoalImplPrompt(state: PlanningSnapshot, mode: "start" | "re
 		"",
 		"Recent progress:",
 		progress || "(missing)",
+		...(input ? [
+			"",
+			"Current user supplement for this implementation request:",
+			input,
+			"",
+			"Reconciliation required before execution:",
+			"- Re-read the current Blocker and Next action in task_plan.md and check them against the latest user-provided current facts above before acting.",
+			"- Correct obsolete waiting conditions and next actions using those current facts; do not keep waiting solely because the old planning state says to wait.",
+			"- Verify which blockers are actually resolved. Do not blindly clear all blockers; retain unresolved blockers and verify uncertain claims before proceeding.",
+			"- Preserve historical interruption and blocker facts in progress.md; distinguish them from the current execution state.",
+			"- This supplement does not automatically override the committed goal's hard constraints, success criteria, or scope. If it conflicts with the goal contract, ask for clarification rather than overriding it.",
+		] : []),
 	].join("\n");
 }
 
