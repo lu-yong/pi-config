@@ -1,30 +1,23 @@
 ---
 name: goal-review
-description: Prepare review evidence and dispatch the local code-reviewer role through Herdr.
+description: Dispatch the local code-reviewer through pi-subagent-manager.
 argument-hint: "<goal, commit/range, PR, or working-tree scope>"
 ---
 
 Act only as the review dispatcher. The `code-reviewer` role owns execution policy; the `code-review` skill owns review criteria and report format. Do not perform the review or implement fixes in the parent.
 
-1. Require `subagent` and `HERDR_ENV=1`. Resolve the effective `code-reviewer` definition and confirm it loads `code-review` as a read-only leaf; project roles can override the global role. If unavailable or incompatible, report the blocker instead of using a shell or silently substituting the package's generic `reviewer`.
-2. Load `code-review` for its scope/preflight rules only. Prepare the full user target/spec, canonical checkout path, exact base/head SHAs, explicit staged/unstaged/untracked scope, complete inventory and diff (including deleted and in-scope untracked content), and available verification evidence. Stay read-only within the parent's restrictions; inline evidence is valid. Clarify unidentifiable scope, reject invalid fixed points, and never silently truncate evidence.
-3. Choose an exact authenticated model and a supported thinking level under the delegation policy. Independent review requires a different underlying family from the producer; disclose unknown authorship or unavailable independent coverage. Resolve `selectedModel`, `selectedThinking`, `reviewCwd`, and `reviewTask` from this preflight.
+1. Call `agent_types` and confirm `code-reviewer` is available. If unavailable, report the blocker rather than silently substituting another role.
+2. Build `reviewTask` from the full user target/spec, checkout path, explicit commit/range or working-tree scope, available verification evidence, and the `code-review` entry from available skill metadata. If that metadata is missing, report failure and stop. The reviewer gathers Git evidence itself; do not require a parent-prepared diff bundle. Resolve unidentifiable scope before dispatching.
+3. Start one fresh reviewer with a unique task-based path outside `/root`, supplying all required context in `reviewTask`. Model and thinking selection come from the effective role and manager settings, not spawn arguments.
 
-Launch one ordinary-pane child. Let the role supply `skills` and lifecycle defaults; retain the explicit read-only tool boundary and omit `worktree`/`fork`:
+	agent_spawn({
+	  path: "/goal-review-check",
+	  type: "code-reviewer",
+	  task: reviewTask,
+	  wait: false
+	});
 
-```typescript
-subagent({
-  name: "goal-review-review",
-  agent: "code-reviewer",
-  model: selectedModel,
-  thinking: selectedThinking,
-  cwd: reviewCwd,
-  tools: "read,anchor_grep,find,ls",
-  task: reviewTask
-});
-```
-
-Print `name | agent kind | role | model | worktree`. Results arrive automatically: continue independent work or end the turn; do not poll or query progress. Recheck the pinned state before presenting the review unchanged, apart from a short preface for model identity, failures, drift, or coverage gaps. Recover a truncated completed report once from its returned session path or disclose the missing coverage; never invent findings or checks.
+Report the thread path and type. Detached results return automatically; continue independent work or end the turn, without polling. A paused thread needs input and `agent_steer` to resume. Retrieve long completed reports with `agent_output`. Present the review unchanged apart from a short preface for failures, drift, or coverage gaps; never invent findings or checks.
 
 ## User Review Target
 

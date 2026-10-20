@@ -30,7 +30,8 @@ agent/projects-memory
 agent/extensions/herdr-agent-state.ts
 
 agent/crashes.json
-agent/herdr-agents/
+agent/subagent-manager/*
+!agent/subagent-manager/agents/
 web-search-cache/
 
 .pi/skills/openspec-apply-change/

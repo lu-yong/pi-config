@@ -18,7 +18,7 @@
 | `pi-web-access` | 网络搜索与网页内容抓取 | `pi install npm:pi-web-access` |
 | `pi-files-widget-overlay` | 浮动文件浏览器、查看器与 Git diff overlay，入口 `/readfiles`，是 tmustier files-widget 的 overlay 化分支 | `pi install npm:pi-files-widget-overlay` |
 | `pi-footer` | 可配置的多行 TUI 状态栏；配置入口 `/footer` | `pi install npm:pi-footer` |
-| `pi-herdr-agents` | 在 Herdr pane 中异步运行 Pi 子 agent，自动回传结果，支持持久专家和隔离 worktree | `pi install npm:pi-herdr-agents` |
+| `pi-subagent-manager` | 在 Pi 内管理可恢复的子 agent 线程，支持并行委派、跟进和结果回传 | `pi install npm:pi-subagent-manager` |
 | `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`replace_match`、`insert`、`copy`、`move`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
 | `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
 | `@firstpick/pi-themes-bundle` | 提供多套熟悉的浅色和深色主题 | `pi install npm:@firstpick/pi-themes-bundle` |
@@ -144,7 +144,7 @@
 | `wayfinder` | 通过 taskmd 规划多会话工作，并逐个解决决策 Ticket |
 | `writing-great-skills` † | 编写和编辑可预测、可维护的 agent skill |
 
-`pi-herdr-agents` 包另提供 `/skill:orchestrate`，用于准备证据、并行派出独立审查者并由父 agent 汇总；无需复制到本地 skills 目录。
+子 agent 的任务编排与审查使用下文的 `pi-subagent-manager` 入口；不再加载旧角色包提供的 `/plan` 和 `/skill:orchestrate`。
 
 ## 项目级技能（`.pi/skills/`）
 
@@ -157,53 +157,53 @@
 
 ## 子 Agent 管理
 
-### pi-herdr-agents
+### pi-subagent-manager
 
-已采用 `pi-herdr-agents` 作为 Pi 子 agent 的运行机制。需要安装 Herdr 及其 CLI，并从 Herdr 内启动 Pi（`HERDR_ENV=1`）；修改 prompt/全局说明后执行 `/reload` 或重启 Pi。
-
-扩展的工具说明已包含任务拆分、模型与 thinking 选择、异步回传、worktree 和恢复/清理规则。本地不再维护第二份通用委派手册；`agent/APPEND_SYSTEM.md` 只补充 hashline、只读边界和普通终端进程等本地策略。
+已采用 `pi-subagent-manager` 管理 Pi 子 agent，无需在 Herdr 中启动。使用 `/agents` 配置委派模式和并发限制，使用 `/agents types` 配置角色、模型和工具；修改定义后执行 `/agents reload`，新定义只影响新建线程。
 
 ### 角色与本地适配
 
-`scout`、`worker`、`reviewer` 使用包内定义，不再提供同名本地覆盖。只保留专用 `code-reviewer`，与包内通用 reviewer 并存。项目 `.pi/agents/` 仍优先于全局 `agent/agents/` 和包内定义。
+内置 `architect`、`coder`、`researcher`、`reviewer`、`tasker`、`writer` 六种角色，另保留专用 `code-reviewer`，与通用 `reviewer` 并存。
 
 | 角色 | 来源 | 职责 |
 |---|---|---|
-| `scout` | 包内 | 代码调查、定位相关文件与证据 |
-| `worker` | 包内 | 执行明确任务、验证并交接 |
-| `reviewer` | 包内 | 使用包内通用审查规范 |
-| `code-reviewer` | `agent/agents/code-reviewer.md` | 无 shell 的专用评审，加载 `code-review` skill，使用其审查标准与默认报告格式 |
+| `architect` | 包内 | 架构、权衡、任务分解与经授权的协调 |
+| `coder` | 包内 | 实现、调试与验证 |
+| `researcher` | 包内 | 代码调查和来源核实 |
+| `reviewer` | 包内 | 聚焦可证明的正确性与安全缺陷 |
+| `tasker` / `writer` | 包内 | 简短任务 / 文本撰写 |
+| `code-reviewer` | `agent/subagent-manager/agents/code-reviewer.md` | 使用 `code-review` skill，审查需求、规范/设计、安全/可靠性 |
 
-包内还提供 `planner`、`poteto`、`adversarial-reviewer` 和 `visual-tester` 等角色；完整的有效角色和来源以 `/subagent list` 为准。`visual-tester` 需要另备 `chrome-cdp` 技能，并非安装本包即可直接使用。
+自定义定义的优先级为项目 `.pi/agent/subagent-manager/agents/` > 全局 `agent/subagent-manager/agents/` > 包内。Markdown 同名定义完整替换下层定义；YAML 文件仅覆盖设置。旧的 `agent/agents/` 目录不再使用。
 
-`code-reviewer` 保持独立会话、禁止继续委派、完成后自动结束；skill 的审查轴在一个子 agent 内串行执行，不固定模型或 thinking 默认值。重命名只区分角色用途，不增加工具权限。
+`code-reviewer` 的 thinking 固定为 `high`，模型继承父级；允许 `read`、`bash`、`grep`、`find`、`ls`、`agent_update`、`agent_pause`，自行获取 Git 差异，也支持不依赖 diff 的指定范围审计。三个审查维度在同一线程顺序执行，不继续委派。
 
-原生 scout/reviewer 的默认工具包含 `bash`，worker 的默认工具包含 `edit`。hashline 兼容和只读限制由 `agent/APPEND_SYSTEM.md` 的本地调用策略处理，不通过复制角色说明实现：写任务按需覆盖编辑工具，探索/只读评审显式收窄为 `read,anchor_grep,find,ls`。最终能力取决于有效角色与本次调用参数；`tools` 覆盖会替换整份列表，不是合并。
+使用者需保证可用 skill 元数据中包含 `code-review`；该角色按元数据加载，缺失或读取失败直接报告失败并退出，不猜测安装路径。`/goal-review` 会将父会话可用的相关元数据传给子线程。
 
-父会话的 `--readonly` 不会自动传给子进程，工具列表也不是进程/扩展沙箱。无 shell 的子 agent 所需的 Git diff、命令或测试证据由父 agent 在自身权限内提供。
+工具默认按角色的 `tools.allow` 过滤；`All except blocked` / `All` 模式会放宽这一限制。子 agent 共享工作目录和 OS 权限，工具策略不是沙箱；`bash` 只读行为由角色约束，产生文件的测试/构建交给父 agent。不要假定父会话的只读模式自动约束子线程，也不要让多个写入任务同时修改同一文件。
 
-包级可选配置持久化在本机 `agent/herdr-agents/config.json`（已被 `.gitignore` 排除）：当前记录状态上报开关、coding/review/recon/qa/architecture/docs 各任务类别的模型候选、`roles.bundled` 启用包内角色、persistent agent 上限（3 个）与 pane 分组布局。本地角色仍直接维护在 `agent/agents/`，不修改安装包。
+`agent/subagent-manager/settings.json` 和运行状态只保存在本机；仓库仅纳管 `agents/` 下的自定义定义。迁移时安装新包并移除旧的 `pi-herdr-agents` 及其依赖宿主的 `pi-herdr-roles` 包；二者的旧角色、配置和专属命令不再使用。
 
 ### 原生入口与保留的工作流
 
 | 入口 | 用途 |
 |---|---|
-| `/subagent list` | 查看有效角色及其来源 |
-| `/subagent scout <问题>` | 使用包内 scout 调查代码；需要并行调查时向父 agent 说明 |
-| `/subagent worker <明确任务>` | 使用包内 worker 实现任务，启动时应用本地工具适配 |
-| `/subagent reviewer <范围与证据>` | 使用包内通用 reviewer |
-| `/subagent code-reviewer <范围与证据>` | 直接使用本地 `code-review` 专用评审者 |
-| `/skill:impl-with-spawn <任务>` | 拆分任务并为各子任务选择合适角色，再排序、派发、检查与整合；不限于 worker |
-| `/goal-review <目标或变更范围>` | 先准备范围与差异证据，再派发本地 `code-reviewer` |
-| `/skill:orchestrate <审查范围>` | 使用包提供的多审查者流程 |
+| `/agents` | 配置委派模式、并发限制和显示 |
+| `/agents types` | 查看与编辑有效角色、模型和工具 |
+| `/agents tree` | 查看、跟进和恢复子线程 |
+| `/agents fork:code-reviewer <任务>` | 带入当前对话启动专用评审 |
+| `/agents fresh:reviewer <任务>` | 使用独立上下文启动通用评审 |
+| `/agents reload` | 重载定义与设置 |
+| `/skill:impl-with-spawn <任务>` | 拆分任务、选择角色、派发、验证与整合 |
+| `/goal-review <目标或变更范围>` | 将目标、范围及 skill 元数据交给专用 `code-reviewer` |
 
-`/subagent` 快捷命令会请求父 agent 调用工具，不会原生执行完整的证据准备或多阶段流水线。`code-reviewer` 不依赖 `/goal-review` 才能运行，但直接调用时仍需完整范围和差异证据；需要父 agent 先准备这些输入时使用 `/goal-review`。包内 reviewer 同样要求明确范围与证据，不能把其默认 shell 能力理解为自动补齐所有输入。
+也可直接说“用 `code-reviewer` subagent 审查最后一次提交”。主 agent 通过 `agent_types` 选择类型，再调用 `agent_spawn`；使用 `agent_steer` 继续已有线程，长报告通过 `agent_output` 获取。独立任务先全部以 `wait: false` 启动，再按需等待；依赖任务顺序执行。
 
-包还提供 `/plan`、`/iterate`、`/btw` / `/btw-close`、`/worktree <名称> [任务]` / `/worktree list`。其中 `/plan` 是包内编排流程，与本地 planning-files-runtime 的 `/plan-*` 命令不是同一套工作流。
+旧包的 `/subagent`、`/plan`、`/skill:orchestrate`、`/iterate`、`/btw` 和 `/worktree` 入口已停用；本地 planning-files-runtime 的 `/plan-*` 命令继续使用。
 
 ### 普通交互命令与长期进程
 
-`agent/APPEND_SYSTEM.md` 将代理委派与终端进程分开：一次性非交互命令使用 `bash`；编辑器、TUI 和服务器使用独立 Herdr pane，保留 cwd、不抢焦点、按创建响应中的 pane ID 操作。没有 Herdr 时提供手动终端命令，不静默退回 `nohup` 或后台 shell 作业。
+一次性非交互命令使用 `bash`；编辑器、TUI 和服务器可使用独立 Herdr pane，保留 cwd、不抢焦点、按创建响应中的 pane ID 操作。没有 Herdr 时提供手动终端命令。Herdr 仅用于普通终端进程，子 agent 由 `pi-subagent-manager` 管理。
 
 `/wayfinder ui` 也按此规则启动 taskmd Web UI，而不是为服务器派一个 Pi 子 agent；报告 URL、pane ID、启动证据和 Ctrl+C 停止方式。taskmd 仍是显式前置依赖，不会自动安装。
 
@@ -215,10 +215,10 @@
 
 | 命令 | 文件 | 用途 |
 |---|---|---|
-| `/goal-review` | `goal-review.md` | 评审派发入口：父会话先准备目标/范围与完整差异证据，再以只读工具边界派发本地 `code-reviewer` 子 agent；父会话只做派发，不自行评审或修复 |
+| `/goal-review` | `goal-review.md` | 评审派发入口：将目标、范围、已有验证结果及 skill 元数据交给 `code-reviewer`，由子线程自行获取差异并审查；父会话只做派发 |
 | `/wayfinder` | `wayfinder.md` | 进入 Personal Wayfinder 技能的薄封装，支持 `init`、`chart`、`work`、`status`、`ui` 等快捷入口；方法论以 `wayfinder` 技能为准 |
 
-上文「原生入口」表中的 `/goal-review` 与 `/wayfinder` 即来自这里的模板，其余入口由包或本地扩展提供。
+`/goal-review` 与 `/wayfinder` 来自这里的模板，其余入口由包或本地扩展提供。
 
 ## 架构决策记录（`docs/adr/`）
 
@@ -290,7 +290,7 @@ npm --prefix agent/extensions/extmgr test
 | `agent/extensions/herdr-agent-state.ts` | Herdr 管理的本机集成 |
 | `agent/cache`、`agent/projects-memory`、`agent/fff`、`agent/.pi-hermes-locks*`、`agent/pi-hermes-memory` | 本地缓存、记忆与历史运行状态 |
 | `agent/crashes.json` | Pi 崩溃记录 |
-| `agent/herdr-agents/` | pi-herdr-agents 本机包配置（`config.json`） |
+| `agent/subagent-manager/`（除 `agents/`） | 本机设置与运行状态 |
 | `web-search-cache/`、`agent/web-search-cache/` | 网络搜索缓存 |
 | `.claude/` | Claude Code 本地设置，由全局 gitignore 排除 |
 
