@@ -50,6 +50,8 @@ agent/mcp-npx-cache.json
 agent/mcp-onboarding.json
 agent/mcp-project-approvals.json
 agent/patches-om-98-3.1.4.patch
+agent/models.json.before-magpie
+agent/settings.json.before-magpie
 
 # skills 已移交 magpie 管理，仅保留以下目录仍由仓库管理
 agent/skills/*
