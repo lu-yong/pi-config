@@ -5,7 +5,7 @@
 ## 配置范围
 
 - `agent/` 对应 `~/.pi/agent/`，其中的扩展、技能、prompt、键位和追加系统说明面向所有项目。
-- `.pi/` 是**本配置仓库自己的项目配置**；其中的扩展和技能在本仓库被信任后加载，不会因此成为其他项目的全局资源。
+- `.pi/` 是**本配置仓库自己的项目配置**，目前只剩 `planning/`（planning-files-runtime 的项目状态）；项目级扩展和技能已移除，仓库根的 `AGENTS.md` 提供最小化指引，不再预设工作流。
 - `agent/settings.json`、`agent/models.json`、认证文件及 npm 安装目录只保存在本机，未入库。下文的包、模型和默认设置是本机快照，**不是 clone 后即可还原的完整配置**。
 - `agent/skills/` 中除 `impl-with-spawn`、`wayfinder` 外均为指向 `~/.cc-switch/skills/` 的软链接。迁移时需另行准备这些技能源，并配置包和模型认证。
 
@@ -107,12 +107,6 @@
 - **解析与回归边界**：目录自身和直接子目录按有效 `package.json` 的 `pi.extensions` 入口、`index.ts`、`index.js` 的顺序选择；目录自身有入口时优先于同级文件扫描。目录入口优先级与 package manifest 过滤已通过离线临时 fixture 对照当前 Pi 原生 `DefaultPackageManager` resolver 回归；差分测试仅覆盖这些场景，不代表整个解析器与原生完全等价。
 - **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 proper-lockfile/typebox/minimatch）
 
-### readme-check
-
-- **文件**：`.pi/extensions/readme-check.ts`
-- **范围**：仅在本配置仓库（`~/.pi`）被信任后作为项目扩展加载。
-- **功能**：监听 `write`、`edit`、`replace` 和 `undo_last_replace` 的工具调用，通过 `input.path` 记录文件，并在 agent settled 后提醒检查 README 是否漂移。
-- **当前限制**：未追踪 `insert` / `undo_last_change`；不携带 `path` 的纯锚点 `replace` 调用也不会被记录。它是尽力提醒，不是完整的变更审计。
 
 ### Herdr 本机集成
 
@@ -146,14 +140,6 @@
 
 子 agent 的任务编排与审查使用下文的 `pi-subagent-manager` 入口；不再加载旧角色包提供的 `/plan` 和 `/skill:orchestrate`。
 
-## 项目级技能（`.pi/skills/`）
-
-这些是仅在本仓库生效的自定义技能，不会被其他项目加载：
-
-| 技能名称 | 用途 |
-|---|---|
-| `readme-check` | 代码变更后检查 README 是否漂移，确认后同步更新，再调用 commit-changes 提交 |
-| `commit-changes` | 生成中文 Conventional Commits 提交说明，经用户确认说明和文件范围后暂存、提交；不会未经确认提交全部修改 |
 
 ## 子 Agent 管理
 
