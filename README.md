@@ -11,13 +11,13 @@
 
 ## 安装的插件（Packages）
 
-当前 `agent/settings.json` 的 `packages` 字段配置了以下 8 个包；安装命令默认作用于全局配置：
+下表列出本机使用的主要包（完整列表以 `agent/settings.json` 的 `packages` 字段为准）；安装命令默认作用于全局配置：
 
 | 包 | 用途 | Pi 安装命令 |
 |---|---|---|
 | `pi-web-access` | 网络搜索与网页内容抓取 | `pi install npm:pi-web-access` |
-| `pi-open-tui` | 终端用户界面增强 | `pi install npm:pi-open-tui` |
 | `pi-files-widget-overlay` | 浮动文件浏览器、查看器与 Git diff overlay，入口 `/readfiles`，是 tmustier files-widget 的 overlay 化分支 | `pi install npm:pi-files-widget-overlay` |
+| `pi-footer` | 可配置的多行 TUI 状态栏；配置入口 `/footer` | `pi install npm:pi-footer` |
 | `pi-herdr-agents` | 在 Herdr pane 中异步运行 Pi 子 agent，自动回传结果，支持持久专家和隔离 worktree | `pi install npm:pi-herdr-agents` |
 | `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`replace_match`、`insert`、`copy`、`move`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
 | `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
@@ -229,16 +229,17 @@
 ### 主题与模式（`agent/settings.json`，本机）
 
 - **主题**：`tokyo-night-storm`（`@firstpick/pi-themes-bundle` 提供）。
-- **TUI 模式**：`regular`。
+- **TUI 模式**：`fullscreen`。
 - 当前没有 `agent/zentui.json`，也未在 `packages` 中启用独立的 zentui 包。
 
-### open-tui（`agent/open-tui.json`）
+### pi-footer（`agent/extensions/pi-footer.json`）
 
-- **状态**：已启用；可通过 `/open-tui` 打开配置界面。
-- **图标模式**：`auto`。
-- **底部栏显式启用项**（`footerSegments`）：`cwd`、`gitBranch`、`gitStatus`、`context`、`tokens`、`cost`。
-- **底部栏显式关闭项**：`gitCommit`、`runtime`；未配置的项遵循包默认值。
-- **回合统计**（`telemetry`）：已启用 TPS、TTFT、耗时、Token 数、停顿数和费用显示。
+- **状态与入口**：已启用；`/footer` 打开配置界面，`/footer on`、`/footer off` 控制开关。界面修改需显式保存才写入配置文件。
+- **配置纳管**：`agent/extensions/pi-footer.json` 纳入本仓库；默认从 `~/.pi/agent/extensions/pi-footer.json` 读取，可通过 `PI_FOOTER_CONFIG` 指定其他路径。
+- **布局**：基于 `default` preset 自定义两行，均使用 `flex-separator` 将后续组件右对齐。
+  - 第一行：当前目录（`cwd`）、Git 分支（`git-branch`）、紧凑 diff（`git-diff`）；右侧显示输入/输出 Token（`tokens`）、会话缓存命中率（`cache-hit-rate`）和会话总耗时（`total-time`）。
+  - 第二行：模型（`model`，不显示 provider）和思考级别（`thinking-level`）；右侧显示上下文进度条（`context-bar`，`medium` 模式，关闭条件着色）。
+- **显示**：点分隔符（`separator: "dot"`）、Nerd Font 图标（`iconMode: "nerd"`，终端需配套字体）、全宽（`widthMode: "full"`）、256 色（`colorLevel: "ansi256"`）；未启用 minimalist 模式。
 
 ## 键位配置（`agent/keybindings.json`）
 
