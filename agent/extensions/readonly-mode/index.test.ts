@@ -35,6 +35,7 @@ test('Pi adapter registers the public controls and lifecycle hooks', () => {
   assert.deepEqual([...events.keys()], [
     'tool_call',
     'before_agent_start',
+    'context',
     'session_start',
     'session_tree',
   ]);
@@ -59,6 +60,7 @@ test('Pi adapter restores state from the active branch only', async () => {
     sendUserMessage: () => undefined,
   };
   const ctx = {
+    isIdle: () => true,
     ui: {
       setStatus: (_key: string, text: string | undefined) => statuses.push(text),
       notify: () => undefined,
@@ -91,6 +93,7 @@ test('Pi adapter applies toggle effects in order', async () => {
     sendUserMessage: (content: string) => calls.push(['send-user-message', content]),
   };
   const ctx = {
+    isIdle: () => true,
     ui: {
       setStatus: (key: string, text: string | undefined) => calls.push(['status', key, text]),
       notify: (message: string, level: string) => calls.push(['notify', message, level]),
@@ -196,3 +199,64 @@ for (const parentToolCallId of [undefined, 'codemode-call']) {
     }
   });
 }
+
+test('legacy readonly-mode-context messages are dropped from request context while disabled', async () => {
+  const events = new Map<string, (...args: any[]) => unknown>();
+  const pi = {
+    on: (name: string, handler: (...args: any[]) => unknown) => events.set(name, handler),
+    registerCommand: () => undefined,
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  };
+  const ctx = { isIdle: () => true, ui: { setStatus: () => undefined, notify: () => undefined }, sessionManager: { getBranch: () => [] } };
+
+  readonlyMode(pi as never);
+  // Disabled (default): stale legacy instruction messages are filtered out;
+  // unrelated messages survive untouched.
+  const context = (messages: unknown[]) => events.get('context')!({ messages }, ctx);
+  const legacy = { role: 'user', customType: 'readonly-mode-context', content: '[READ-ONLY MODE ACTIVE] ...' };
+  const keep = { role: 'user', content: 'keep me' };
+  assert.deepEqual(await context([legacy, keep]), { messages: [keep] });
+  // No legacy messages: no context rewrite at all.
+  assert.equal(await context([keep]), undefined);
+
+  // Enabled: legacy messages ride along untouched (the section carries the
+  // current instructions; filtering enabled-session history is not this
+  // handler's job).
+  const toggle = events.get('tool_call'); // any handler path; use command instead below
+  void toggle;
+  const commands = new Map<string, { handler: (args: string, ctx2: unknown) => Promise<void> }>();
+  const piToggle = {
+    ...pi,
+    registerCommand: (name: string, command: { handler: (args: string, ctx2: unknown) => Promise<void> }) =>
+      commands.set(name, command),
+  };
+  readonlyMode(piToggle as never);
+  await commands.get('readonly')!.handler('', ctx);
+  assert.equal(await context([legacy, keep]), undefined);
+});
+
+test('toggle is refused while the agent is running', async () => {
+  const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+  const notices: string[] = [];
+  const pi = {
+    on: () => undefined,
+    registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+      commands.set(name, command),
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  };
+  const busyCtx = { isIdle: () => false, ui: { setStatus: () => undefined, notify: (m: string) => notices.push(m) } };
+
+  readonlyMode(pi as never);
+  await commands.get('readonly')!.handler('', busyCtx);
+
+  assert.equal(notices.length, 1);
+  assert.match(notices[0]!, /idle/);
+});

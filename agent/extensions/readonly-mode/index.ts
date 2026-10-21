@@ -19,6 +19,8 @@ const READONLY_SHORTCUT = 'ctrl+alt+r';
 const STATE_ENTRY = 'readonly-mode';
 /** System-prompt section tag for the read-only instructions. */
 const SECTION_NAME = 'readonly-mode';
+/** Legacy custom-message tag from pre-section sessions; cleaned from request context. */
+const LEGACY_CONTEXT_ENTRY = 'readonly-mode-context';
 const STATUS_KEY = 'readonly-mode';
 
 export default function readonlyMode(pi: ExtensionAPI): void {
@@ -65,6 +67,15 @@ export default function readonlyMode(pi: ExtensionAPI): void {
   pi.registerCommand(READONLY_COMMAND, {
     description: 'Toggle read-only mode',
     handler: async (args, ctx) => {
+      // Toggling mid-run would desynchronize the prompt section from tool
+      // enforcement until the next run's before_agent_start: the section is
+      // contributed per-run, so a disable during a run leaves this run's
+      // model believing read-only while tools are already unblocked (or the
+      // reverse). Require an idle agent for toggles.
+      if (ctx.isIdle() === false) {
+        ctx.ui.notify('Read-only mode can only be toggled while the agent is idle; the prompt section is applied per run.', 'warning');
+        return;
+      }
       applyEffects(
         enforcement.handle({ type: 'toggle', prompt: args?.trim() || undefined }),
         ctx,
@@ -75,6 +86,10 @@ export default function readonlyMode(pi: ExtensionAPI): void {
   pi.registerShortcut(READONLY_SHORTCUT, {
     description: 'Toggle read-only mode',
     handler: async (ctx) => {
+      if (ctx.isIdle() === false) {
+        ctx.ui.notify('Read-only mode can only be toggled while the agent is idle; the prompt section is applied per run.', 'warning');
+        return;
+      }
       applyEffects(enforcement.handle({ type: 'toggle' }), ctx);
     },
   });
@@ -93,15 +108,27 @@ export default function readonlyMode(pi: ExtensionAPI): void {
   // The read-only instructions ride the structured system prompt: the section
   // is contributed while enabled and removed (null) while disabled. Pi diffs
   // sections against the transcript, so the instructions persist once as a
-  // system-message patch instead of a per-run custom message copy, and the
-  // old context-filter cleanup path disappears entirely.
+  // system-message patch instead of a per-run custom message copy.
   pi.on('before_agent_start', async (event) => {
     const content = applyEffects(
       enforcement.handle({ type: 'before-agent-start' }),
     ) as string | null | undefined;
-    if (content === undefined) return undefined;
-    event.systemPromptOptions.sections[SECTION_NAME] = content;
+    if (content !== undefined) {
+      event.systemPromptOptions.sections[SECTION_NAME] = content;
+    }
     return undefined;
+  });
+
+  // Legacy cleanup for pre-section sessions: remove stale instruction
+  // messages from the request context once the mode is off. Runs on every
+  // request while such messages exist; new sessions never enter this path.
+  pi.on('context', async (event) => {
+    if (enforcement.isEnabled()) return undefined;
+    const messages = event.messages as Array<Record<string, unknown>>;
+    if (!messages.some((m) => m.customType === LEGACY_CONTEXT_ENTRY)) return undefined;
+    return {
+      messages: messages.filter((m) => m.customType !== LEGACY_CONTEXT_ENTRY),
+    };
   });
 
   pi.on('session_start', async (_event, ctx) => {

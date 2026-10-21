@@ -23,6 +23,8 @@ export type ReadonlyEffect =
 
 export interface ReadonlyEnforcement {
   handle(event: ReadonlyEvent): ReadonlyEffect[];
+  /** Whether read-only enforcement is currently active. */
+  isEnabled(): boolean;
 }
 
 const STATE_ENTRY = 'readonly-mode';
@@ -68,6 +70,9 @@ class Enforcement implements ReadonlyEnforcement {
   private sectionActive = false;
   private flagOverrideActive = false;
 
+  isEnabled(): boolean {
+    return this.enabled;
+  }
   handle(event: ReadonlyEvent): ReadonlyEffect[] {
     switch (event.type) {
       case 'toggle':
