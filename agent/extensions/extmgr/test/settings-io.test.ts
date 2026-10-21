@@ -2,20 +2,10 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { mutateSettings } from "../settings-io.ts";
+import lockfile from "proper-lockfile";
 import { planToggle, type SettingsMutation } from "../toggle.ts";
 import type { ExtensionEntry } from "../resolve.ts";
-
-// proper-lockfile is no longer a runtime dependency (Pi's write path owns
-// the lock); the test still uses it to play an external lock holder, resolved
-// from the locally installed Pi release tree.
-const require = createRequire(import.meta.url);
-// Read the version straight from the resolved package dir (the exports map
-// blocks subpath requires); the lock library then comes from Pi's own tree.
-const piPkgDir = `${process.env.HOME}/.pi/agent/extensions/node_modules/@earendil-works/pi-coding-agent`;
-const piVersion = JSON.parse(readFileSync(join(piPkgDir, "package.json"), "utf8")).version as string;
-const lockfile: typeof import("proper-lockfile") = require(`${process.env.HOME}/.pi/agent/install/releases/${piVersion}/node_modules/proper-lockfile`);
 
 /** IF-6 seam: integration with real temp dirs and the real proper-lockfile. */
 
