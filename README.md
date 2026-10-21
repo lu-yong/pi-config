@@ -140,6 +140,10 @@
 
 子 agent 的任务编排与审查使用下文的 `pi-subagent-manager` 入口；不再加载旧角色包提供的 `/plan` 和 `/skill:orchestrate`。
 
+### 外部依赖：taskmd
+
+`wayfinder` 技能依赖本机的 `taskmd` 命令（Markdown 任务管理 CLI，附带 Web 看板与 MCP server），它是显式前置依赖，不随 Pi 自动安装。其来源为 GitHub 项目 [driangle/taskmd](https://github.com/driangle/taskmd)：本机安装的是 release 压缩包 `taskmd-v0.4.1-linux-amd64.tar.gz`，解包后将二进制移至 `~/.local/bin/taskmd`，当前版本 0.4.1（commit `52dd1bf`，2026-08-19 构建）。来源通过二进制内嵌的 Go module 路径（`github.com/driangle/taskmd/...`）确认。该二进制只保存在本机、不入库；迁移机器时需从该项目 release 页重新下载对应平台的压缩包。
+
 
 ## 子 Agent 管理
 
