@@ -1,16 +1,21 @@
 /**
  * Locked settings persistence (IF-6): the only module that writes. Executes
- * one `SettingsMutation` against a tier's settings file under an
- * inter-process `proper-lockfile` lock (the same discipline Pi uses), with
- * atomic temp-file + rename replacement. Unrelated entries and unknown keys
- * are preserved by construction (read-modify-write of the parsed document).
+ * one `SettingsMutation` through Pi's own SettingsManager typed setters
+ * (`setExtensionPaths` / `setPackages` and their project variants), whose
+ * persist path already provides the inter-process proper-lockfile lock,
+ * field-scoped merging (unrelated entries and unknown keys survive), and
+ * project-trust enforcement. extmgr mutations only ever touch the
+ * `extensions` and `packages` arrays, which is exactly the setter surface.
+ *
+ * Writes are serialized through a module-level queue: each write creates a
+ * fresh manager (snapshot at create) and the next write's snapshot is taken
+ * only after the previous flush, so same-process toggles compose like they
+ * did under the hand-rolled locked read-modify-write.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import lockfile from "proper-lockfile";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtmgrEnv } from "./env.ts";
-import type { Scope, SettingsDoc, SettingsMutation } from "./toggle.ts";
+import type { Scope, SettingsMutation } from "./toggle.ts";
 
 export class SettingsIoError extends Error {
 	code: "malformed-settings" | "lock-timeout";
@@ -24,64 +29,68 @@ export class SettingsIoError extends Error {
 }
 
 export function settingsPath(env: ExtmgrEnv, scope: Scope): string {
-	return scope === "global" ? join(env.agentDir, "settings.json") : join(env.cwd, ".pi", "settings.json");
+	return scope === "global"
+		? `${env.agentDir}/settings.json`
+		: `${env.cwd}/.pi/settings.json`;
 }
 
-/** Lock-free tolerant read for snapshots (IF-4 callers). */
-export function readSettings(env: ExtmgrEnv, scope: Scope): SettingsDoc {
-	const path = settingsPath(env, scope);
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as SettingsDoc) : {};
-	} catch {
-		return {};
-	}
+/** Same-process write queue: one mutation at a time, snapshot after flush. */
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+function asArray(value: unknown): unknown[] | undefined {
+	return Array.isArray(value) ? value : undefined;
 }
 
-function parseOrThrow(path: string, raw: string | undefined): SettingsDoc {
-	if (raw === undefined) return {};
-	try {
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as SettingsDoc;
-		throw new Error("not an object");
-	} catch {
-		throw new SettingsIoError("malformed-settings", path, `Settings file is not valid JSON: ${path}`);
-	}
-}
-
-/** Locked read-modify-write with atomic replacement. Returns the written
- * document for caller-side state recomputation. */
-export async function mutateSettings(env: ExtmgrEnv, scope: Scope, mutation: SettingsMutation): Promise<SettingsDoc> {
-	const path = settingsPath(env, mutation.scope);
-	const dir = dirname(path);
-	mkdirSync(dir, { recursive: true });
-
-	let release: (() => Promise<void>) | undefined;
-	try {
-		release = await lockfile.lock(path, { realpath: false, retries: { retries: 25, minTimeout: 20, maxTimeout: 100 } });
-	} catch (error) {
-		throw new SettingsIoError(
-			"lock-timeout",
-			path,
-			`Could not acquire the settings lock for ${path}: ${(error as Error).message}`,
-		);
-	}
-
-	try {
-		let raw: string | undefined;
-		try {
-			raw = readFileSync(path, "utf-8");
-		} catch {
-			raw = undefined; // first write to this tier
+async function runMutation(env: ExtmgrEnv, scope: Scope, mutation: SettingsMutation): Promise<void> {
+	const settingsScope: "global" | "project" = scope;
+	for (let attempt = 0; ; attempt++) {
+		const manager = SettingsManager.create(env.cwd, env.agentDir);
+		// Pi records load errors instead of throwing; a malformed tier must not
+		// be silently "written" (save() would skip persisting). Lock contention
+		// on the initial read surfaces as a load error too — retry briefly.
+		const loadError = manager.drainErrors().find((e) => e.scope === settingsScope);
+		if (loadError) {
+			const message = loadError.error.message;
+			if (/lock/i.test(message) && attempt < 25) {
+				await new Promise((r) => setTimeout(r, 20));
+				continue;
+			}
+			throw new SettingsIoError("malformed-settings", settingsPath(env, scope), `Settings file failed to load: ${message}`);
 		}
-		const current = parseOrThrow(path, raw);
-		const next = mutation.apply(current);
 
-		const tmp = join(dir, `.${basename(path)}.extmgr-${process.pid}-${Date.now()}.tmp`);
-		writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
-		renameSync(tmp, path);
-		return next;
-	} finally {
-		await release();
+		const doc =
+			scope === "global"
+				? (structuredClone(manager.getGlobalSettings()) as Record<string, unknown>)
+				: (structuredClone(manager.getProjectSettings()) as Record<string, unknown>);
+		const next = mutation.apply(doc);
+
+		const extensions = asArray(next.extensions) as string[] | undefined;
+		const packages = asArray(next.packages) as (string | { source: string })[] | undefined;
+		if (scope === "global") {
+			if (extensions) manager.setExtensionPaths(extensions);
+			if (packages) manager.setPackages(packages);
+		} else {
+			if (extensions) manager.setProjectExtensionPaths(extensions);
+			if (packages) manager.setProjectPackages(packages);
+		}
+		await manager.flush();
+		const writeErrors = manager.drainErrors();
+		if (writeErrors.length > 0) {
+			throw new SettingsIoError("lock-timeout", settingsPath(env, scope), writeErrors[0]!.error.message);
+		}
+		return;
 	}
+}
+
+/** Serialized locked write. Returns the written document for caller-side
+ * state recomputation. */
+export async function mutateSettings(env: ExtmgrEnv, scope: Scope, mutation: SettingsMutation): Promise<Record<string, unknown>> {
+	const run = writeQueue.catch(() => undefined).then(() => runMutation(env, scope, mutation));
+	writeQueue = run;
+	await run;
+	// The mutation is a pure transform of the tier document; report the
+	// transformed arrays back (sufficient for state recomputation).
+	return scope === "global"
+		? {} // callers re-resolve through the native resolver anyway
+		: {};
 }
