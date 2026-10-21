@@ -6,12 +6,9 @@
  * 这一层是适配器：读盘、pi 运行时调用都在这里，判定逻辑在 extraction.ts / settings.ts。
  */
 
-import fs from "node:fs";
-import path from "node:path";
-
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, ThinkingLevel, UserMessage } from "@earendil-works/pi-ai";
-import { BorderedLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 
 import { askExtractedQuestions } from "../question-taking/interaction.ts";
 import { isQnaSuppressedByActiveGoal, rejectManualQnaForActiveGoal } from "./goal-policy.ts";
@@ -28,15 +25,17 @@ import { authFallbackNotice, parseQnaSettings, resolveExtractionModel, type QnaS
 /** 已处理过的消息 ID，防止重复触发 */
 const processedMessageIds = new Set<string>();
 
-/** 每次读盘而不是启动时缓存一次，改完 settings.json 立刻生效，不必重启 pi */
-function loadSettings(): QnaSettings {
-	let raw: string | undefined;
+/**
+ * 每次调 pi.getSettings() 拿合并视图（global+project，自定义键原样保留），
+ * 改完 settings.json 立刻生效，不必重启 pi；顺带获得项目级配置能力。
+ */
+function loadSettings(pi: ExtensionAPI): QnaSettings {
 	try {
-		raw = fs.readFileSync(path.join(getAgentDir(), "settings.json"), "utf8");
+		return parseQnaSettings((pi.getSettings() as { qna?: unknown }).qna);
 	} catch {
 		// 文件缺失 / 无权限都按"未配置"处理
+		return parseQnaSettings(undefined);
 	}
-	return parseQnaSettings(raw);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -45,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 		// 纯内存的判定放最前面：绝大多数回复根本不带尾部问号，不该为它们读两次盘。
 		const lastText = lastAssistantText(ctx);
 		if (!lastText || !shouldAutoExtract(lastText, processedMessageIds)) return;
-		const settings = loadSettings();
+		const settings = loadSettings(pi);
 		if (!settings.autoExtract) return;
 		if (isQnaSuppressedByActiveGoal(ctx.cwd)) return;
 
@@ -71,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			// 手动入口刻意不看 autoExtract：那个开关只管自动触发。
-			await runQna(ctx, lastText, loadSettings());
+			await runQna(ctx, lastText, loadSettings(pi));
 		},
 	});
 }

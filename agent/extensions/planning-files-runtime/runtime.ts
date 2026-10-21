@@ -1,9 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import {
 	MESSAGE_TYPE_PLAN_UPDATE,
@@ -250,11 +247,12 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	// ---- completion audit adapter ----
 
-	/** Read `planning.auditModel` on every completion, so config edits apply without a restart. */
+	/** Read `planning.auditModel` on every completion, so config edits apply
+	 * without a restart. `pi.getSettings()` returns the merged global+project
+	 * view (custom keys are preserved as-is). */
 	function readAuditModelRef() {
 		try {
-			const raw = fs.readFileSync(path.join(getAgentDir(), "settings.json"), "utf8");
-			return parseAuditModelRef((JSON.parse(raw) as { planning?: unknown })?.planning);
+			return parseAuditModelRef((pi.getSettings() as { planning?: unknown }).planning);
 		} catch {
 			return null;
 		}
