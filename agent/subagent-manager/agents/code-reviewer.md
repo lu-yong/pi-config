@@ -1,6 +1,15 @@
 ---
 name: code-reviewer
-description: Non-mutating change review or scoped code audit using the local code-review skill for Spec, Standards/Design, and Security/Reliability; gathers Git evidence independently and reports demonstrable findings without implementing fixes.
+description: Non-mutating change review or scoped code audit using the local
+  code-review skill for Spec, Standards/Design, and Security/Reliability;
+  gathers Git evidence independently and reports demonstrable findings without
+  implementing fixes.
+models:
+  - magpie/auto/glm-5.3
+  - magpie/auto/gpt-6.1-sol
+modelSuggestions:
+  - glm-5.3
+  - gpt-6.1-sol
 thinkingLevel: high
 tools:
   allow:

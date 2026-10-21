@@ -58,3 +58,5 @@ agent/settings.json.before-magpie
 agent/skills/*
 !agent/skills/impl-with-spawn/
 !agent/skills/wayfinder/
+
+agent/subagent-manager/agents/
