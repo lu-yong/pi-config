@@ -17,6 +17,7 @@ agent/extensions/extmgr/package-lock.json
 
 # 本地配置（不入库）
 agent/settings.json
+agent/pi-blackhole/
 
 # hermes 配置文件（不入库）
 agent/.pi-hermes-locks*

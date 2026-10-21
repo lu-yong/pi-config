@@ -20,7 +20,7 @@
 | `pi-footer` | 可配置的多行 TUI 状态栏；配置入口 `/footer` | `pi install npm:pi-footer` |
 | `pi-subagent-manager` | 在 Pi 内管理可恢复的子 agent 线程，支持并行委派、跟进和结果回传 | `pi install npm:pi-subagent-manager` |
 | `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`replace_match`、`insert`、`copy`、`move`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
-| `pi-observational-memory` | 跨 compaction、交接和长期会话保存工作记忆 | `pi install npm:pi-observational-memory` |
+| `pi-blackhole` | 算法化压缩接管 `/compact` 与自动压缩，配合观察/反思/丢弃三个后台 worker 保存跨压缩的工作记忆 | `pi install npm:pi-blackhole` |
 | `@firstpick/pi-themes-bundle` | 提供多套熟悉的浅色和深色主题 | `pi install npm:@firstpick/pi-themes-bundle` |
 | `@juicesharp/rpiv-ask-user-question` | 提供 `ask_user_question` 结构化提问工具，支持单选、多选、自定义回答和选项预览 | `pi install npm:@juicesharp/rpiv-ask-user-question` |
 
@@ -48,7 +48,7 @@
 ### 其他本机设置（`settings.json`，不入库）
 
 - `compaction.enabled: true`：启用自动上下文压缩。
-- `observational-memory`：按 token 阈值安排观察、反思与压缩，并为本机配置了独立的处理模型；具体提供商与模型不入库。
+- `pi-blackhole`：压缩阈值默认走预设曲线（随模型窗口按比例触发），三个后台 worker 主用 `magpie/auto/glm-5.3-flash`、回退 `magpie/group/deepseek-flash`（均 thinking `low`）；配置在 `agent/pi-blackhole/pi-blackhole-config.json`，不入库。
 - `retry`：请求自动重试启用，最多 5 次，基础退避 15 秒。
 - 默认模型、默认 thinking 与 `enabledModels` 轮换列表同为易变本机信息，以 `settings.json` 为准，不在此记录。
 
@@ -264,7 +264,8 @@ npm --prefix agent/extensions/extmgr test
 
 | 路径 | 内容 |
 |---|---|
-| `agent/settings.json` | 本机默认模型、包列表、Q&A / 记忆 / 重试等设置 |
+| `agent/settings.json` | 本机默认模型、包列表、Q&A / 重试等设置 |
+| `agent/pi-blackhole/` | pi-blackhole 的本机配置、会话账本与模型冷却状态 |
 | `agent/models.json` | 本机 provider / 模型定义及可能包含的认证配置 |
 | `agent/auth.json` | Provider 认证凭据 |
 | `agent/models-store.json` | 模型目录缓存 |
