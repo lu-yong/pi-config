@@ -105,8 +105,8 @@
 - **文件**：`agent/extensions/extmgr/`
 - **功能**：扩展加载管理器——`/extmgr` 交互式 picker（分组显示 global/project/effective/loaded 四列合并视图）与 `manage_extensions` 工具（list/enable/disable）。切换写入原生 Pi settings（独立扩展 `-extensions/<rel>` 精确模式、整包对象条目、项目层 delta 条目），写入形式与 `pi config` 逐字一致；不可达的原生限制格（如项目层控制全局独立扩展）明确返回 unavailable 原因而不是伪造写入。
 - **交互**：`j/k` 或方向键移动、`Enter` 在活动写入层切换、`Tab` 切换 global/project 写入层、`/` 子串过滤（文件名与包源）、`a` 应用并恰好触发一次 reload、`q`/`Esc` 关闭；禁用 extmgr 自身需确认并提示 `pi config` 恢复路径。非 TUI 模式调用 `/extmgr` 会提示改用工具。
-- **解析**：读路径直接走 Pi 原生 `DefaultPackageManager.resolve()`（Pi 1.3.0 起从包根导出）：目录发现、manifest 过滤、pattern 优先级、跨层 dedupe 等 host 语义不再由本仓库复刻；`native.ts` 把原生结果投影成 global/project/effective 三态视图（合并视图 + 仅全局视图两次 resolve）。写入经 `SettingsManager` 的 typed setters（自带跨进程锁与按字段合并），原生 resolver 为 oracle 的差分 fixture 回归仍在。
-- **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 typebox）
+- **解析**：读路径直接走 Pi 原生 `DefaultPackageManager.resolve()`（Pi 1.3.0 起从包根导出）：目录发现、manifest 过滤、pattern 优先级、跨层 dedupe 等 host 语义不再由本仓库复刻；`native.ts` 把原生结果投影成 global/project/effective 三态视图（合并视图 + 仅全局视图两次 resolve）。写入保留 proper-lockfile 锁内读-改-写（公开 SettingsManager API 无法表达该临界区），原生 resolver 为 oracle 的差分 fixture 回归仍在。
+- **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 proper-lockfile/typebox）
 
 
 ### Herdr 本机集成
