@@ -33,7 +33,7 @@ beforeEach(() => {
 	cwd = mkdtempSync(join(tmpdir(), "extmgr-tool-cwd-"));
 	writeRel("settings.json", JSON.stringify({ packages: ["npm:pi-hashline-edit-pro"] }), agentDir);
 	const pkgRoot = join(agentDir, "npm/node_modules/pi-hashline-edit-pro");
-	writeRel("package.json", JSON.stringify({ name: "pi-hashline-edit-pro", pi: { extensions: ["ext/hashline.ts"] } }), pkgRoot);
+	writeRel("package.json", JSON.stringify({ name: "pi-hashline-edit-pro", version: "1.0.0", pi: { extensions: ["ext/hashline.ts"] } }), pkgRoot);
 	writeRel("ext/hashline.ts", "export default () => {};", pkgRoot);
 });
 

@@ -49,7 +49,7 @@ describe("manage_extensions list", () => {
 		writeFile("extensions/qna.ts", "export default () => {};");
 		writeFile("settings.json", JSON.stringify({ packages: ["npm:pkg-a"] }));
 		const pkgRoot = join(agentDir, "npm/node_modules/pkg-a");
-		writeFile("package.json", JSON.stringify({ name: "pkg-a", pi: { extensions: ["ext/a.ts"] } }), pkgRoot);
+		writeFile("package.json", JSON.stringify({ name: "pkg-a", version: "1.0.0", pi: { extensions: ["ext/a.ts"] } }), pkgRoot);
 		writeFile("ext/a.ts", "export default () => {};", pkgRoot);
 
 		const { pi, tools } = makePi();

@@ -1,16 +1,13 @@
-import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import {
-	type ExtensionEntry,
-	type PackageSettingsEntry,
-	type PiManifest,
-	resolveExtensions,
-	type Snapshot,
-} from "./resolve.ts";
+import type { ExtensionEntry } from "./resolve.ts";
+import { resolveNative } from "./native.ts";
 import { planToggle } from "./toggle.ts";
+import { mutateSettings } from "./settings-io.ts";
+import { PickerModel, ExtensionPicker } from "./picker.ts";
+import { fileURLToPath } from "node:url";
 import { mutateSettings } from "./settings-io.ts";
 import { PickerModel, ExtensionPicker } from "./picker.ts";
 import { fileURLToPath } from "node:url";
@@ -43,116 +40,10 @@ function defaultEnv(): ExtmgrEnv {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot assembly (the only I/O on the read path)
+// Read path: native resolution (native.ts). Snapshot assembly and the
+// hand-written enumeration that used to live here were replaced by Pi's own
+// resolver — the host's semantics are the oracle, not something to replicate.
 // ---------------------------------------------------------------------------
-
-function readJsonTolerant(path: string): Record<string, unknown> {
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-	} catch {
-		return {};
-	}
-}
-
-function listFilesRecursive(root: string, rel = ""): string[] {
-	const out: string[] = [];
-	let entries;
-	try {
-		entries = readdirSync(join(root, rel), { withFileTypes: true });
-	} catch {
-		return out;
-	}
-	for (const e of entries) {
-		if (e.name.startsWith(".") || e.name === "node_modules") continue;
-		const relPath = rel ? `${rel}/${e.name}` : e.name;
-		if (e.isDirectory()) out.push(...listFilesRecursive(root, relPath));
-		else if (e.isFile()) out.push(relPath);
-	}
-	return out;
-}
-
-function readPiManifest(root: string): PiManifest | undefined {
-	const pkgJson = readJsonTolerant(join(root, "package.json"));
-	const pi = pkgJson.pi;
-	if (pi && typeof pi === "object" && !Array.isArray(pi)) {
-		const exts = (pi as Record<string, unknown>).extensions;
-		if (Array.isArray(exts) && exts.every((e) => typeof e === "string")) {
-			return { extensions: exts as string[] };
-		}
-	}
-	return undefined;
-}
-
-function npmPackageRoot(source: string, env: ExtmgrEnv, scope: "global" | "project"): string | undefined {
-	if (!source.startsWith("npm:")) return undefined;
-	const spec = source.slice("npm:".length);
-	// Same parse rule as Pi's parseNpmSpec: keep scoped names intact.
-	const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
-	const name = match?.[1] ?? spec;
-	const installRoot = scope === "global" ? join(env.agentDir, "npm") : join(env.cwd, ".pi", "npm");
-	const root = join(installRoot, "node_modules", name);
-	return existsSync(root) ? root : undefined;
-}
-
-export function buildSnapshot(env: ExtmgrEnv): Snapshot {
-	const projectBase = join(env.cwd, ".pi");
-	const globalSettings = readJsonTolerant(join(env.agentDir, "settings.json"));
-	const projectSettings = readJsonTolerant(join(projectBase, "settings.json"));
-
-	const packages: Snapshot["packages"] = [];
-	const manifests: Snapshot["manifests"] = {};
-	const collectManifests = (root: string, files: string[]) => {
-		for (const rel of files) {
-			if (rel !== "package.json" && !rel.endsWith("/package.json")) continue;
-			const dir = rel === "package.json" ? root : join(root, rel.slice(0, -"/package.json".length));
-			const manifest = readPiManifest(dir);
-			if (manifest) manifests[dir] = manifest;
-		}
-	};
-	const globalExtensionRoot = join(env.agentDir, "extensions");
-	const projectExtensionRoot = join(projectBase, "extensions");
-	const globalListing = listFilesRecursive(globalExtensionRoot);
-	const projectListing = listFilesRecursive(projectExtensionRoot);
-	collectManifests(globalExtensionRoot, globalListing);
-	collectManifests(projectExtensionRoot, projectListing);
-	const collectPackages = (settings: Record<string, unknown>, scope: "global" | "project") => {
-		const raw = settings.packages;
-		if (!Array.isArray(raw)) return;
-		for (const entry of raw) {
-			if (typeof entry === "string") {
-				packages.push({ source: entry, entry, scope });
-			} else if (entry && typeof entry === "object" && typeof (entry as PackageSettingsEntry).source === "string") {
-				packages.push({ source: (entry as PackageSettingsEntry).source, entry: entry as PackageSettingsEntry, scope });
-			}
-		}
-	};
-	collectPackages(globalSettings, "global");
-	collectPackages(projectSettings, "project");
-
-	for (const pkg of packages) {
-		const root = npmPackageRoot(pkg.source, env, pkg.scope);
-		if (!root) continue;
-		pkg.root = root;
-		pkg.rootFiles = listFilesRecursive(root);
-		collectManifests(root, pkg.rootFiles);
-	}
-
-	return {
-		global: {
-			baseDir: env.agentDir,
-			settings: globalSettings,
-			extensionListing: globalListing,
-		},
-		project: {
-			baseDir: projectBase,
-			settings: projectSettings,
-			extensionListing: projectListing,
-		},
-		packages,
-		manifests,
-	};
-}
 // ---------------------------------------------------------------------------
 // Live annotation (loaded markers from runtime SourceInfo)
 // ---------------------------------------------------------------------------
@@ -205,7 +96,7 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<{ rows: LoadedEntry[] | ExtensionEntry[]; result?: ToolMutationResult }>> {
 			if (params.action === "list") {
-				const entries = resolveExtensions(buildSnapshot(env));
+				const entries = await resolveNative(env);
 				const rows = annotateLoaded(entries, liveSources ? liveSources() : []);
 				return {
 					content: [{ type: "text", text: renderStateTable(rows) }],
@@ -216,7 +107,7 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		// report resulting states from a fresh snapshot.
 		const scope = params.scope ?? "global";
 		const trusted = ctx?.isProjectTrusted?.() ?? true;
-		const entries = resolveExtensions(buildSnapshot(env));
+		const entries = await resolveNative(env);
 		const target = params.target ?? "";
 
 		// Fuzzy match (IF-2): substring against entry names and package sources.
@@ -258,7 +149,7 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 				details: { result: { status: "unavailable", detail: out.detail }, rows: entries },
 			};
 		}
-		const after = resolveExtensions(buildSnapshot(env));
+		const after = await resolveNative(env);
 		const affected = isPackage ? after.filter((e) => e.packageSource === source) : after.filter((e) => e.id === targetEntry.id);
 		const stillOnGlobally = affected.some((e) => e.states.global === "on");
 		const note = scope === "project" && params.action === "disable" && stillOnGlobally ? " (still enabled globally)" : "";
@@ -359,16 +250,16 @@ export async function openPickerSession(
 	liveSources: () => SourceInfoLike[],
 	ctx: PickerCtxLike,
 ): Promise<ExtmgrSession> {
-	const readEntries = () => annotateLoaded(resolveExtensions(buildSnapshot(env)), safeSources(liveSources));
+	const readEntries = async (): Promise<LoadedEntry[]> => annotateLoaded(await resolveNative(env), safeSources(liveSources));
 	const model = new PickerModel({
-		entries: readEntries(),
+		entries: await readEntries(),
 		onReload: () => {
 			void ctx.reload();
 		},
 		applyToggle: async (entry, action, tier, opts) => {
 			const out = await persistToggle(
 				env,
-				resolveExtensions(buildSnapshot(env)),
+				await resolveNative(env),
 				entry,
 				action,
 				tier,
@@ -378,7 +269,7 @@ export async function openPickerSession(
 			if (!out.ok) {
 				return { ok: false, reason: out.reason, detail: out.detail };
 			}
-			model.setEntries(readEntries());
+			model.setEntries(await readEntries());
 			return { ok: true as const };
 		},
 	});
