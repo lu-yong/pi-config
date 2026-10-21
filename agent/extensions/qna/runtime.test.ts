@@ -4,7 +4,7 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { getSystemMessageText } from "@earendil-works/pi-ai/utils/text";
 import { ModelRegistry, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { runQna } from "./index.ts";
+import qnaExtension, { runQna } from "./index.ts";
 import { normalizeQnaSettings, defaultQnaSettings } from "./settings.ts";
 import { SYSTEM_PROMPT } from "./extraction.ts";
 
@@ -186,4 +186,54 @@ test("virtual extraction models route through the current runtime and preserve r
 	await runQna(f.ctx, "Which one?", normalizeQnaSettings({ qna: { model: { provider: "qna-router", id: "auto", thinking: "high" } } }));
 	assert.equal(f.main.state.callCount, 1);
 	assert.deepEqual(f.notices, [{ message: "未在 AI 回复中发现问题", level: "info" }]);
+});
+
+// 扩展入口的配置适配：loadSettings 必须把 getSettings() 的完整对象交给
+// normalizeQnaSettings（曾经错传 .qna 子对象给 JSON 解析器，导致全部配置静默失效）。
+test("extension entry honors autoExtract=false and the configured extraction model", async (t) => {
+	const f = await fixture(t);
+	const registered: {
+		settled?: (event: unknown, ctx: ExtensionContext) => Promise<void>;
+		qna?: (args: string, ctx: ExtensionContext) => Promise<void>;
+	} = {};
+	const pi = {
+		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => {
+			if (name === "agent_settled") registered.settled = handler;
+		},
+		registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
+			if (name === "qna") registered.qna = def.handler;
+		},
+		getSettings: () => ({ qna: { autoExtract: false, model: { provider: "qna-cheap", id: "cheap", thinking: "high" } } }),
+	};
+	qnaExtension(pi as never);
+
+	// lastAssistantText 走 ctx.sessionManager.getBranch()；给一条带问号的回复。
+	const branch = [
+		{
+			type: "message",
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Which one do you prefer?" }], timestamp: 1 },
+		},
+	];
+	const baseCtx = {
+		...f.ctx,
+		mode: "tui",
+		cwd: "/tmp",
+		sessionManager: { getBranch: () => branch },
+	} as unknown as ExtensionContext;
+
+	// autoExtract=false：settled 触发直接返回，不弹 loader、不调任何模型。
+	await registered.settled!(undefined, baseCtx);
+	assert.equal(f.loaders.length, 0);
+	assert.equal(f.main.state.callCount, 0);
+	assert.equal(f.cheap.state.callCount, 0);
+
+	// 手动 /qna 不看 autoExtract；配置的抽取模型（qna-cheap）必须生效。
+	f.cheap.setResponses([() => fauxAssistantMessage("[NONE]")]);
+	const editor: string[] = [];
+	await registered.qna!("", {
+		...baseCtx,
+		ui: { ...baseCtx.ui, setEditorText: (text: string) => editor.push(text) },
+	} as unknown as ExtensionContext);
+	assert.equal(f.cheap.state.callCount, 1, "configured extraction model must be used");
+	assert.equal(f.main.state.callCount, 0, "main model must not be called");
 });

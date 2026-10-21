@@ -20,21 +20,22 @@ import {
 	parseQuestions,
 	shouldAutoExtract,
 } from "./extraction.ts";
-import { authFallbackNotice, parseQnaSettings, resolveExtractionModel, type QnaSettings } from "./settings.ts";
+import { authFallbackNotice, defaultQnaSettings, normalizeQnaSettings, resolveExtractionModel, type QnaSettings } from "./settings.ts";
 
 /** 已处理过的消息 ID，防止重复触发 */
 const processedMessageIds = new Set<string>();
 
 /**
  * 每次调 pi.getSettings() 拿合并视图（global+project，自定义键原样保留），
- * 改完 settings.json 立刻生效，不必重启 pi；顺带获得项目级配置能力。
+ * 顺带获得项目级配置能力。配置在 Pi 启动/`/reload` 时读盘，会话内编辑
+ * settings.json 需 `/reload` 后生效。
  */
 function loadSettings(pi: ExtensionAPI): QnaSettings {
 	try {
-		return parseQnaSettings((pi.getSettings() as { qna?: unknown }).qna);
+		return normalizeQnaSettings(pi.getSettings());
 	} catch {
-		// 文件缺失 / 无权限都按"未配置"处理
-		return parseQnaSettings(undefined);
+		// 读取失败一律按"未配置"处理，配置问题不该让 /qna 不可用
+		return defaultQnaSettings();
 	}
 }
 
