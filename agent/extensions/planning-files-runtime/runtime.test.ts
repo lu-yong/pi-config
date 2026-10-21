@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { OutgoingGoalMessage, OutgoingGoalMessageOptions } from "./goal-lifecycle.ts";
 import planningFilesRuntime from "./runtime.ts";
 import { defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
-import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_IMPL } from "./types.ts";
+import { MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_IMPL } from "./types.ts";
 import { getPaths, writeText } from "./utils.ts";
 import { initializePlanningWorkspace } from "./workspace.ts";
 
@@ -66,14 +66,24 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 		widget: () => widget,
 		failSend: (fail = true) => { failSend = fail; },
 		event: (name: string, event: unknown = {}) => hooks.get(name)!(event, ctx),
+		/** Invoke the native before-settle boundary; returns the hook's entries/continue decision. */
+		boundary: (outcome: "completed" | "aborted" | "error" = "completed") => hooks.get("agent_before_settle")!({ outcome }, ctx) as Promise<BoundaryDecision>,
 		command: (name: string, args = "") => commands.get(name)!.handler(args, ctx),
 		tool: (name: string, params: unknown, signal?: AbortSignal) => tools.get(name)!.execute("test", params, signal ?? new AbortController().signal, undefined, ctx),
 	};
 }
 
+/** A boundary continuation entry as Pi would receive it. */
+type BoundaryDecision = { entries: Array<{ type: string; customType: string; content: string; display: boolean }>; continue: boolean } | undefined;
+
+function continuationEntry(decision: BoundaryDecision): { type: string; customType: string; content: string; display: boolean } {
+	assert.ok(decision?.continue, "boundary must request continuation");
+	assert.equal(decision.entries.length, 1);
+	return decision.entries[0];
+}
+
 for (const toolName of ["replace_match", "copy", "move"]) {
-	test(`${toolName} nested tool events immediately refresh Blocker and enable continuation`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
+	test(`${toolName} nested tool events immediately refresh Blocker and enable continuation`, async () => {
 		const h = harness();
 		await h.event("session_start", { reason: "new" });
 		await h.event("turn_start");
@@ -83,34 +93,40 @@ for (const toolName of ["replace_match", "copy", "move"]) {
 		await h.event("tool_result", event);
 		assert.ok(h.widget()?.includes("blocker: Current blocker"));
 		await h.event("turn_end", { message: { stopReason: "stop" } });
-		await h.event("agent_settled");
-		t.mock.timers.tick(CONTINUATION_DELAY_MS);
-		assert.equal(h.messages.length, 1);
-		assert.equal(h.messages[0].customType, MESSAGE_TYPE_CONTINUATION);
+		const entry = continuationEntry(await h.boundary());
+		assert.equal(entry.type, "custom_message");
+		assert.equal(entry.customType, MESSAGE_TYPE_CONTINUATION);
 	});
 }
 
-test("normal settlement with progress continues after the delay", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("settlement with progress continues through the native boundary entry, not a queued message", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
 	await h.event("agent_start");
 	await h.event("turn_start");
 	await h.event("tool_call", { toolName: "replace_match", input: {} });
 	await h.event("turn_end", { message: { stopReason: "stop" } });
-	await h.event("agent_settled", { aborted: false });
-	assert.equal(h.messages.length, 0);
-	t.mock.timers.tick(CONTINUATION_DELAY_MS - 1);
-	assert.equal(h.messages.length, 0);
-	t.mock.timers.tick(1);
+	const entry = continuationEntry(await h.boundary());
+	assert.equal(entry.type, "custom_message");
+	assert.equal(entry.customType, MESSAGE_TYPE_CONTINUATION);
+	assert.equal(entry.display, false);
+	assert.match(entry.content, /mode=continue/);
+	// The adapter never enqueues the automatic continuation itself; Pi owns the next request.
 	assert.equal(readGoalState(h.cwd).status, "active");
-	assert.equal(h.messages.length, 1);
-	assert.equal(h.messages[0].customType, MESSAGE_TYPE_CONTINUATION);
+	assert.equal(h.messages.length, 0);
+});
+
+test("a boundary without progress returns no continuation", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("turn_end", { message: { stopReason: "stop" } });
+	assert.equal(await h.boundary(), undefined);
+	assert.equal(h.messages.length, 0);
 });
 
 for (const progress of [true, false]) {
-	test(`settlement cancellation after a normal stop pauses with progress=${progress}`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
+	test(`settlement cancellation after a normal stop pauses with progress=${progress}`, async () => {
 		const h = harness();
 		await h.event("session_start", { reason: "new" });
 		await h.event("agent_start");
@@ -118,13 +134,14 @@ for (const progress of [true, false]) {
 		if (progress) await h.event("tool_call", { toolName: "replace_match", input: {} });
 		await h.event("turn_end", { message: { stopReason: "stop" } });
 		await h.event("agent_settled", { aborted: true });
-		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 		assert.equal(h.messages.length, 0);
 		const state = readGoalState(h.cwd);
 		assert.equal(state.status, "paused");
 		assert.equal(state.impl.pausedReason, "The goal run was interrupted by the user.");
 		assert.equal(state.impl.pausedSuggestedAction, "");
 		assert.ok(h.widget()?.includes("goal: paused"));
+		// The cancelled run can no longer continue.
+		assert.equal(await h.boundary(), undefined);
 		const progressPath = getPaths(h.cwd).files["progress.md"];
 		const before = fs.readFileSync(progressPath, "utf8");
 		assert.equal(before.match(/Goal implementation paused: The goal run was interrupted by the user\./g)?.length, 1);
@@ -134,8 +151,7 @@ for (const progress of [true, false]) {
 	});
 }
 
-test("settlement cancellation takes precedence over a terminal provider error", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("settlement cancellation takes precedence over a terminal provider error", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
 	await h.event("turn_start");
@@ -143,7 +159,6 @@ test("settlement cancellation takes precedence over a terminal provider error", 
 	await h.event("turn_end", { message: { stopReason: "error", errorMessage: "provider overloaded" } });
 	assert.equal(readGoalState(h.cwd).status, "active");
 	await h.event("agent_settled", { aborted: true });
-	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 	assert.equal(h.messages.length, 0);
 	assert.equal(readGoalState(h.cwd).status, "paused");
 	assert.equal(readGoalState(h.cwd).impl.pausedReason, "The goal run was interrupted by the user.");
@@ -151,22 +166,32 @@ test("settlement cancellation takes precedence over a terminal provider error", 
 	assert.doesNotMatch(fs.readFileSync(getPaths(h.cwd).files["progress.md"], "utf8"), /LLM request failed/);
 });
 
-test("settlement cancellation clears an already pending continuation", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("a terminal provider error at the boundary pauses without continuing", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "error", errorMessage: "provider overloaded" } });
+	assert.equal(await h.boundary("error"), undefined);
+	assert.equal(readGoalState(h.cwd).status, "paused");
+	assert.match(readGoalState(h.cwd).impl.pausedReason, /will not retry automatically: provider overloaded/);
+	assert.equal(h.messages.length, 0);
+});
+
+test("settlement cancellation after a continuation decision pauses the goal", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
 	await h.event("turn_start");
 	await h.event("tool_call", { toolName: "replace_match", input: {} });
 	await h.event("turn_end", { message: { stopReason: "stop" } });
-	await h.event("agent_settled", { aborted: false });
+	assert.equal(continuationEntry(await h.boundary()).customType, MESSAGE_TYPE_CONTINUATION);
 	await h.event("agent_settled", { aborted: true });
-	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 	assert.equal(h.messages.length, 0);
 	assert.equal(readGoalState(h.cwd).status, "paused");
+	assert.equal(await h.boundary(), undefined);
 });
 
-test("an aborted turn followed by aborted settlement does not log a second pause", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("an aborted turn followed by aborted settlement does not log a second pause", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
 	await h.event("turn_start");
@@ -176,22 +201,20 @@ test("an aborted turn followed by aborted settlement does not log a second pause
 	const progressPath = getPaths(h.cwd).files["progress.md"];
 	const before = fs.readFileSync(progressPath, "utf8");
 	await h.event("agent_settled", { aborted: true });
-	t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 	assert.equal(h.messages.length, 0);
 	assert.equal(fs.readFileSync(progressPath, "utf8"), before);
 });
 
 for (const status of ["none", "drafting", "ready", "paused", "complete"] as const) {
-	test(`aborted settlement preserves an already ${status} goal`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
+	test(`aborted settlement preserves an already ${status} goal`, async () => {
 		const h = harness(status);
 		await h.event("session_start", { reason: "new" });
 		const before = readGoalState(h.cwd);
 		const progressPath = getPaths(h.cwd).files["progress.md"];
 		const progressBefore = fs.readFileSync(progressPath, "utf8");
 		await h.event("turn_end", { message: { stopReason: "stop" } });
+		assert.equal(await h.boundary(), undefined);
 		await h.event("agent_settled", { aborted: true });
-		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 		assert.equal(h.messages.length, 0);
 		assert.deepEqual(readGoalState(h.cwd), before);
 		assert.equal(fs.readFileSync(progressPath, "utf8"), progressBefore);
@@ -200,8 +223,7 @@ for (const status of ["none", "drafting", "ready", "paused", "complete"] as cons
 }
 
 for (const toolName of ["pause_plan_goal", "complete_plan_goal"]) {
-	test(`aborted settlement preserves the result of ${toolName}`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
+	test(`aborted settlement preserves the result of ${toolName}`, async () => {
 		const h = harness();
 		await h.event("session_start", { reason: "new" });
 		await h.event("turn_start");
@@ -211,8 +233,8 @@ for (const toolName of ["pause_plan_goal", "complete_plan_goal"]) {
 		const progressPath = getPaths(h.cwd).files["progress.md"];
 		const progressBefore = fs.readFileSync(progressPath, "utf8");
 		await h.event("turn_end", { message: { stopReason: "stop" } });
+		assert.equal(await h.boundary(), undefined);
 		await h.event("agent_settled", { aborted: true });
-		t.mock.timers.tick(CONTINUATION_DELAY_MS + 1);
 		assert.equal(h.messages.length, 0);
 		assert.deepEqual(readGoalState(h.cwd), before);
 		assert.equal(fs.readFileSync(progressPath, "utf8"), progressBefore);
@@ -270,19 +292,16 @@ test("bad JSON is reported without replacing the widget with an empty goal or re
 	assert.equal(h.messages.length, 0);
 });
 
-test("widget sync failure can be repaired and explicitly resumed", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("a failed boundary sync warns and can be repaired then explicitly resumed", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
 	await h.event("turn_start");
 	await h.event("tool_call", { toolName: "replace_match", input: {} });
 	await h.event("turn_end", { message: { stopReason: "stop" } });
-	await h.event("agent_settled");
 	const before = readGoalState(h.cwd);
 	writeText(getPaths(h.cwd).goalState, "{");
-	await h.event("tool_result", { toolName: "replace_match", input: {} });
-	t.mock.timers.tick(CONTINUATION_DELAY_MS);
-	assert.equal(h.messages.length, 0);
+	assert.equal(await h.boundary(), undefined);
+	assert.ok(h.warnings.some((message) => /cannot read current goal state/.test(message)));
 	writeGoalState(h.cwd, before);
 	await h.command("plan-goal-impl");
 	assert.equal(h.messages.length, 1);
@@ -303,8 +322,7 @@ test("a corrupt state file does not carry a previous turn stop into the repair t
 
 for (const status of ["ready", "paused"] as const) {
 	for (const input of ["我使用重置卡，额度已恢复\n  请核验后继续，不要部署。", " \t\n　"]) {
-		test(`/plan-goal-impl forwards ${input.trim() ? "multiline input" : "no supplement for whitespace"} from ${status}`, async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+		test(`/plan-goal-impl forwards ${input.trim() ? "multiline input" : "no supplement for whitespace"} from ${status}`, async () => {
 			const h = harness(status);
 			const paths = getPaths(h.cwd);
 			const taskPlan = "# Task Plan\n\n## Next action\n等待明天额度重置\n\n## Blocker\n额度耗尽；另有待核验依赖\n";
@@ -338,54 +356,43 @@ for (const status of ["ready", "paused"] as const) {
 			await h.event("turn_start");
 			await h.event("tool_call", { toolName: "replace_match", input: {} });
 			await h.event("turn_end", { message: { stopReason: "stop" } });
-			await h.event("agent_settled");
-			t.mock.timers.tick(CONTINUATION_DELAY_MS);
-			assert.equal(h.messages.length, 2);
-			assert.equal(h.messages[1].customType, MESSAGE_TYPE_CONTINUATION);
-			assert.doesNotMatch(h.messages[1].content, /Current user supplement|重置卡/);
+			const entry = continuationEntry(await h.boundary());
+			assert.equal(entry.customType, MESSAGE_TYPE_CONTINUATION);
+			assert.doesNotMatch(entry.content, /Current user supplement|重置卡/);
 		});
 	}
 }
 
-for (const idle of [true, false]) {
-	test(`/plan-goal-impl explicitly rejects active input without affecting the pending continuation (idle=${idle})`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
-		const h = harness();
-		await h.event("session_start", { reason: "new" });
-		await h.event("turn_start");
-		await h.event("tool_call", { toolName: "replace_match", input: {} });
-		await h.event("turn_end", { message: { stopReason: "stop" } });
-		await h.event("agent_settled");
-		const before = fs.readFileSync(getPaths(h.cwd).goalState, "utf8");
-		h.ctx.isIdle = () => idle;
-		await h.command("plan-goal-impl", "额度已恢复\n继续执行");
-		assert.equal(h.warnings.length, 1);
-		assert.match(h.warnings[0], /not accepted.*normal message.*pause.*plan-goal-impl/);
-		await h.command("plan-goal-impl");
-		await h.command("plan-goal-impl", " \t\n　");
-		assert.equal(h.warnings.length, 1);
-		assert.equal(h.messages.length, 0);
-		assert.equal(fs.readFileSync(getPaths(h.cwd).goalState, "utf8"), before);
-		h.ctx.isIdle = () => true;
-		t.mock.timers.tick(CONTINUATION_DELAY_MS);
-		assert.equal(h.messages.length, 1);
-		assert.doesNotMatch(h.messages[0].content, /Current user supplement|额度已恢复/);
-	});
-}
+test(`/plan-goal-impl explicitly rejects active input without affecting the boundary decision`, async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "replace_match", input: {} });
+	await h.event("turn_end", { message: { stopReason: "stop" } });
+	const before = fs.readFileSync(getPaths(h.cwd).goalState, "utf8");
+	await h.command("plan-goal-impl", "额度已恢复\n继续执行");
+	assert.equal(h.warnings.length, 1);
+	assert.match(h.warnings[0], /not accepted.*normal message.*pause.*plan-goal-impl/);
+	await h.command("plan-goal-impl");
+	await h.command("plan-goal-impl", " \t\n　");
+	assert.equal(h.warnings.length, 1);
+	assert.equal(h.messages.length, 0);
+	assert.equal(fs.readFileSync(getPaths(h.cwd).goalState, "utf8"), before);
+	// The rejected input consumed nothing: the boundary still continues the run.
+	const entry = continuationEntry(await h.boundary());
+	assert.doesNotMatch(entry.content, /Current user supplement|额度已恢复/);
+});
 
 for (const input of ["我使用重置卡，额度已恢复\n请继续核验", " \t\n　"]) {
-	test(`/plan-goal-impl recovery forwards ${input.trim() ? "supplemental facts" : "whitespace as no supplement"}`, async (t) => {
-		t.mock.timers.enable({ apis: ["setTimeout"] });
+	test(`/plan-goal-impl recovery forwards ${input.trim() ? "supplemental facts" : "whitespace as no supplement"}`, async () => {
 		const h = harness();
 		await h.event("session_start", { reason: "new" });
 		await h.event("turn_start");
 		await h.event("tool_call", { toolName: "replace_match", input: {} });
 		await h.event("turn_end", { message: { stopReason: "stop" } });
-		await h.event("agent_settled");
 		const before = readGoalState(h.cwd);
 		writeText(getPaths(h.cwd).goalState, "{");
-		t.mock.timers.tick(CONTINUATION_DELAY_MS);
-		assert.equal(h.messages.length, 0);
+		assert.equal(await h.boundary(), undefined);
 		assert.equal(h.warnings.length, 1);
 		const repaired = writeGoalState(h.cwd, before);
 		h.failSend();

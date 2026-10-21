@@ -6,14 +6,13 @@ import { afterEach, describe, test } from "node:test";
 
 import {
 	createGoalLifecycle,
-	type ContinuationTimer,
 	type GoalLifecycle,
 	type GoalLifecycleContext,
 	type GoalLifecycleEvent,
 	type OutgoingGoalMessage,
 	type OutgoingGoalMessageOptions,
 } from "./goal-lifecycle.ts";
-import { CONTINUATION_DELAY_MS, MESSAGE_TYPE_CONTINUATION } from "./types.ts";
+import { MESSAGE_TYPE_CONTINUATION } from "./types.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
 import { defaultGoalState, hasActiveGoal, writeGoalState } from "./state.ts";
 import { getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
@@ -39,51 +38,18 @@ const contractParams = {
 	blockerRule: "Pause with a concrete blocker",
 };
 
-// ---- harness: fake timer + captured messages + scripted context ----
+// ---- harness: captured messages + scripted context ----
 
 type SentMessage = { message: OutgoingGoalMessage; options: OutgoingGoalMessageOptions };
 
-type FakeTimer = ContinuationTimer & {
-	fire(): void;
-	scheduledDelays(): number[];
-	hasPending(): boolean;
-};
-
-function createFakeTimer(): FakeTimer {
-	let pending: (() => void) | null = null;
-	const delays: number[] = [];
-	return {
-		schedule(callback, delayMs) {
-			pending = callback;
-			delays.push(delayMs);
-		},
-		clear() {
-			pending = null;
-		},
-		fire() {
-			const callback = pending;
-			pending = null;
-			callback?.();
-		},
-		scheduledDelays: () => delays,
-		hasPending: () => pending !== null,
-	};
-}
-
-function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleCheck?: boolean; failNotify?: boolean; failRefresh?: boolean } = {}) {
+function createHarness(options: { failSends?: boolean; failNotify?: boolean; failRefresh?: boolean } = {}) {
 	const sent: SentMessage[] = [];
 	const log: string[] = [];
-	const timer = createFakeTimer();
-	let idle = options.idle ?? true;
 	let failSends = options.failSends ?? false;
 	let failNotify = options.failNotify ?? false;
 	let failRefresh = options.failRefresh ?? false;
 	const context = (): GoalLifecycleContext => ({
 		resumedFromPreviousSession: false,
-		isIdle: () => {
-			if (options.failIdleCheck) throw new Error("stale context");
-			return idle;
-		},
 		notify: (message, level) => {
 			if (failNotify) throw new Error("notify exploded");
 			log.push(`notify:${level}:${message}`);
@@ -94,7 +60,6 @@ function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleC
 		},
 	});
 	return {
-		timer,
 		sent,
 		log,
 		context,
@@ -104,9 +69,7 @@ function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleC
 				sent.push({ message, options: sendOptions });
 				log.push(`send:${message.customType}`);
 			},
-			timer,
 		},
-		setIdle: (next: boolean) => (idle = next),
 		clearSent: () => sent.splice(0),
 		setFailSends: (next: boolean) => (failSends = next),
 		setFailNotify: (next: boolean) => (failNotify = next),
@@ -115,6 +78,13 @@ function createHarness(options: { failSends?: boolean; idle?: boolean; failIdleC
 }
 
 type Harness = ReturnType<typeof createHarness>;
+
+/** Decide a settled run's continuation at Pi's before-settle boundary. */
+function decideContinuation(run: GoalLifecycle, harness: Harness, outcome: "completed" | "aborted" | "error" = "completed"): OutgoingGoalMessage | undefined {
+	const result = run.handle({ type: "before-settle", outcome }, harness.context());
+	assert.equal(result.failure, undefined);
+	return result.continuation?.message;
+}
 
 function prepareDraft(cwd: string, harness: Harness): GoalLifecycle {
 	const run = createGoalLifecycle(cwd, harness.deps);
@@ -130,10 +100,11 @@ function prepareActive(cwd: string, harness: Harness): GoalLifecycle {
 	return run;
 }
 
-function settleWithProgress(run: GoalLifecycle, harness: Harness): void {
+/** One productive settled turn: a progress tool call, a completed turn, and the boundary decision. */
+function settleWithProgress(run: GoalLifecycle, harness: Harness): OutgoingGoalMessage | undefined {
 	run.handle({ type: "progress-tool-called" }, harness.context());
 	run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-	run.handle({ type: "agent-settled" }, harness.context());
+	return decideContinuation(run, harness);
 }
 
 describe("goal lifecycle", () => {
@@ -325,7 +296,6 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "turn-start" }, harness.context()); // clear the commit stop gate like a real turn would
 		const paths = getPaths(cwd);
 		settleWithProgress(run, harness);
-		assert.equal(harness.timer.hasPending(), true);
 		const goalStatePath = getPaths(cwd).goalState;
 
 		fs.rmSync(goalStatePath, { force: true });
@@ -335,7 +305,6 @@ describe("goal lifecycle", () => {
 		assert.match(result.failure?.reason ?? "", /Goal run failed/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.turnStoppedBy(), null);
-		assert.equal(harness.timer.hasPending(), false); // pending continuation cleared
 		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nPhase 1/); // workspace not finalized
 
 		// Retrying after the storage problem is fixed completes normally.
@@ -392,36 +361,50 @@ describe("goal lifecycle", () => {
 		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "ready");
 	});
 
-	test("continuation waits for agent settlement and LLM failure pauses the goal", () => {
+	test("a settled run with progress returns exactly one continuation at the boundary and consumes the progress", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		harness.clearSent();
-		run.handle({ type: "turn-start" }, harness.context());
-		run.handle({ type: "progress-tool-called" }, harness.context());
-		let result = run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-		assert.equal(result.rejection, undefined);
-		result = run.handle({ type: "agent-settled" }, harness.context());
-		assert.equal(result.failure, undefined);
-		assert.deepEqual(harness.timer.scheduledDelays(), [CONTINUATION_DELAY_MS]);
 
-		harness.timer.fire();
-		assert.equal(harness.sent.length, 1);
-		assert.equal(harness.sent[0]?.message.customType, MESSAGE_TYPE_CONTINUATION);
-		assert.equal(harness.sent[0]?.options.deliverAs, "followUp");
-		harness.timer.fire();
-		assert.equal(harness.sent.length, 1);
+		const continuation = settleWithProgress(run, harness);
+		assert.ok(continuation);
+		assert.equal(continuation.customType, MESSAGE_TYPE_CONTINUATION);
+		assert.equal(continuation.display, false);
+		assert.match(continuation.content, /mode=continue/);
+		// The decision is returned as data: nothing is sent through the adapter.
+		assert.equal(harness.sent.length, 0);
+		assert.equal(run.getState().status, "active");
 
-		run.handle({ type: "turn-start" }, harness.context());
+		// Progress was consumed: a repeat boundary without new work does not continue again.
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
+		assert.equal(decideContinuation(run, harness), undefined);
+		assert.equal(run.getState().status, "active");
+	});
+
+	test("a run that goes quiet without progress does not continue", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
+		assert.equal(decideContinuation(run, harness), undefined);
+		assert.equal(run.getState().status, "active");
+	});
+
+	test("a terminal provider error pauses the goal at the boundary", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		harness.clearSent();
+
 		run.handle({ type: "progress-tool-called" }, harness.context());
-		result = run.handle({ type: "turn-end", stopReason: "error", errorMessage: "provider overloaded" }, harness.context());
-		assert.equal(result.rejection, undefined);
-		result = run.handle({ type: "agent-settled" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "error", errorMessage: "provider overloaded" }, harness.context());
+		const result = run.handle({ type: "before-settle", outcome: "error" }, harness.context());
 		assert.equal(result.failure, undefined);
+		assert.equal(result.continuation, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.match(run.getState().impl.pausedReason, /will not retry automatically: provider overloaded/);
 		assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
-		assert.equal(harness.timer.hasPending(), false);
 	});
 
 	test("a successful native retry preserves earlier tool progress", () => {
@@ -433,30 +416,26 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "error", errorMessage: "temporary overload" }, harness.context());
 
-		// Pi starts a low-level retry run before agent_settled; this only cancels stale timers.
+		// Pi starts a low-level retry run; only a settled run reaches the boundary.
 		run.handle({ type: "agent-start" }, harness.context());
 		run.handle({ type: "turn-start" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
+		assert.ok(decideContinuation(run, harness));
 		assert.equal(run.getState().status, "active");
-		assert.deepEqual(harness.timer.scheduledDelays(), [CONTINUATION_DELAY_MS]);
 	});
 
-	test("aborted settlement clears a pending continuation and pauses only once", () => {
+	test("aborted settlement pauses the still-active run and pauses only once", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		harness.clearSent();
 		settleWithProgress(run, harness);
-		assert.equal(harness.timer.hasPending(), true);
 
 		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
 		assert.equal(result.failure, undefined);
 		assert.equal(result.rejection, undefined);
 		assert.equal(run.getState().status, "paused");
-		assert.equal(harness.timer.hasPending(), false);
 		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
-		harness.timer.fire();
 		assert.equal(harness.sent.length, 0);
 		const progressPath = getPaths(cwd).files["progress.md"];
 		const before = readText(progressPath);
@@ -465,20 +444,21 @@ describe("goal lifecycle", () => {
 		assert.equal(readText(progressPath), before);
 	});
 
-	test("aborted settlement preserves pause effect rollback and clears its timer", () => {
+	test("aborted settlement preserves pause effect rollback and consumes the progress gate", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		harness.clearSent();
-		settleWithProgress(run, harness);
-		assert.equal(harness.timer.hasPending(), true);
 		harness.setFailRefresh(true);
 		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
 		assert.match(result.failure?.reason ?? "", /Goal run failed; state restored.*refresh exploded/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "active");
-		assert.equal(harness.timer.hasPending(), false);
-		harness.timer.fire();
+		harness.setFailRefresh(false);
+		// The rolled-back pause also consumed the progress gate, so the
+		// boundary cannot silently continue what the user interrupted.
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
+		assert.equal(decideContinuation(run, harness), undefined);
 		assert.equal(harness.sent.length, 0);
 	});
 
@@ -496,216 +476,19 @@ describe("goal lifecycle", () => {
 		assert.match(readText(getPaths(cwd).files["progress.md"]), /Goal implementation paused: The goal run was interrupted by the user\./);
 	});
 
-	test("a continuation is discarded when Pi becomes busy before the timer fires", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		harness.setIdle(false);
-		harness.timer.fire();
-
-		assert.equal(harness.sent.length, 0);
-		assert.equal(run.getState().status, "active");
-	});
-
-	test("a stale extension context discards the continuation fail-closed", () => {
-		const cwd = makeCwd();
-		const harness = createHarness({ failIdleCheck: true });
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-		harness.timer.fire();
-
-		assert.equal(harness.sent.length, 0);
-		assert.equal(run.getState().status, "active");
-	});
-
-	test("a continuation firing after pause sends nothing", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-		assert.equal(harness.timer.hasPending(), true);
-
-		run.handle({ type: "pause", params: { reason: "blocked" } }, harness.context());
-		assert.equal(harness.timer.hasPending(), false);
-		harness.timer.fire();
-
-		assert.equal(harness.sent.length, 0);
-	});
-
-	test("a failed continuation delivery pauses the run and keeps the retry path deterministic", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness); // schedules the continuation
-
-		harness.setFailSends(true);
-		harness.timer.fire();
-		harness.setFailSends(false);
-
-		// The stall is visible: paused with a diagnostic reason, timer cleared, warning shown.
-		assert.equal(run.getState().status, "paused");
-		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
-		assert.equal(harness.timer.hasPending(), false);
-		assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
-		assert.equal(harness.sent.length, 0); // the continuation message itself never went out
-
-		// Retry is deterministic: /plan-goal-impl resumes the same run and schedules again.
-		run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.runId, 1);
-		run.handle({ type: "progress-tool-called" }, harness.context());
-		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		assert.equal(harness.timer.hasPending(), true);
-	});
-
-	test("continuation recovery keeps the paused commit when the progress append fails", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		harness.setFailSends(true);
-		// progress.md becomes unwritable so the pause diagnostics fail after the commit.
-		const progressPath = getPaths(cwd).files["progress.md"];
-		fs.rmSync(progressPath, { force: true });
-		fs.mkdirSync(progressPath);
-		harness.timer.fire();
-		harness.setFailSends(false);
-
-		// The committed pause survives the diagnostic failure.
-		assert.equal(run.getState().status, "paused");
-		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
-		assert.equal(harness.timer.hasPending(), false);
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused"); // persisted
-
-		// Retry is deterministic: /plan-goal-impl resumes the same run.
-		fs.rmSync(progressPath, { recursive: true, force: true });
-		run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.runId, 1);
-	});
-
-	test("continuation recovery keeps the paused commit when the warning notification fails", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		harness.setFailSends(true);
-		harness.setFailNotify(true);
-		harness.timer.fire();
-		harness.setFailSends(false);
-		harness.setFailNotify(false);
-
-		assert.equal(run.getState().status, "paused");
-		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
-		assert.equal(harness.timer.hasPending(), false);
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
-
-		run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.runId, 1);
-	});
-
-	test("continuation recovery keeps the paused commit when the UI refresh fails", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		harness.setFailSends(true);
-		harness.setFailRefresh(true);
-		harness.timer.fire();
-		harness.setFailSends(false);
-		harness.setFailRefresh(false);
-
-		assert.equal(run.getState().status, "paused");
-		assert.match(run.getState().impl.pausedReason, /Continuation delivery failed/);
-		assert.equal(harness.timer.hasPending(), false);
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
-
-		run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.runId, 1);
-	});
-
-	test("a failed recovery commit leaves a re-sendable recovery intent for /plan-goal-impl", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		harness.setFailSends(true);
-		// Break the goal-state storage so the pause recovery commit fails too.
-		fs.chmodSync(getPaths(cwd).root, 0o555);
-		harness.timer.fire();
-		harness.setFailSends(false);
-
-		// Both delivery and the recovery commit failed: still active (memory
-		// and disk agree), no timer, no continuation sent, stall is visible.
-		assert.equal(run.getState().status, "active");
-		assert.equal(harness.timer.hasPending(), false);
-		assert.equal(harness.sent.length, 0);
-		assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
-
-		// Restore storage; the warning's command now actually recovers the run
-		// by re-sending the same run's continuation.
-		fs.chmodSync(getPaths(cwd).root, 0o755);
-		const result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(result.failure, undefined);
-		assert.equal(result.rejection, undefined);
-		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.runId, 1);
-		assert.equal(harness.sent.length, 1);
-		assert.equal(harness.sent[0]?.message.customType, MESSAGE_TYPE_CONTINUATION);
-		assert.match(harness.sent[0]?.message.content, /runId=1/);
-
-		// The recovery intent is consumed: a second request is a true no-op.
-		const before = run.getState();
-		const again = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(again.failure, undefined);
-		assert.deepEqual(run.getState(), before);
-		assert.equal(harness.sent.length, 1);
-	});
-
-	test("agent start cancels a settled continuation before it can fire", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		settleWithProgress(run, harness);
-
-		run.handle({ type: "agent-start" }, harness.context());
-		assert.equal(harness.timer.hasPending(), false);
-		harness.timer.fire();
-
-		assert.equal(harness.sent.length, 0);
-	});
-
-	test("successful completion finalizes the workspace, clears the timer, and releases Q&A suppression", () => {
+	test("successful completion finalizes the workspace and releases Q&A suppression", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		settleWithProgress(run, harness);
-		assert.equal(harness.timer.hasPending(), true);
 		const paths = getPaths(cwd);
 
 		const result = run.handle({ type: "complete", params: { summary: "done", evidence: ["tests pass"] } }, harness.context());
 		assert.equal(result.failure, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(hasActiveGoal(cwd), false);
-		assert.equal(harness.timer.hasPending(), false);
+		// A later boundary cannot continue a completed goal.
+		assert.equal(decideContinuation(run, harness), undefined);
 		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
 		assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
 	});
@@ -727,7 +510,6 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().status, "active");
 		assert.equal(hasActiveGoal(cwd), true);
 		assert.equal(run.turnStoppedBy(), null);
-		assert.equal(harness.timer.hasPending(), false);
 		// The failed completion must not leak partial finalization into the workspace.
 		assert.equal(readText(paths.files["task_plan.md"]), originalTaskPlan);
 		assert.equal(readText(paths.files["progress.md"]), originalProgress);
@@ -799,22 +581,6 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, external.impl.runId);
 	});
 
-	for (const status of ["paused", "complete"] as const) {
-		test(`external ${status} cancels a queued continuation without reviving the run`, () => {
-			const cwd = makeCwd();
-			const harness = createHarness();
-			const run = prepareActive(cwd, harness);
-			harness.clearSent();
-			settleWithProgress(run, harness);
-			writeGoalState(cwd, { ...run.getState(), status });
-			const before = readText(getPaths(cwd).goalState);
-			harness.timer.fire();
-			assert.equal(harness.sent.length, 0);
-			assert.equal(run.getState().status, status);
-			assert.equal(readText(getPaths(cwd).goalState), before);
-		});
-	}
-
 	test("contract-only disk updates preserve progress and refresh the continuation prompt", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
@@ -825,11 +591,9 @@ describe("goal lifecycle", () => {
 		external.goal!.constraints = ["Use the new policy"];
 		writeGoalState(cwd, external);
 		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		assert.equal(harness.timer.hasPending(), true);
-		harness.timer.fire();
-		assert.equal(harness.sent.length, 1);
-		assert.match(harness.sent[0].message.content, /Use the new policy/);
+		const continuation = decideContinuation(run, harness);
+		assert.ok(continuation);
+		assert.match(continuation.content, /Use the new policy/);
 	});
 
 	test("sync imports external state without resetting the turn-stop gate", () => {
@@ -846,7 +610,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.turnStoppedBy(), "commit_plan_goal");
 	});
 
-	test("an external run change cannot inherit old progress or a pending continuation", () => {
+	test("an external run change cannot inherit old progress", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -856,14 +620,13 @@ describe("goal lifecycle", () => {
 		external.impl.runId++;
 		writeGoalState(cwd, external);
 		run.handle({ type: "sync" }, harness.context());
-		assert.equal(harness.timer.hasPending(), false);
-		run.handle({ type: "agent-settled" }, harness.context());
-		harness.timer.fire();
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
+		assert.equal(decideContinuation(run, harness), undefined);
 		assert.equal(harness.sent.length, 0);
 	});
 
 	for (const badState of ["{", "null", "{}", "[]"]) {
-		test(`invalid state ${badState} is not overwritten by sync, resume or continuation`, () => {
+		test(`invalid state ${badState} is not overwritten by sync, resume or the boundary decision`, () => {
 			const cwd = makeCwd();
 			const harness = createHarness();
 			const run = prepareActive(cwd, harness);
@@ -871,16 +634,16 @@ describe("goal lifecycle", () => {
 			settleWithProgress(run, harness);
 			const before = run.getState();
 			writeText(getPaths(cwd).goalState, badState);
-			harness.timer.fire();
-			for (const type of ["sync", "implementation-request", "agent-settled"] as const) {
-				const result = run.handle({ type }, harness.context());
+			for (const type of ["sync", "implementation-request", "before-settle"] as const) {
+				const result = run.handle(type === "before-settle" ? { type, outcome: "completed" } : { type }, harness.context());
 				assert.equal(result.failure?.operation, "state-sync");
+				assert.equal(result.continuation, undefined);
 			}
 			assert.equal(readText(getPaths(cwd).goalState), badState);
 			assert.deepEqual(run.getState(), before);
 			assert.equal(harness.sent.length, 0);
-			assert.equal(harness.timer.hasPending(), false);
-			assert.ok(harness.log.some((line) => line.startsWith("notify:warning:")));
+			// The adapter surfaces the sync failure as a warning; the lifecycle
+			// only keeps the explicit /plan-goal-impl recovery route.
 			writeGoalState(cwd, before);
 			assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
 			assert.equal(harness.sent.length, 1);
@@ -912,7 +675,7 @@ describe("goal lifecycle", () => {
 		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.goal!.constraints, external.goal!.constraints);
 	});
 
-	test("sync failure before timer firing keeps an explicit recovery path after repair", () => {
+	test("a failed boundary sync keeps an explicit recovery path after repair", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -920,8 +683,9 @@ describe("goal lifecycle", () => {
 		settleWithProgress(run, harness);
 		const before = run.getState();
 		writeText(getPaths(cwd).goalState, "{");
-		assert.equal(run.handle({ type: "sync" }, harness.context()).failure?.operation, "state-sync");
-		assert.equal(harness.timer.hasPending(), false);
+		const failed = run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
+		assert.equal(failed.failure?.operation, "state-sync");
+		assert.equal(failed.continuation, undefined);
 		writeGoalState(cwd, before);
 		assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
 		assert.equal(harness.sent.length, 1);
@@ -972,11 +736,10 @@ describe("goal lifecycle", () => {
 
 			run.handle({ type: "agent-start" }, harness.context());
 			run.handle({ type: "turn-start" }, harness.context());
-			settleWithProgress(run, harness);
-			harness.timer.fire();
-			assert.equal(harness.sent.length, 2);
-			assert.equal(harness.sent[1].message.customType, MESSAGE_TYPE_CONTINUATION);
-			assert.doesNotMatch(harness.sent[1].message.content, /Current user supplement|重置卡/);
+			const continuation = settleWithProgress(run, harness);
+			assert.ok(continuation);
+			assert.equal(continuation.customType, MESSAGE_TYPE_CONTINUATION);
+			assert.doesNotMatch(continuation.content, /Current user supplement|重置卡/);
 
 			// Neither a later resume nor a different implementation run re-injects the input.
 			run.handle({ type: "pause", params: { reason: "other blocker" } }, harness.context());
@@ -1008,7 +771,6 @@ describe("goal lifecycle", () => {
 				// Rollback persists the prior contract/run with a fresh write timestamp.
 				assert.deepEqual({ ...createGoalLifecycle(cwd, harness.deps).getState(), updatedAt: before.updatedAt }, before);
 				assert.equal(harness.sent.length, 0);
-				assert.equal(harness.timer.hasPending(), false);
 				harness.setFailSends(false);
 				const retry = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
 				assert.deepEqual(retry, { rejection: undefined, failure: undefined });
@@ -1021,12 +783,14 @@ describe("goal lifecycle", () => {
 		}
 	}
 
-	test("active input rejection preserves state and pending continuation; blank input stays a no-op", () => {
+	test("active input rejection preserves state; blank input stays a no-op", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
-		settleWithProgress(run, harness);
 		harness.clearSent();
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
 		const before = run.getState();
 		const diskBefore = readText(getPaths(cwd).goalState);
 		const logBefore = [...harness.log];
@@ -1040,10 +804,10 @@ describe("goal lifecycle", () => {
 		assert.equal(readText(getPaths(cwd).goalState), diskBefore);
 		assert.deepEqual(harness.log, logBefore);
 		assert.equal(harness.sent.length, 0);
-		assert.equal(harness.timer.hasPending(), true);
-		harness.timer.fire();
-		assert.equal(harness.sent.length, 1);
-		assert.doesNotMatch(harness.sent[0].message.content, /Current user supplement|额度已恢复/);
+		// The rejection does not consume the run's progress: the boundary still continues.
+		const continuation = decideContinuation(run, harness);
+		assert.ok(continuation);
+		assert.doesNotMatch(continuation.content, /Current user supplement|额度已恢复/);
 	});
 
 	for (const retryInput of [undefined, "恢复重发补充\n额度已恢复"] as const) {
@@ -1055,7 +819,8 @@ describe("goal lifecycle", () => {
 			settleWithProgress(run, harness);
 			const before = run.getState();
 			writeText(getPaths(cwd).goalState, "{");
-			harness.timer.fire();
+			const failed = run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
+			assert.equal(failed.failure?.operation, "state-sync");
 			const repaired = writeGoalState(cwd, before);
 			harness.setFailSends(true);
 			for (let attempt = 0; attempt < 2; attempt++) {
@@ -1063,7 +828,6 @@ describe("goal lifecycle", () => {
 				assert.match(result.failure?.reason ?? "", /state preserved.*send exploded/);
 				assert.deepEqual(run.getState(), repaired);
 				assert.equal(harness.sent.length, 0);
-				assert.equal(harness.timer.hasPending(), false);
 			}
 			harness.setFailSends(false);
 			const result = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
@@ -1080,10 +844,9 @@ describe("goal lifecycle", () => {
 			assert.equal(harness.sent.length, 1); // Recovery consumed only by successful delivery.
 			run.handle({ type: "agent-start" }, harness.context());
 			run.handle({ type: "turn-start" }, harness.context());
-			settleWithProgress(run, harness);
-			harness.timer.fire();
-			assert.equal(harness.sent.length, 2);
-			assert.doesNotMatch(harness.sent[1].message.content, /Current user supplement|恢复重发补充|未发送的旧补充/);
+			const continuation = settleWithProgress(run, harness);
+			assert.ok(continuation);
+			assert.doesNotMatch(continuation.content, /Current user supplement|恢复重发补充|未发送的旧补充/);
 		});
 	}
 });
@@ -1158,19 +921,16 @@ describe("token budget", () => {
 
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 600 }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		assert.equal(run.getState().status, "active"); // 60% — still running
-		harness.timer.fire();
-		assert.equal(harness.sent.length, 1); // the scheduled continuation
+		assert.ok(decideContinuation(run, harness)); // 60% — still running
 
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 450 }, harness.context());
 		assert.equal(run.getState().impl.tokensUsed, 1050);
-		run.handle({ type: "agent-settled" }, harness.context());
+		const result = run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
+		assert.equal(result.continuation, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.match(run.getState().impl.pausedReason, /Token budget exhausted: 1050 \/ 1000/);
 		assert.match(run.getState().impl.pausedSuggestedAction, /\/plan-goal-impl/);
-		assert.equal(harness.timer.hasPending(), false); // no continuation scheduled
 		assert.ok(harness.log.some((entry) => entry.startsWith("notify:warning:") && entry.includes("token budget exhausted")));
 		assert.ok(readText(getPaths(cwd).files["progress.md"]).includes("Token budget exhausted"));
 
@@ -1184,7 +944,7 @@ describe("token budget", () => {
 		const harness = createHarness();
 		const run = prepareBudgetedActive(cwd, harness);
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 1200 }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
+		run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
 		assert.equal(run.getState().status, "active"); // existing no-progress semantics win
 	});
 
@@ -1195,26 +955,20 @@ describe("token budget", () => {
 
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 500 }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		harness.timer.fire();
-		let prompt = harness.sent.at(-1)?.message.content ?? "";
+		let prompt = decideContinuation(run, harness)?.content ?? "";
 		assert.ok(prompt.includes("Token budget: 500 / 1k tokens used (50%)."));
 		assert.ok(!prompt.includes("Budget warning"));
 
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 250 }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		harness.timer.fire();
-		prompt = harness.sent.at(-1)?.message.content ?? "";
+		prompt = decideContinuation(run, harness)?.content ?? "";
 		assert.ok(prompt.includes("Token budget: 750 / 1k tokens used (75%)."));
 		assert.ok(prompt.includes("Budget warning: prioritize the remaining success criteria"));
 		assert.ok(!prompt.includes("Budget critical"));
 
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 200 }, harness.context());
-		run.handle({ type: "agent-settled" }, harness.context());
-		harness.timer.fire();
-		prompt = harness.sent.at(-1)?.message.content ?? "";
+		prompt = decideContinuation(run, harness)?.content ?? "";
 		assert.ok(prompt.includes("Token budget: 950 / 1k tokens used (95%)."));
 		assert.ok(prompt.includes("Budget critical: stop starting new tasks"));
 	});

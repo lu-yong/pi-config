@@ -23,7 +23,7 @@ import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
-import { createGoalLifecycle, createSetTimeoutTimer, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
+import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
 
 /**
  * Pi is an adapter around the Goal lifecycle. goal-lifecycle.ts owns
@@ -33,14 +33,12 @@ import { createGoalLifecycle, createSetTimeoutTimer, type GoalLifecycle, type Go
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	let state = getPlanningSnapshot(process.cwd(), false);
 	const lifecycles = new Map<string, GoalLifecycle>();
-	const timer = createSetTimeoutTimer();
 
 	function lifecycleFor(cwd: string): GoalLifecycle {
 		let lifecycle = lifecycles.get(cwd);
 		if (!lifecycle) {
 			lifecycle = createGoalLifecycle(cwd, {
 				sendMessage: (message, options) => pi.sendMessage(message, options),
-				timer,
 			});
 			lifecycles.set(cwd, lifecycle);
 		}
@@ -50,7 +48,6 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	function contextFor(ctx: ExtensionContext, resumedFromPreviousSession = false): GoalLifecycleContext {
 		return {
 			resumedFromPreviousSession,
-			isIdle: () => ctx.isIdle(),
 			notify: (message, level) => ctx.ui.notify(message, level),
 			refresh: () => refresh(ctx, resumedFromPreviousSession, false),
 		};
@@ -296,7 +293,6 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				},
 				{
 					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-archive" }),
-					clearContinuation: () => timer.clear(),
 					dropLifecycle: (cwd) => lifecycles.delete(cwd),
 					refresh: () => refresh(ctx, false),
 				},
@@ -434,5 +430,20 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.on("agent_settled", async (event, ctx) => {
 		const lifecycle = lifecycleFor(ctx.cwd);
 		notifyRejection(ctx, lifecycle.handle({ type: "agent-settled", aborted: event.aborted }, contextFor(ctx, state.resumedFromPreviousSession)));
+	});
+
+	// The automatic Continuation rides Pi's native boundary: return the
+	// rebuilt continuation prompt as a custom_message entry and let Pi
+	// schedule the next model request. No idle-window race with compaction.
+	pi.on("agent_before_settle", async (event, ctx) => {
+		const lifecycle = lifecycleFor(ctx.cwd);
+		const result = lifecycle.handle({ type: "before-settle", outcome: event.outcome }, contextFor(ctx, state.resumedFromPreviousSession));
+		notifyRejection(ctx, result);
+		const message = result.continuation?.message;
+		if (!message) return undefined;
+		return {
+			entries: [{ type: "custom_message", customType: message.customType, content: message.content, display: false }],
+			continue: true,
+		};
 	});
 }

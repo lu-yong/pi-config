@@ -27,7 +27,6 @@ test("rejects plan-archive while the agent is running before touching the worksp
 			calls.push("archive");
 			return "/archive";
 		},
-		clearContinuation: () => calls.push("clear-continuation"),
 		dropLifecycle: () => calls.push("drop-lifecycle"),
 		refresh: () => calls.push("refresh"),
 	};
@@ -70,7 +69,6 @@ test("archives an idle active-goal workspace and clears its runtime state", () =
 				});
 				return archiveDir;
 			},
-			clearContinuation: () => calls.push("clear-continuation"),
 			dropLifecycle: (targetCwd) => calls.push(`drop-lifecycle:${targetCwd}`),
 			refresh: () => calls.push("refresh"),
 		},
@@ -82,7 +80,6 @@ test("archives an idle active-goal workspace and clears its runtime state", () =
 	assert.equal(fs.existsSync(paths.goalState), false);
 	assert.deepEqual(calls, [
 		"archive",
-		"clear-continuation",
 		`drop-lifecycle:${cwd}`,
 		"refresh",
 		`notify:info:Planning workspace archived to ${archiveDir}.`,
@@ -103,7 +100,6 @@ test("keeps runtime state intact when archiving fails", () => {
 				calls.push("archive");
 				throw new Error("disk unavailable");
 			},
-			clearContinuation: () => calls.push("clear-continuation"),
 			dropLifecycle: () => calls.push("drop-lifecycle"),
 			refresh: () => calls.push("refresh"),
 		},

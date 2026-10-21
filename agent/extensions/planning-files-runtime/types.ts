@@ -16,7 +16,6 @@ export const GOAL_TOOL_NAMES = [
 	"pause_plan_goal",
 	"complete_plan_goal",
 ] as const;
-export const CONTINUATION_DELAY_MS = 50;
 /** Fraction of the token budget at which the next continuation prompt carries a warning line. */
 export const BUDGET_WARN_THRESHOLD = 0.7;
 /** Fraction of the token budget at which the next continuation prompt demands wrap-up. */

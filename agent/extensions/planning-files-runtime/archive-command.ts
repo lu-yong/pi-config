@@ -6,7 +6,6 @@ export type PlanArchiveCommandContext = {
 
 export type PlanArchiveCommandDeps = {
 	archive(cwd: string): string | null;
-	clearContinuation(): void;
 	dropLifecycle(cwd: string): void;
 	refresh(): void;
 };
@@ -26,7 +25,6 @@ export function runPlanArchiveCommand(context: PlanArchiveCommandContext, deps: 
 		return;
 	}
 
-	deps.clearContinuation();
 	deps.dropLifecycle(context.cwd);
 	deps.refresh();
 	if (!archiveDir) {
