@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { ExtensionPicker, orderEntries, PickerModel } from "../picker.ts";
 import type { LoadedEntry } from "../index.ts";
 
@@ -102,11 +103,11 @@ describe("ExtensionPicker", () => {
 
 		const lines = picker.render(48);
 		const listRows = lines.filter((line) => line.includes("on") || line.includes("extension-"));
-		expect(listRows.every((line) => line.length <= 48)).toBe(true);
+		expect(listRows.every((line) => visibleWidth(line) <= 48)).toBe(true);
 		expect(lines.join("\n")).toContain("Showing 7-10 of 12");
 		expect(lines.some((line) => line.includes("▶ extension-08"))).toBe(true);
 		expect(lines.some((line) => line.includes("extension-00"))).toBe(false);
-		expect(picker.render(18).every((line) => line.length <= 18)).toBe(true);
+		expect(picker.render(18).every((line) => visibleWidth(line) <= 18)).toBe(true);
 	});
 
 	it("orders duplicate package paths consistently", () => {

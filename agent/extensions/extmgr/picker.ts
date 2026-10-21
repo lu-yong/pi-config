@@ -2,11 +2,12 @@
  * TUI picker for extension management (modeled on Pi's /model picker).
  *
  * `ExtensionPicker` implements the pi-tui Component shape (`render(width)`
- * returning lines, optional `handleInput`) without importing pi-tui, so the
+ * returning lines, optional `handleInput`); width math is pi-tui's, so the
  * merged view and interaction model stay testable headlessly. Interaction
  * state lives in the pure `PickerModel`.
  */
 
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { LoadedEntry } from "./index.ts";
 
 /** Pure interaction model behind the picker: filter text, write tier,
@@ -137,27 +138,11 @@ export function orderEntries(entries: LoadedEntry[]): LoadedEntry[] {
 	standalone.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return [...packages, ...standalone];
 }
-const WIDE_CHAR = /[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60]/u;
-const COMBINING_CHAR = /\p{Mark}/u;
-
-function displayWidth(s: string): number {
-	return [...s].reduce((width, char) => width + (COMBINING_CHAR.test(char) ? 0 : WIDE_CHAR.test(char) ? 2 : 1), 0);
-}
-
+/** Fit `s` into exactly `width` terminal cells: truncate with an ellipsis
+ * when too long, pad with spaces when short. pi-tui's grapheme-cluster
+ * implementation (delegates ANSI-aware width, emoji ZWJ sequences). */
 function fit(s: string, width: number): string {
-	if (width <= 0) return "";
-	const textWidth = displayWidth(s);
-	if (textWidth <= width) return s + " ".repeat(width - textWidth);
-	if (width === 1) return "…";
-	let result = "";
-	let used = 0;
-	for (const char of s) {
-		const charWidth = COMBINING_CHAR.test(char) ? 0 : WIDE_CHAR.test(char) ? 2 : 1;
-		if (used + charWidth > width - 1) break;
-		result += char;
-		used += charWidth;
-	}
-	return `${result}…${" ".repeat(Math.max(0, width - used - 1))}`;
+	return truncateToWidth(s, width, "…", true);
 }
 
 function stateLabel(value: string, compact: boolean): string {
