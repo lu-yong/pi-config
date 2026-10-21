@@ -270,6 +270,22 @@ describe("resolveNative tier state matrix", () => {
 		}
 	});
 
+	it("explicitly declared discovery directories keep their directory name", async () => {
+		const { temp, env, put } = makeEnv();
+		try {
+			// Explicit `extensions:` entries resolve with source "local"
+			// metadata and no baseDir; names must not collapse to index.ts.
+			put(join(env.agentDir, "extensions/qna/index.ts"), code);
+			put(join(env.agentDir, "extensions/readonly-mode/index.ts"), code);
+			put(join(env.agentDir, "settings.json"), JSON.stringify({ extensions: ["extensions/qna", "extensions/readonly-mode"] }));
+			const rows = await resolveNative(env);
+			const names = rows.filter((e) => e.kind === "standalone").map((e) => e.name).sort();
+			expect(names).toEqual(["qna/index.ts", "readonly-mode/index.ts"]);
+		} finally {
+			rmSync(temp, { recursive: true, force: true });
+		}
+	});
+
 	it("declared but missing package yields no rows (skip, never install)", async () => {
 		const { temp, env, put } = makeEnv();
 		try {

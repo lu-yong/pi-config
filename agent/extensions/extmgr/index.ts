@@ -198,6 +198,7 @@ export async function persistToggle(
 		selfConfirmed: opts?.selfConfirmed,
 		level: isPackage ? "package" : "file",
 		packageFiles: pkgFiles,
+		env,
 	});
 	const trustBlocked = scope === "project" && !trusted;
 	if (!plan.ok || trustBlocked) {

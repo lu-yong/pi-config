@@ -38,6 +38,7 @@ describe("self-disable confirmation", () => {
 	it("self-disable requires confirmation", () => {
 		// Unconfirmed: refused with the dedicated reason and a pi config hint.
 		const refused = planToggle({
+			env: { agentDir, cwd },
 			entry: selfEntry,
 			action: "disable",
 			scope: "global",
@@ -52,6 +53,7 @@ describe("self-disable confirmation", () => {
 
 		// Confirmed: the disable is planned.
 		const confirmed = planToggle({
+			env: { agentDir, cwd },
 			entry: selfEntry,
 			action: "disable",
 			scope: "global",
@@ -63,6 +65,7 @@ describe("self-disable confirmation", () => {
 
 		// Enabling the self entry never needs confirmation.
 		const enable = planToggle({
+			env: { agentDir, cwd },
 			entry: { ...selfEntry, states: { global: "off", project: "unmanaged", effective: "off" } },
 			action: "enable",
 			scope: "global",

@@ -59,15 +59,18 @@ async function resolveView(env: NativeEnv, projectTrusted: boolean): Promise<Res
 }
 
 /**
- * Derive the display name the way the old enumeration did: package files and
- * top-level standalone files show their basename; a standalone file inside a
- * subdirectory shows its path relative to the tier's `extensions/` directory
- * (so two `index.ts` siblings stay distinguishable in the picker).
+ * Derive the display name: a standalone file under one of the two tiers'
+ * `extensions/` roots shows its path relative to that root (so sibling
+ * `index.ts` files stay distinguishable); everything else shows its basename.
+ * Computed from the tier roots, not `metadata.baseDir`: explicit
+ * `extensions:` settings entries resolve with `source: "local"` metadata that
+ * carries no baseDir, and the old name would collapse to `index.ts`.
  */
-function displayName(res: ResolvedResourceLike): string {
-	const meta = res.metadata;
-	if (meta.origin === "top-level" && meta.baseDir && res.path.startsWith(`${meta.baseDir}/extensions/`)) {
-		return res.path.slice(meta.baseDir.length + "/extensions/".length);
+function displayName(res: ResolvedResourceLike, env: NativeEnv): string {
+	if (res.metadata.origin === "top-level") {
+		for (const root of [`${env.agentDir}/extensions`, `${env.cwd}/.pi/extensions`]) {
+			if (res.path.startsWith(`${root}/`)) return res.path.slice(root.length + 1);
+		}
 	}
 	return basename(res.path);
 }
@@ -102,7 +105,7 @@ export async function resolveNative(env: NativeEnv): Promise<ExtensionEntry[]> {
 		const root = meta.packageRoot;
 		return {
 			id: res.path,
-			name: displayName(res),
+			name: displayName(res, env),
 			kind: isPackage ? "package" : "standalone",
 			packageSource: isPackage ? meta.source : undefined,
 			relPath: isPackage && root && res.path.startsWith(`${root}/`) ? res.path.slice(root.length + 1) : undefined,

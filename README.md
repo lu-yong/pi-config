@@ -59,7 +59,7 @@
 ### readonly-mode
 
 - **文件**：`agent/extensions/readonly-mode/`
-- **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`
+- **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`（切换仅限 agent 空闲时——指令 section 按 run 贡献，运行中切换会造成提示与工具权限脱节，扩展会拒绝并提示等待空闲）
 - **拦截**：启用时拦截具名文件变更工具 `edit`、`write`、`replace`、`replace_match`、`insert`、`copy`、`move`、`undo_last_change` 和旧版 `undo_last_replace`，直接调用和嵌套调用（如通过 codemode）均受限制；`bash` 另按只读命令策略检查。
 - **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
 - **提示注入**：启用时把只读指令作为 system prompt 的 `readonly-mode` section 贡献（`before_agent_start` 改 `systemPromptOptions.sections`，Pi 按 transcript diff 只落一份 patch；禁用后以 null patch 移除），不再每 run 追加 custom message，也无需 context 过滤清理。
@@ -88,7 +88,7 @@
 - **功能**：普通 TUI 对话在 agent settled 后自动抽取回复中的用户问题，并通过共享 question-taking 界面收集答案；也可手动运行 `/qna`。
 - **触发判定**：自动触发前先剥离围栏/缩进代码块、行内代码和 URL，再只在净化后文本的**末尾 400 字符**内判定问号，避免 `a ? b : c`、`a?.b`、query string、正文中段的反问句造成误触发。去重指纹仍基于原始回复文本。
 - **模型调用**：通过 `ctx.modelRegistry.streamSimple(...).result()` 交由当前原生模型运行时调用 native/virtual provider，运行时在请求时解析鉴权及路由；保留现有模型配置和鉴权预检回退。请求阶段的错误、取消或空响应不触发主模型重试，不是所有请求失败都回退。
-- **配置**（settings.json 顶层 `qna` 块，经 `pi.getSettings()` 读 global+project 合并视图，项目层可覆盖；缺失/损坏一律安全降级到默认值）：
+- **配置**（settings.json 顶层 `qna` 块，经 `pi.getSettings()` 读 global+project 合并视图，项目层可覆盖；快照在 Pi 启动/`/reload` 时载入，改配置需 reload 生效；缺失/损坏一律安全降级到默认值）：
 
   | 键 | 默认 | 说明 |
   |---|---|---|

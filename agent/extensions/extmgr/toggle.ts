@@ -31,18 +31,27 @@ export interface PlanInput {
 	/** Rel-to-package-root paths of every extension file the package declares
 	 * (from enumeration); required for project-tier whole-package disable. */
 	packageFiles?: string[];
+	/** Tier roots, for standalone disable patterns (rel under the tier's
+	 * extensions root, absolute elsewhere). */
+	env: { agentDir: string; cwd: string };
 }
 
 export type PlanResult =
 	| { ok: true; mutation: SettingsMutation }
 	| { ok: false; reason: PlanReason; detail: string };
 
-/** Path of a standalone extension file relative to its owning tier baseDir
- * (`extensions/<name>` — the form `pi config` and extmgr both write). */
-function standaloneRelToBaseDir(id: string): string {
-	const marker = "/extensions/";
-	const idx = id.indexOf(marker);
-	return idx === -1 ? id : id.slice(idx + 1);
+/** Disable pattern for a standalone extension file. Files under the owning
+ * tier's `extensions/` root use the rel-to-baseDir form (`pi config` parity);
+ * files resolved from outside that root (explicit `extensions:` entries
+ * pointing elsewhere) use the absolute path — a rel pattern is interpreted
+ * against the tier baseDir and silently fails to match them. */
+function standaloneDisablePattern(id: string, scope: Scope, env: { agentDir: string; cwd: string }): string {
+	const roots = scope === "global" ? [`${env.agentDir}/extensions/`] : [`${env.cwd}/.pi/extensions/`];
+	if (roots.some((root) => id.startsWith(root))) {
+		const baseDir = scope === "global" ? env.agentDir : `${env.cwd}/.pi`;
+		return `-${id.slice(baseDir.length + 1)}`;
+	}
+	return `-${id}`;
 }
 
 function appendExtensionPattern(pattern: string): (doc: SettingsDoc) => SettingsDoc {
@@ -114,7 +123,7 @@ export function planToggle(input: PlanInput): PlanResult {
 	}
 
 	if (entry.kind === "standalone" && entry.tier === scope) {
-		const pattern = `-${standaloneRelToBaseDir(entry.id)}`;
+		const pattern = standaloneDisablePattern(entry.id, scope, input.env);
 		if (action === "disable") {
 			return { ok: true, mutation: { scope, apply: appendExtensionPattern(pattern) } };
 		}

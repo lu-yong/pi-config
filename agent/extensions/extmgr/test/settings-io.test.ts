@@ -57,6 +57,7 @@ describe("mutateSettings", () => {
 		});
 
 		const plan = planToggle({
+			env: { agentDir, cwd },
 			entry: standaloneEntry("qna.ts"),
 			action: "disable",
 			scope: "global",
@@ -79,6 +80,7 @@ describe("mutateSettings", () => {
 		writeGlobalSettings({ packages: ["npm:other-pkg", "npm:pi-open-tui"] });
 
 		const plan = planToggle({
+			env: { agentDir, cwd },
 			entry: {
 				id: join(agentDir, "npm/node_modules/pi-open-tui"),
 				name: "pi-open-tui",
@@ -110,6 +112,7 @@ describe("mutateSettings", () => {
 		});
 
 		const packagePlan = planToggle({
+			env: { agentDir, cwd },
 			entry: {
 				id: join(agentDir, "npm/node_modules/pi-open-tui"),
 				name: "pi-open-tui",
@@ -132,6 +135,7 @@ describe("mutateSettings", () => {
 
 		// Standalone re-enable removes the extmgr-authored pattern only.
 		const standalonePlan = planToggle({
+			env: { agentDir, cwd },
 			entry: standaloneEntry("qna.ts"),
 			action: "enable",
 			scope: "global",
@@ -162,6 +166,7 @@ describe("mutateSettings", () => {
 		})();
 
 		const qnaPlan = planToggle({
+			env: { agentDir, cwd },
 			entry: standaloneEntry("qna.ts"),
 			action: "disable",
 			scope: "global",
@@ -171,6 +176,7 @@ describe("mutateSettings", () => {
 
 		// (b) A second extmgr write races ours; the lock serializes both.
 		const otherPlan = planToggle({
+			env: { agentDir, cwd },
 			entry: standaloneEntry("other.ts"),
 			action: "disable",
 			scope: "global",

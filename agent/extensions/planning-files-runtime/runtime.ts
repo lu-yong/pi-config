@@ -247,9 +247,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	// ---- completion audit adapter ----
 
-	/** Read `planning.auditModel` on every completion, so config edits apply
-	 * without a restart. `pi.getSettings()` returns the merged global+project
-	 * view (custom keys are preserved as-is). */
+	/** Read `planning.auditModel` on every completion via `pi.getSettings()`
+	 * (merged global+project view; custom keys preserved as-is). The snapshot
+	 * is loaded at Pi start / `/reload`; config edits need a reload to apply. */
 	function readAuditModelRef() {
 		try {
 			return parseAuditModelRef((pi.getSettings() as { planning?: unknown }).planning);

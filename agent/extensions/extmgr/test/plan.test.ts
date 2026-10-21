@@ -5,6 +5,8 @@ import type { ExtensionEntry } from "../resolve.ts";
 /** IF-5 seam: pure planning fixtures (spec scenario: Project tier requires
  * trust; Unreachable control cells are surfaced). */
 
+const planEnv = { agentDir: "/home/u/.pi/agent", cwd: "/work/proj" };
+
 function entry(overrides: Partial<ExtensionEntry> = {}): ExtensionEntry {
 	return {
 		id: "/work/proj/.pi/extensions/helper.ts",
@@ -19,6 +21,7 @@ function entry(overrides: Partial<ExtensionEntry> = {}): ExtensionEntry {
 describe("planToggle guards", () => {
 	it("project toggle refused when untrusted", () => {
 		const plan = planToggle({
+			env: planEnv,
 			entry: entry(),
 			action: "disable",
 			scope: "project",
@@ -49,6 +52,7 @@ describe("planToggle guards", () => {
 
 		// Cell 1: disable a global standalone at the project tier.
 		const disableAtProject = planToggle({
+			env: planEnv,
 			entry: globalStandalone,
 			action: "disable",
 			scope: "project",
@@ -59,6 +63,7 @@ describe("planToggle guards", () => {
 
 		// Cell 2: re-enable at the project tier an extension disabled globally.
 		const enableAtProject = planToggle({
+			env: planEnv,
 			entry: globallyDisabled,
 			action: "enable",
 			scope: "project",
