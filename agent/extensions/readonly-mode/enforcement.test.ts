@@ -10,20 +10,14 @@ const savedState = (readonlyMode: boolean) => ({
 });
 
 describe('read-only enforcement', () => {
-  test('starts disabled and leaves tools and context unchanged', () => {
+  test('starts disabled and leaves tools and the prompt unchanged', () => {
     const enforcement = createReadonlyEnforcement();
 
     assert.deepEqual(
       enforcement.handle({ type: 'tool-call', toolName: 'edit', input: {} }),
       [],
     );
-    assert.deepEqual(
-      enforcement.handle({
-        type: 'context',
-        messages: [{ role: 'user', content: 'keep me' }],
-      }),
-      [],
-    );
+    assert.deepEqual(enforcement.handle({ type: 'before-agent-start' }), []);
   });
 
   test('toggle owns status, persistence, notification, and follow-up ordering', () => {
@@ -138,41 +132,26 @@ describe('read-only enforcement', () => {
     );
   });
 
-  test('injects current policy facts while enabled and removes stale context when disabled', () => {
+  test('contributes the policy section while enabled and removes it when disabled', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
     const injection = enforcement.handle({ type: 'before-agent-start' });
-    assert.equal(injection[0]?.type, 'inject-context');
-    assert.match(
-      injection[0]?.type === 'inject-context' ? injection[0].content : '',
-      /Tests and static checks are allowed/,
-    );
-    assert.match(
-      injection[0]?.type === 'inject-context' ? injection[0].content : '',
-      /custom tools are outside this mode's enforcement scope/,
-    );
-    const instructions = injection[0]?.type === 'inject-context' ? injection[0].content : '';
+    assert.equal(injection[0]?.type, 'set-section');
+    const instructions = injection[0]?.type === 'set-section' ? (injection[0].content ?? '') : '';
+    assert.match(instructions, /Tests and static checks are allowed/);
+    assert.match(instructions, /custom tools are outside this mode's enforcement scope/);
     for (const toolName of ['replace_match', 'copy', 'move', 'undo_last_replace']) {
       assert.match(instructions, new RegExp(`\\b${toolName}\\b`));
     }
     assert.match(instructions, /including nested calls/);
 
+    // Disabled: the next run removes the section with an explicit null patch.
     enforcement.handle({ type: 'toggle' });
-    assert.deepEqual(
-      enforcement.handle({
-        type: 'context',
-        messages: [
-          { role: 'user', customType: 'readonly-mode-context', content: 'stale' },
-          { role: 'user', content: 'keep' },
-        ],
-      }),
-      [
-        {
-          type: 'replace-context',
-          messages: [{ role: 'user', content: 'keep' }],
-        },
-      ],
-    );
+    assert.deepEqual(enforcement.handle({ type: 'before-agent-start' }), [
+      { type: 'set-section', content: null },
+    ]);
+    // And the run after that does not repeat the removal.
+    assert.deepEqual(enforcement.handle({ type: 'before-agent-start' }), []);
   });
 });

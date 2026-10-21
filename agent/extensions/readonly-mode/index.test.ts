@@ -35,7 +35,6 @@ test('Pi adapter registers the public controls and lifecycle hooks', () => {
   assert.deepEqual([...events.keys()], [
     'tool_call',
     'before_agent_start',
-    'context',
     'session_start',
     'session_tree',
   ]);

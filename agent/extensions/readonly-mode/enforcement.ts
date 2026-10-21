@@ -6,35 +6,26 @@ export interface StateEntry {
   data?: unknown;
 }
 
-export type ContextMessage = object & {
-  customType?: string;
-  role?: string;
-  content?: string;
-};
-
 export type ReadonlyEvent =
   | { type: 'toggle'; prompt?: string }
   | { type: 'tool-call'; toolName: string; input: unknown }
   | { type: 'before-agent-start' }
-  | { type: 'context'; messages: ContextMessage[] }
   | { type: 'restore'; readonlyFlag: boolean; entries: StateEntry[] }
   | { type: 'restore-branch'; entries: StateEntry[] };
-
 export type ReadonlyEffect =
   | { type: 'set-status'; text: string | undefined }
   | { type: 'persist'; data: { readonlyMode: boolean } }
   | { type: 'notify'; message: string; level: 'info' }
   | { type: 'send-user-message'; content: string }
   | { type: 'block-tool'; reason: string }
-  | { type: 'inject-context'; content: string }
-  | { type: 'replace-context'; messages: ContextMessage[] };
+  /** Contribute (or, with null, remove) the read-only section of the system prompt. */
+  | { type: 'set-section'; content: string | null };
 
 export interface ReadonlyEnforcement {
   handle(event: ReadonlyEvent): ReadonlyEffect[];
 }
 
 const STATE_ENTRY = 'readonly-mode';
-const CONTEXT_ENTRY = 'readonly-mode-context';
 
 // File-mutating tools blocked in read-only mode. 'edit' and 'write' are pi built-ins;
 // the anchor editing and undo tools are registered by pi-hashline-edit-pro, which also
@@ -72,6 +63,9 @@ You may propose changes and show code snippets, but do not attempt local file ch
 
 class Enforcement implements ReadonlyEnforcement {
   private enabled = false;
+  /** Whether the prompt section is currently contributed; the next
+   * before-agent-start clears it with a null patch after a disable. */
+  private sectionActive = false;
   private flagOverrideActive = false;
 
   handle(event: ReadonlyEvent): ReadonlyEffect[] {
@@ -80,12 +74,21 @@ class Enforcement implements ReadonlyEnforcement {
         return this.toggle(event.prompt);
       case 'tool-call':
         return this.handleToolCall(event.toolName, event.input);
-      case 'before-agent-start':
-        return this.enabled
-          ? [{ type: 'inject-context', content: READONLY_INSTRUCTIONS }]
-          : [];
-      case 'context':
-        return this.handleContext(event.messages);
+      case 'before-agent-start': {
+        if (this.enabled) {
+          this.sectionActive = true;
+          return [{ type: 'set-section', content: READONLY_INSTRUCTIONS }];
+        }
+        if (!this.sectionActive) return [];
+        if (!this.sectionActive) return [];
+        // Disabled since the section was contributed: remove it once.
+        // patch when the section actually exists in the replayed prompt.
+        // sectionActive guards this, but even a stray null on a branch that
+        // never had the section is harmless: Pi's section diff only emits a
+        // patch when the section actually exists in the replayed prompt.
+        this.sectionActive = false;
+        return [{ type: 'set-section', content: null }];
+      }
       case 'restore':
         return this.restore(event.entries, event.readonlyFlag);
       case 'restore-branch':
@@ -141,19 +144,11 @@ class Enforcement implements ReadonlyEnforcement {
     ];
   }
 
-  private handleContext(messages: ContextMessage[]): ReadonlyEffect[] {
-    if (this.enabled) return [];
-
-    const filtered = messages.filter((message) => message.customType !== CONTEXT_ENTRY);
-    return filtered.length === messages.length
-      ? []
-      : [{ type: 'replace-context', messages: filtered }];
-  }
-
   private restore(entries: StateEntry[], readonlyFlag: boolean): ReadonlyEffect[] {
     const saved = findSavedState(entries);
     this.flagOverrideActive = readonlyFlag;
     this.enabled = readonlyFlag || saved || false;
+    this.sectionActive = this.enabled;
 
     const effects: ReadonlyEffect[] = [
       { type: 'set-status', text: this.enabled ? '🛡️ readonly' : undefined },
@@ -167,6 +162,10 @@ class Enforcement implements ReadonlyEnforcement {
   private restoreBranch(entries: StateEntry[]): ReadonlyEffect[] {
     const saved = findSavedState(entries);
     this.enabled = this.flagOverrideActive || saved || false;
+    // After a branch switch the replayed prompt may or may not carry the
+    // section; mirror `enabled` so the next run either re-contributes the
+    // same text (diff no-op when already present) or clears a stale one.
+    this.sectionActive = this.enabled;
     return [{ type: 'set-status', text: this.enabled ? '🛡️ readonly' : undefined }];
   }
 }

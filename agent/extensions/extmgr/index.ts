@@ -8,9 +8,6 @@ import { planToggle } from "./toggle.ts";
 import { mutateSettings } from "./settings-io.ts";
 import { PickerModel, ExtensionPicker } from "./picker.ts";
 import { fileURLToPath } from "node:url";
-import { mutateSettings } from "./settings-io.ts";
-import { PickerModel, ExtensionPicker } from "./picker.ts";
-import { fileURLToPath } from "node:url";
 
 export interface ToolMutationResult {
 	status: "ok" | "unavailable" | "ambiguous" | "error";

@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import {
   createReadonlyEnforcement,
-  type ContextMessage,
+
   type ReadonlyEffect,
   type StateEntry,
 } from './enforcement.ts';
@@ -17,7 +17,8 @@ const READONLY_FLAG = 'readonly';
 const READONLY_COMMAND = 'readonly';
 const READONLY_SHORTCUT = 'ctrl+alt+r';
 const STATE_ENTRY = 'readonly-mode';
-const CONTEXT_ENTRY = 'readonly-mode-context';
+/** System-prompt section tag for the read-only instructions. */
+const SECTION_NAME = 'readonly-mode';
 const STATUS_KEY = 'readonly-mode';
 
 export default function readonlyMode(pi: ExtensionAPI): void {
@@ -52,17 +53,8 @@ export default function readonlyMode(pi: ExtensionAPI): void {
         case 'block-tool':
           eventResult = { block: true, reason: effect.reason };
           break;
-        case 'inject-context':
-          eventResult = {
-            message: {
-              customType: CONTEXT_ENTRY,
-              content: effect.content,
-              display: false,
-            },
-          };
-          break;
-        case 'replace-context':
-          eventResult = { messages: effect.messages };
+        case 'set-section':
+          eventResult = effect.content;
           break;
       }
     }
@@ -98,27 +90,19 @@ export default function readonlyMode(pi: ExtensionAPI): void {
     ) as { block: true; reason?: string } | undefined,
   );
 
-  pi.on('before_agent_start', async (_event, ctx) =>
-    applyEffects(enforcement.handle({ type: 'before-agent-start' }), ctx) as
-      | {
-          message: {
-            customType: string;
-            content: string;
-            display: boolean;
-          };
-        }
-      | undefined,
-  );
-
-  pi.on('context', async (event, ctx) =>
-    applyEffects(
-      enforcement.handle({
-        type: 'context',
-        messages: event.messages as ContextMessage[],
-      }),
-      ctx,
-    ) as { messages: typeof event.messages } | undefined,
-  );
+  // The read-only instructions ride the structured system prompt: the section
+  // is contributed while enabled and removed (null) while disabled. Pi diffs
+  // sections against the transcript, so the instructions persist once as a
+  // system-message patch instead of a per-run custom message copy, and the
+  // old context-filter cleanup path disappears entirely.
+  pi.on('before_agent_start', async (event) => {
+    const content = applyEffects(
+      enforcement.handle({ type: 'before-agent-start' }),
+    ) as string | null | undefined;
+    if (content === undefined) return undefined;
+    event.systemPromptOptions.sections[SECTION_NAME] = content;
+    return undefined;
+  });
 
   pi.on('session_start', async (_event, ctx) => {
     applyEffects(
