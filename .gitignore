@@ -60,3 +60,4 @@ agent/skills/*
 !agent/skills/wayfinder/
 
 agent/subagent-manager/agents/
+!agent/subagent-manager/agents/code-reviewer.md
