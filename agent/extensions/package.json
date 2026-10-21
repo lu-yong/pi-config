@@ -6,12 +6,12 @@
     "sync-pi": "node dev-deps/sync-pi.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-coding-agent": "1.1.0",
-    "@earendil-works/pi-tui": "1.1.0"
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0"
   },
   "allowScripts": {
-    "@google/genai@1.52.0": true,
-    "protobufjs@7.6.5": true
+    "@google/genai@2.21.0": true,
+    "protobufjs@7.6.6": true
   }
 }
