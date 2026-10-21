@@ -1,5 +1,6 @@
 import type { GoalDraft, GoalOverlayState, PlanningSnapshot } from "./types.ts";
-import { readText, tailLines, truncate } from "./utils.ts";
+import { BUDGET_CRITICAL_THRESHOLD, BUDGET_WARN_THRESHOLD } from "./types.ts";
+import { formatTokenCount, readText, tailLines, truncate } from "./utils.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 // ---- draft summary ----
@@ -14,6 +15,26 @@ export function summarizeDraft(state: GoalDraft): string[] {
 	if (state.blockerRule) lines.push(`- If blocked: ${state.blockerRule}`);
 	if (state.openQuestions.length > 0) lines.push(`- Open questions (${state.openQuestions.length}): ${state.openQuestions.join("; ")}`);
 	if (state.nextRecommendedQuestion) lines.push(`- Recommended next question: ${state.nextRecommendedQuestion}`);
+	return lines;
+}
+
+// ---- token budget ----
+
+/**
+ * Budget lines for the implementation prompt. Below the warn threshold the
+ * run reports usage only; at >=70% it warns; at >=90% it demands wrap-up.
+ * An exhausted budget never reaches a prompt — the lifecycle pauses the run
+ * at settle time instead.
+ */
+export function budgetPromptLines(tokensUsed: number, tokenBudget: number | undefined): string[] {
+	if (tokenBudget === undefined) return [];
+	const percent = Math.floor((tokensUsed / tokenBudget) * 100);
+	const lines = [`Token budget: ${formatTokenCount(tokensUsed)} / ${formatTokenCount(tokenBudget)} tokens used (${percent}%).`];
+	if (tokensUsed >= tokenBudget * BUDGET_CRITICAL_THRESHOLD) {
+		lines.push("Budget critical: stop starting new tasks. Finish the current task, record evidence in progress.md, then call complete_plan_goal or pause_plan_goal.");
+	} else if (tokensUsed >= tokenBudget * BUDGET_WARN_THRESHOLD) {
+		lines.push("Budget warning: prioritize the remaining success criteria; avoid exploratory work.");
+	}
 	return lines;
 }
 
@@ -50,6 +71,7 @@ export function buildGoalSetPrompt(goalState: GoalOverlayState, supplementalInpu
 		"  - Example allowed: `pwd && git status --short`. Example rejected: `rg --files | sed -n '1,240p'` (sed not whitelisted).",
 		"",
 		"All done + contract complete -> commit_plan_goal.",
+		"Optional: pass tokenBudget (positive integer) to commit_plan_goal only when the user asked for a spend cap.",
 		"",
 		"Output style: caveman. Drop filler. Tech precision. Arrow for causality.",
 		"",
@@ -88,6 +110,7 @@ export function buildGoalImplPrompt(
 		`- Constraints: ${goal.constraints.join("; ") || "(none)"}`,
 		`- Out of scope: ${goal.outOfScope.join("; ") || "(none)"}`,
 		`- If blocked: ${goal.blockerRule}`,
+		...(goal.tokenBudget !== undefined ? ["", ...budgetPromptLines(state.goalState.impl.tokensUsed, goal.tokenBudget)] : []),
 		"",
 		"Execution blueprint: .pi/planning/goal-design.md. Read before starting.",
 		"  - Tasks have hard/soft deps. Respect topological order.",
@@ -102,6 +125,7 @@ export function buildGoalImplPrompt(
 		"- Choose the next concrete action and do it; do not keep re-reading state without moving the work forward.",
 		"- If you hit a real blocker, call pause_plan_goal with a concrete reason and suggested action.",
 		"- Call complete_plan_goal only when the goal contract is actually satisfied and progress.md contains completion evidence.",
+		"- complete_plan_goal is audited by an independent model call against the success criteria; make sure progress.md holds concrete evidence (changed files, tests, command output) for every criterion.",
 		"",
 		"Current planning state:",
 		`- Phase: ${state.currentPhase ?? "(missing)"}`,

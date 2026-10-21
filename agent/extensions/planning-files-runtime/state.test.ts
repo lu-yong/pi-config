@@ -89,3 +89,32 @@ test("lifecycle reads reject unreadable state while read-only queries remain com
 	assert.equal(readGoalStateForUpdate(cwd)?.status, "paused");
 });
 
+
+test("goal state round-trips the token budget fields", () => {
+	const cwd = makeCwd();
+	const base = defaultGoalState();
+	const state = {
+		...base,
+		status: "active" as const,
+		goal: { objective: "o", successCriteria: ["s"], constraints: ["c"], outOfScope: ["x"], blockerRule: "b", tokenBudget: 5000 },
+		impl: { ...base.impl, runId: 3, tokensUsed: 1234 },
+	};
+	writeText(getPaths(cwd).goalState, `${JSON.stringify(state)}\n`);
+	const read = readGoalState(cwd);
+	assert.equal(read.goal?.tokenBudget, 5000);
+	assert.equal(read.impl.tokensUsed, 1234);
+});
+
+test("invalid token budget fields normalize to defaults", () => {
+	const cwd = makeCwd();
+	const base = defaultGoalState();
+	const state = {
+		...base,
+		goal: { objective: "o", successCriteria: ["s"], constraints: ["c"], outOfScope: ["x"], blockerRule: "b", tokenBudget: -3 },
+		impl: { ...base.impl, tokensUsed: "lots" },
+	};
+	writeText(getPaths(cwd).goalState, `${JSON.stringify(state)}\n`);
+	const read = readGoalState(cwd);
+	assert.equal(read.goal?.tokenBudget, undefined);
+	assert.equal(read.impl.tokensUsed, 0);
+});

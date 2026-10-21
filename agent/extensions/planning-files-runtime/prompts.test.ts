@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildGoalImplPrompt, buildGoalSetPrompt, buildPlanUpdatePrompt } from "./prompts.ts";
+import { budgetPromptLines, buildGoalImplPrompt, buildGoalSetPrompt, buildPlanUpdatePrompt } from "./prompts.ts";
 import { getPlanningSnapshot } from "./workspace.ts";
 import { defaultGoalState } from "./state.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
@@ -69,3 +69,16 @@ for (const mode of ["start", "resume", "continue"] as const) {
 		assert.equal(buildGoalImplPrompt(snapshot, mode), baseline);
 	});
 }
+
+test("budget prompt lines escalate at the thresholds", () => {
+	assert.deepEqual(budgetPromptLines(10, undefined), []);
+	assert.deepEqual(budgetPromptLines(100, 1000), ["Token budget: 100 / 1k tokens used (10%)."]);
+	assert.deepEqual(budgetPromptLines(700, 1000), [
+		"Token budget: 700 / 1k tokens used (70%).",
+		"Budget warning: prioritize the remaining success criteria; avoid exploratory work.",
+	]);
+	assert.deepEqual(budgetPromptLines(900, 1000), [
+		"Token budget: 900 / 1k tokens used (90%).",
+		"Budget critical: stop starting new tasks. Finish the current task, record evidence in progress.md, then call complete_plan_goal or pause_plan_goal.",
+	]);
+});

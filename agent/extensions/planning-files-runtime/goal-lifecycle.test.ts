@@ -1087,3 +1087,135 @@ describe("goal lifecycle", () => {
 		});
 	}
 });
+
+describe("token budget", () => {
+	const budgetParams = { ...contractParams, tokenBudget: 1000 };
+
+	function prepareBudgetedActive(cwd: string, harness: Harness): GoalLifecycle {
+		const run = createGoalLifecycle(cwd, harness.deps);
+		run.handle({ type: "start-drafting", input: "budgeted run" }, harness.context());
+		run.handle({ type: "save-draft", params: contractParams }, harness.context());
+		run.handle({ type: "commit", params: budgetParams }, harness.context());
+		run.handle({ type: "implementation-request" }, harness.context());
+		return run;
+	}
+
+	test("commit persists a valid tokenBudget and rejects invalid ones", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareDraft(cwd, harness);
+		run.handle({ type: "commit", params: budgetParams }, harness.context());
+		assert.equal(run.getState().goal?.tokenBudget, 1000);
+
+		for (const bad of [0, -5, 1.5]) {
+			const other = makeCwd();
+			const otherHarness = createHarness();
+			const otherRun = prepareDraft(other, otherHarness);
+			const rejected = otherRun.handle({ type: "commit", params: { ...contractParams, tokenBudget: bad } }, otherHarness.context());
+			assert.ok(rejected.rejection?.reason.includes("positive integer"));
+		}
+	});
+
+	test("counts turn usage while active, regardless of budget, and ignores it otherwise", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness); // no tokenBudget in contractParams
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 400 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 400);
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 25 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 425);
+
+		// The closing response of the pause tool call still counts: the stop
+		// gate identifies its turn even though the status already changed.
+		run.handle({ type: "pause", params: { reason: "checking" } }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 525);
+
+		// An unrelated later turn while paused does not count (turn-start clears the gate).
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 50 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 525);
+	});
+
+	test("the closing response of a completed goal counts its usage", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 300 }, harness.context());
+		run.handle({ type: "complete", params: { summary: "done" } }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 120 }, harness.context());
+		assert.equal(run.getState().status, "complete");
+		assert.equal(run.getState().impl.tokensUsed, 420);
+	});
+
+	test("pauses instead of continuing once the budget is exhausted, and resume opens a fresh window", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareBudgetedActive(cwd, harness);
+		harness.clearSent();
+
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 600 }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		assert.equal(run.getState().status, "active"); // 60% — still running
+		harness.timer.fire();
+		assert.equal(harness.sent.length, 1); // the scheduled continuation
+
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 450 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 1050);
+		run.handle({ type: "agent-settled" }, harness.context());
+		assert.equal(run.getState().status, "paused");
+		assert.match(run.getState().impl.pausedReason, /Token budget exhausted: 1050 \/ 1000/);
+		assert.match(run.getState().impl.pausedSuggestedAction, /\/plan-goal-impl/);
+		assert.equal(harness.timer.hasPending(), false); // no continuation scheduled
+		assert.ok(harness.log.some((entry) => entry.startsWith("notify:warning:") && entry.includes("token budget exhausted")));
+		assert.ok(readText(getPaths(cwd).files["progress.md"]).includes("Token budget exhausted"));
+
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.tokensUsed, 0); // fresh budget window
+	});
+
+	test("an exhausted budget does not pause a run that went quiet without progress", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareBudgetedActive(cwd, harness);
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 1200 }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		assert.equal(run.getState().status, "active"); // existing no-progress semantics win
+	});
+
+	test("continuation prompts carry the budget line as usage crosses thresholds", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareBudgetedActive(cwd, harness);
+
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 500 }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		harness.timer.fire();
+		let prompt = harness.sent.at(-1)?.message.content ?? "";
+		assert.ok(prompt.includes("Token budget: 500 / 1k tokens used (50%)."));
+		assert.ok(!prompt.includes("Budget warning"));
+
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 250 }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		harness.timer.fire();
+		prompt = harness.sent.at(-1)?.message.content ?? "";
+		assert.ok(prompt.includes("Token budget: 750 / 1k tokens used (75%)."));
+		assert.ok(prompt.includes("Budget warning: prioritize the remaining success criteria"));
+		assert.ok(!prompt.includes("Budget critical"));
+
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 200 }, harness.context());
+		run.handle({ type: "agent-settled" }, harness.context());
+		harness.timer.fire();
+		prompt = harness.sent.at(-1)?.message.content ?? "";
+		assert.ok(prompt.includes("Token budget: 950 / 1k tokens used (95%)."));
+		assert.ok(prompt.includes("Budget critical: stop starting new tasks"));
+	});
+});

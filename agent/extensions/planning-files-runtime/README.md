@@ -44,12 +44,26 @@ Goal overlay state:
 - The prompt asks the agent to reconcile current `Blocker` / `Next action` with the latest user facts before execution: correct obsolete waiting conditions, verify uncertain claims, retain unresolved blockers, and preserve interruption history in `progress.md`. It does not automatically override the goal contract; the runtime does not heuristically rewrite planning files.
 - Supplements are request-local: included in the outgoing custom message, not stored in goal state or re-injected as a new supplement into later automatic continuations or runs. A retry must supply any still-needed input again.
 - For an ordinary already-active run, a repeated no-argument request is a no-op; nonblank input is explicitly rejected with guidance to send a normal message or pause and retry. Explicit stalled-run recovery is the exception and accepts input.
+- `complete_plan_goal` is audited: an independent model call judges the claim against the success criteria using the claimed evidence and the progress.md tail. A REJECT verdict returns an error listing the unmet criteria (goal stays active); an unavailable auditor (no model, provider error, unparseable verdict) fails open and completes with a note. The auditor model is `planning.auditModel` in settings.json (`{ provider, id, thinking }`); unset or unresolvable config falls back to the session model at low thinking.
+- Optional token budget: pass `tokenBudget` (positive integer) to `commit_plan_goal` when the user asks for a spend cap. Turn usage accumulates in `impl.tokensUsed`; continuation prompts report usage and add a warning at 70% and a wrap-up directive at 90%; crossing 100% pauses the run at settle time instead of scheduling the next continuation (a run that settles without progress keeps its existing no-continuation semantics and is not force-paused). Each `/plan-goal-impl` start or resume opens a fresh budget window. The widget shows `budget: used / cap (pct)`, or a plain `tokens:` line without a budget.
 
 Example after resetting a provider quota (run `/reload` after updating the extension):
 
 ```text
 /plan-goal-impl 我已使用重置卡恢复5小时额度，请核对并更新旧的等待条件后继续。
 ```
+
+## Settings
+
+`~/.pi/agent/settings.json`:
+
+```json
+"planning": {
+  "auditModel": { "provider": "magpie", "id": "zhipu/glm-5.3-flash", "thinking": "low" }
+}
+```
+
+Read on every completion, so edits apply without a restart. No `planning` block means the session model audits at low thinking.
 
 ## Dotfiles integration
 

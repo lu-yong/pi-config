@@ -95,7 +95,7 @@ export type GoalLifecycleEvent =
 	| { type: "agent-start" }
 	| { type: "turn-start" }
 	| { type: "progress-tool-called" }
-	| { type: "turn-end"; stopReason?: string; errorMessage?: string }
+	| { type: "turn-end"; stopReason?: string; errorMessage?: string; usageTokens?: number }
 	| { type: "agent-settled"; aborted?: boolean };
 
 export interface GoalLifecycle {
@@ -169,7 +169,9 @@ function contractFromParams(params: CommitGoalParams): GoalContract | null {
 	const outOfScope = normalizeStringArray(params.outOfScope);
 	const blockerRule = normalizeString(params.blockerRule);
 	if (!objective || successCriteria.length === 0 || constraints.length === 0 || outOfScope.length === 0 || !blockerRule) return null;
-	return { objective, successCriteria, constraints, outOfScope, blockerRule };
+	const tokenBudget = params.tokenBudget;
+	if (tokenBudget !== undefined && (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0)) return null;
+	return { objective, successCriteria, constraints, outOfScope, blockerRule, ...(tokenBudget !== undefined ? { tokenBudget } : {}) };
 }
 
 /**
@@ -275,19 +277,28 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		persist(mutation(state));
 	};
 
-	const pauseForUserInterruption = (): GoalLifecycleEffect[] => {
-		const reason = "The goal run was interrupted by the user.";
-		mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
+	/**
+	 * Pause the active run for a system-detected reason (user interruption,
+	 * provider failure, exhausted budget): persist the paused state, then
+	 * report through progress, clear any pending continuation, and refresh.
+	 * All three pause paths share this one policy.
+	 */
+	const pauseForSystem = (reason: string, options: { suggestedAction?: string; notify?: string } = {}): GoalLifecycleEffect[] => {
+		mutate((current) => ({
+			...current,
+			status: "paused",
+			impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: options.suggestedAction ?? "" },
+		}));
 		progressSeenThisRun = false;
 		queuedRunId = null;
 		return [
 			{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
 			{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
 			{ type: "clear-continuation" },
+			...(options.notify ? [{ type: "notify", level: "warning", message: options.notify }] as GoalLifecycleEffect[] : []),
 			{ type: "refresh" },
 		];
 	};
-
 	// ---- state machine: GoalLifecycleEvent -> internal effects ----
 
 	const transition = (event: InternalEvent): GoalLifecycleEffect[] => {
@@ -392,7 +403,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				if (!goal) {
 					return reject(
 						"commit_plan_goal",
-						"Goal commit rejected: objective, successCriteria, constraints, outOfScope, and blockerRule must all be non-empty.",
+						"Goal commit rejected: objective, successCriteria, constraints, outOfScope, and blockerRule must all be non-empty, and tokenBudget, when present, must be a positive integer.",
 					);
 				}
 				const goalDesign = getPaths(cwd).goalDesign;
@@ -449,6 +460,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						impl: {
 							...current.impl,
 							runId,
+							tokensUsed: 0,
 							planningResetRequired: false,
 							initializedAt: nowIso(),
 							lastResumedAt: nowIso(),
@@ -471,7 +483,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				mutate((current) => ({
 					...current,
 					status: "active",
-					impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "", pausedSuggestedAction: "" },
+					impl: { ...current.impl, runId, tokensUsed: 0, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "", pausedSuggestedAction: "" },
 				}));
 				queuedRunId = null;
 				return [
@@ -540,14 +552,25 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				if (state.status === "active") progressSeenThisRun = true;
 				return [];
 
-			case "turn-end":
+			case "turn-end": {
 				terminalStopReason = event.stopReason;
 				terminalErrorMessage = normalizeString(event.errorMessage);
+				// Count this turn's tokens before any stop handling: provider-error
+				// responses still consume input tokens, and an aborted turn may have
+				// streamed partial output before the user pressed Esc. The closing
+				// response of a pause/complete tool call already changed the status,
+				// so the stop gate — not the status — identifies its turn.
+				const usageTokens = event.usageTokens;
+				const closingTurn = turnStopped === "pause_plan_goal" || turnStopped === "complete_plan_goal";
+				if ((state.status === "active" || closingTurn) && usageTokens !== undefined && usageTokens > 0) {
+					mutate((current) => ({ ...current, impl: { ...current.impl, tokensUsed: current.impl.tokensUsed + usageTokens } }));
+				}
 				if (state.status === "active" && event.stopReason === "aborted") {
-					return pauseForUserInterruption();
+					return pauseForSystem("The goal run was interrupted by the user.");
 				}
 				if (state.status !== "active" || event.stopReason === "error") return [{ type: "clear-continuation" }];
 				return [{ type: "refresh" }];
+			}
 
 			case "agent-settled":
 				// The planning projection is always re-synced after the agent run settles.
@@ -558,26 +581,30 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				}
 				// Cancellation can happen during Pi cleanup after a normal final message.
 				// Prefer the run-level signal over the last message's provider error.
-				if (event.aborted) return pauseForUserInterruption();
+				if (event.aborted) return pauseForSystem("The goal run was interrupted by the user.");
 				if (terminalStopReason === "error") {
 					const detail = terminalErrorMessage || "unknown provider error";
-					const reason = `LLM request failed and Pi will not retry automatically: ${detail}`;
-					mutate((current) => ({ ...current, status: "paused", impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: "" } }));
-					progressSeenThisRun = false;
-					queuedRunId = null;
-					return [
-						{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
-						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
-						{ type: "clear-continuation" },
-						{ type: "notify", level: "warning", message: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later." },
-						{ type: "refresh" },
-					];
+					return pauseForSystem(`LLM request failed and Pi will not retry automatically: ${detail}`, {
+						notify: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later.",
+					});
 				}
 				if (!progressSeenThisRun) {
 					queuedRunId = null;
 					return [{ type: "clear-continuation" }, { type: "refresh" }];
 				}
 				progressSeenThisRun = false;
+				// Budget applies only on the continuation path: a run that already
+				// went quiet without progress stays under its existing semantics.
+				const tokenBudget = state.goal?.tokenBudget;
+				if (tokenBudget !== undefined && state.impl.tokensUsed >= tokenBudget) {
+					return pauseForSystem(
+						`Token budget exhausted: ${state.impl.tokensUsed} / ${tokenBudget} tokens used in this budget window.`,
+						{
+							suggestedAction: "Resume with /plan-goal-impl to open a fresh budget window, or re-commit the goal with a larger tokenBudget.",
+							notify: "Goal implementation paused: token budget exhausted. Resume with /plan-goal-impl to open a fresh budget window.",
+						},
+					);
+				}
 				if (queuedRunId === state.impl.runId) return [{ type: "refresh" }];
 				queuedRunId = state.impl.runId;
 				return [{ type: "refresh" }, { type: "schedule-continuation", runId: state.impl.runId }];

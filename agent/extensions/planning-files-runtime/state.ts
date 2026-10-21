@@ -29,6 +29,7 @@ export function defaultGoalState(): GoalOverlayState {
 		goal: null,
 		impl: {
 			runId: 0,
+			tokensUsed: 0,
 			planningResetRequired: false,
 			initializedAt: null,
 			lastResumedAt: null,
@@ -69,12 +70,15 @@ export function normalizeGoalContract(value: unknown): GoalContract | null {
 	const outOfScope = normalizeStringArray(raw.outOfScope);
 	const blockerRule = normalizeString(raw.blockerRule);
 	if (!objective) return null;
+	const budgetRaw = raw.tokenBudget;
+	const tokenBudget = typeof budgetRaw === "number" && Number.isSafeInteger(budgetRaw) && budgetRaw > 0 ? budgetRaw : undefined;
 	return {
 		objective,
 		successCriteria,
 		constraints,
 		outOfScope,
 		blockerRule,
+		tokenBudget,
 	};
 }
 
@@ -97,6 +101,10 @@ export function normalizeGoalState(value: unknown): GoalOverlayState {
 		goal,
 		impl: {
 			runId: typeof implRaw.runId === "number" && Number.isFinite(implRaw.runId) ? Math.max(0, Math.trunc(implRaw.runId)) : 0,
+			tokensUsed:
+				typeof implRaw.tokensUsed === "number" && Number.isFinite(implRaw.tokensUsed) && implRaw.tokensUsed >= 0
+					? Math.trunc(implRaw.tokensUsed)
+					: 0,
 			planningResetRequired: implRaw.planningResetRequired === true,
 			initializedAt: normalizeString(implRaw.initializedAt) || null,
 			lastResumedAt: normalizeString(implRaw.lastResumedAt) || null,

@@ -119,3 +119,20 @@ export function normalizeStringArray(value: unknown): string[] {
 	}
 	return items;
 }
+
+// ---- token budget ----
+
+/** Structural subset of pi-ai's Usage; keeps this module free of pi imports. */
+export type UsageLike = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+/** Total tokens one model response consumed: uncached input, output, and cache traffic. */
+export function sumUsageTokens(usage: UsageLike): number {
+	return usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
+/** Compact human-readable token count: 950, 12k, 1.2M. */
+export function formatTokenCount(tokens: number): string {
+	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+	if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+	return `${tokens}`;
+}

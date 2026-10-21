@@ -1,4 +1,5 @@
 import type { PlanningSnapshot } from "./types.ts";
+import { formatTokenCount } from "./utils.ts";
 
 type WidgetPlanProjection = {
 	phase?: string;
@@ -36,6 +37,13 @@ export function buildWidgetLines(state: PlanningSnapshot): string[] | undefined 
 		lines.push(`goal: ${state.goalState.status}`);
 		if (state.goalState.status === "drafting") lines.push(`stage: ${state.goalState.draft.draftingStage}`);
 		if (state.goalState.goal?.objective) lines.push(`objective: ${state.goalState.goal.objective}`);
+		const tokenBudget = state.goalState.goal?.tokenBudget;
+		if (tokenBudget !== undefined) {
+			const pct = Math.min(999, Math.floor((state.goalState.impl.tokensUsed / tokenBudget) * 100));
+			lines.push(`budget: ${formatTokenCount(state.goalState.impl.tokensUsed)} / ${formatTokenCount(tokenBudget)} tokens (${pct}%)`);
+		} else if (state.goalState.impl.tokensUsed > 0) {
+			lines.push(`tokens: ${formatTokenCount(state.goalState.impl.tokensUsed)}`);
+		}
 		if (state.goalState.status === "drafting" && state.goalState.draft.nextRecommendedQuestion) {
 			lines.push(`next question: ${state.goalState.draft.nextRecommendedQuestion}`);
 		}

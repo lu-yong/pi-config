@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import {
 	MESSAGE_TYPE_PLAN_UPDATE,
@@ -11,7 +15,8 @@ import type {
 	PauseGoalParams,
 	SaveGoalDraftParams,
 } from "./types.ts";
-import { normalizeString } from "./utils.ts";
+import { getPaths, normalizeString, normalizeStringArray, readText, sumUsageTokens, tailLines } from "./utils.ts";
+import { parseAuditModelRef, resolveAuditModel, runCompletionAudit, type AuditModelResult } from "./audit.ts";
 import { archivePlanningWorkspace, getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
@@ -143,6 +148,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			constraints: Type.Array(Type.String(), { description: "Hard constraints the implementation must respect" }),
 			outOfScope: Type.Array(Type.String(), { description: "Explicitly excluded work" }),
 			blockerRule: Type.String({ description: "What the agent should do if blocked" }),
+			tokenBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Optional token spend cap for this goal; set only when the user asked for one" })),
 		}),
 		async execute(_toolCallId, params: CommitGoalParams, _signal, _onUpdate, ctx) {
 			const lifecycle = lifecycleFor(ctx.cwd);
@@ -182,24 +188,101 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "complete_plan_goal",
 		label: "Complete Plan Goal",
-		description: "Mark the active goal implementation complete.",
-		promptSnippet: "Complete the active goal run after success criteria are truly satisfied and evidence is recorded.",
-		promptGuidelines: ["Use complete_plan_goal only after the committed goal has been achieved and progress.md contains completion evidence."],
+		description: "Mark the active goal implementation complete. An independent model audits the claim against the success criteria before completion is accepted.",
+		promptSnippet: "Complete the active goal run after success criteria are truly satisfied and evidence is recorded; the claim is independently audited.",
 		parameters: Type.Object({
 			summary: Type.String({ description: "Completion summary" }),
 			evidence: Type.Optional(Type.Array(Type.String(), { description: "Concrete evidence that the goal is complete" })),
 		}),
-		async execute(_toolCallId, params: CompleteGoalParams, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: CompleteGoalParams, signal, _onUpdate, ctx) {
 			const lifecycle = lifecycleFor(ctx.cwd);
+			const current = lifecycle.getState();
+			let audit: Awaited<ReturnType<typeof runCompletionAudit>> | null = null;
+			if (current.status === "active" && current.goal) {
+				audit = await runCompletionAudit(
+					{
+						goal: current.goal,
+						summary: normalizeString(params.summary),
+						evidence: normalizeStringArray(params.evidence),
+						progressTail: tailLines(readText(getPaths(ctx.cwd).files["progress.md"]), 80),
+					},
+					(system, user) => callAuditor(ctx, system, user, signal),
+				);
+				// A user cancellation during the audit must not accept the goal:
+				// the aborted settlement pauses the still-active run instead.
+				if (signal?.aborted) {
+					return {
+						content: [{ type: "text", text: "Goal completion cancelled: the audit was aborted before a verdict. The goal stays active." }],
+						isError: true,
+						details: undefined,
+						...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}),
+					};
+				}
+				if (audit.kind === "rejected") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Goal completion rejected by independent audit. Unmet or unevidenced criteria: ${audit.reasons} Close the gaps, record concrete evidence in progress.md, then call complete_plan_goal again; if the criteria are met but cannot be evidenced, call pause_plan_goal and explain.`,
+							},
+						],
+						isError: true,
+						details: undefined,
+						...(audit.usage ? { usage: audit.usage as Usage } : {}),
+					};
+				}
+			}
 			const result = lifecycle.handle({ type: "complete", params }, contextFor(ctx));
 			const error = toolError(result);
-			if (error) return error;
+			if (error) return { ...error, ...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}) };
+			const auditNote = audit
+				? audit.kind === "approved"
+					? " (independent audit: approved)"
+					: ` (independent audit skipped: ${audit.reason})`
+				: "";
 			return {
-				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}` }],
-				details: { status: lifecycle.getState().status, summary: normalizeString(params.summary), evidence: params.evidence ?? [] },
+				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}${auditNote}` }],
+				details: { status: lifecycle.getState().status, summary: normalizeString(params.summary), evidence: normalizeStringArray(params.evidence) },
+				// The audit module types usage as a structural subset; the production
+				// adapter supplies the provider's full Usage object, so re-widen it here
+				// for session accounting.
+				...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}),
 			};
 		},
 	});
+
+	// ---- completion audit adapter ----
+
+	/** Read `planning.auditModel` on every completion, so config edits apply without a restart. */
+	function readAuditModelRef() {
+		try {
+			const raw = fs.readFileSync(path.join(getAgentDir(), "settings.json"), "utf8");
+			return parseAuditModelRef((JSON.parse(raw) as { planning?: unknown })?.planning);
+		} catch {
+			return null;
+		}
+	}
+
+	/** Production adapter of the audit model port: one provider-neutral streamSimple call. */
+	async function callAuditor(ctx: ExtensionContext, system: string, user: string, signal: AbortSignal | undefined): Promise<AuditModelResult> {
+		const resolved = resolveAuditModel(readAuditModelRef(), ctx.model, (provider, id) => ctx.modelRegistry.find(provider, id));
+		if (!resolved) return { kind: "failed", reason: "no model is available for the completion audit" };
+		if (resolved.notice) ctx.ui.notify(resolved.notice, "warning");
+		const response = await ctx.modelRegistry.streamSimple(
+			resolved.model,
+			{ systemPrompt: system, messages: [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }] },
+			{ reasoning: resolved.thinking, ...(signal ? { signal } : {}) },
+		).result();
+		if (response.stopReason === "error") {
+			return { kind: "failed", reason: `auditor request failed${response.errorMessage ? `: ${response.errorMessage}` : ""}`, ...(response.usage ? { usage: response.usage } : {}) };
+		}
+		if (response.stopReason === "aborted") return { kind: "failed", reason: "auditor request was aborted", ...(response.usage ? { usage: response.usage } : {}) };
+		const text = response.content
+			.filter((content): content is { type: "text"; text: string } => content.type === "text")
+			.map((content) => content.text)
+			.join("\n");
+		return { kind: "completed", text, ...(response.usage ? { usage: response.usage } : {}) };
+	}
 
 	// ---- commands ----
 	pi.registerCommand("plan-archive", {
@@ -332,9 +415,17 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", async (event, ctx) => {
 		const lifecycle = lifecycleFor(ctx.cwd);
-		const message = event.message as { stopReason?: string; errorMessage?: string } | undefined;
+		const message = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined;
+		// Nested model calls (the completion audit) report their usage on tool
+		// results; count them toward the budget alongside the assistant message.
+		const toolUsage = ((event.toolResults as { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }[] | undefined) ?? []).reduce(
+			(sum, result) => sum + (result.usage ? sumUsageTokens(result.usage) : 0),
+			0,
+		);
+		const messageUsage = message?.role === "assistant" && message.usage ? sumUsageTokens(message.usage) : 0;
+		const usageTokens = messageUsage + toolUsage > 0 ? messageUsage + toolUsage : undefined;
 		const result = lifecycle.handle(
-			{ type: "turn-end", stopReason: message?.stopReason, errorMessage: message?.errorMessage },
+			{ type: "turn-end", stopReason: message?.stopReason, errorMessage: message?.errorMessage, usageTokens },
 			contextFor(ctx, state.resumedFromPreviousSession),
 		);
 		notifyRejection(ctx, result);

@@ -67,7 +67,7 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 		failSend: (fail = true) => { failSend = fail; },
 		event: (name: string, event: unknown = {}) => hooks.get(name)!(event, ctx),
 		command: (name: string, args = "") => commands.get(name)!.handler(args, ctx),
-		tool: (name: string, params: unknown) => tools.get(name)!.execute("test", params, new AbortController().signal, undefined, ctx),
+		tool: (name: string, params: unknown, signal?: AbortSignal) => tools.get(name)!.execute("test", params, signal ?? new AbortController().signal, undefined, ctx),
 	};
 }
 
@@ -406,3 +406,40 @@ for (const input of ["我使用重置卡，额度已恢复\n请继续核验", " 
 		assert.equal(h.messages.length, 1);
 	});
 }
+
+test("cancelling the pending completion audit keeps the goal active", async () => {
+	const h = harness();
+	const controller = new AbortController();
+	(h.ctx as { model?: unknown }).model = { id: "main" };
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = {
+		find: () => undefined,
+		// The auditor hangs until the abort signal fires, then reports "aborted".
+		streamSimple: (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => ({
+			result: () =>
+				new Promise((resolve) => {
+					options.signal?.addEventListener("abort", () =>
+						resolve({ stopReason: "aborted", content: [], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+					);
+				}),
+		}),
+	};
+	await h.event("session_start", { reason: "new" });
+	const pending = h.tool("complete_plan_goal", { summary: "Done" }, controller.signal);
+	controller.abort();
+	const result = (await pending) as { isError?: boolean; content: Array<{ type: string; text: string }> };
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /completion cancelled/);
+	assert.equal(readGoalState(h.cwd).status, "active");
+});
+
+test("completing without an auditor model fails open with a visible note", async () => {
+	const h = harness();
+	// Real ExtensionContext always carries a modelRegistry; model absent means no auditor.
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = { find: () => undefined };
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("complete_plan_goal", { summary: "Done", evidence: ["Tests pass"] })) as {
+		content: Array<{ type: string; text: string }>;
+	};
+	assert.match(result.content[0].text, /independent audit skipped: no model is available for the completion audit/);
+	assert.equal(readGoalState(h.cwd).status, "complete");
+});
