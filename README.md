@@ -80,6 +80,7 @@
 - **实施补充**：`/plan-goal-impl [补充信息]` 将非空参数传入本次启动、恢复或故障恢复重发的执行提示词，例如 `/plan-goal-impl 我已使用重置卡恢复额度，请核对并更新旧的等待条件后继续`。提示模型先核对 `Blocker` / `Next action`，保留历史中断记录与未解决阻塞，不自动覆盖目标硬约束；扩展不按自然语言直接改写规划文件。
 - **参数边界**：空白参数等同无参数；补充仅随本次请求传递，不写入 goal state，也不会作为“本次补充”再次注入后续自动 continuation。普通 `active` 状态下，无参数重复调用不做操作，带参数则明确提示改发普通消息或暂停后再恢复；故障恢复重发路径除外。
 - **取消行为**：即使最后一条 assistant 消息已正常结束，Pi 收尾时的取消仍会将 `active` goal 暂停并清除待执行的 continuation，不自动续跑。
+- **完成审计**：Goal lifecycle 统一收集证据、执行独立审计并裁决完成：审计拒绝阻止完成；审计不可用时允许完成并提示；取消审计不接受完成。审计结果只适用于被审计的同一目标和实施运行，用量计入目标预算。
 - **并发限制**：同一项目的 `.pi/planning/` 没有锁或冲突处理，应由单个 Pi 实例写入。
 
 ### qna
@@ -98,13 +99,13 @@
 - **目标模式限制**：当 planning-files-runtime 的 goal 状态为 `active` 时，自动 Q&A 被抑制，手动 `/qna` 会提示先暂停或完成目标，避免打断目标的自动 continuation。
 - **测试**：`node --test agent/extensions/qna/*.test.ts`
 
-`qna` 是回复结束后的问题抽取；包提供的 `ask_user_question` 则由 agent 在执行中主动调用，两者不是同一个入口。`agent/extensions/question-taking/` 是 qna 使用的共享交互模块，没有 `index.ts`，不独立加载。
+`qna` 是回复结束后的问题抽取；包提供的 `ask_user_question` 则由 agent 在执行中主动调用，两者不是同一个入口。`agent/extensions/question-taking/` 只向 qna 提供 `askExtractedQuestions` 逐题问答接口，封装选项导航、自定义输入、取消传播和按题序汇总，没有 `index.ts`，不独立加载。
 
 ### extmgr
 
 - **文件**：`agent/extensions/extmgr/`
 - **功能**：扩展加载管理器（仅 npm 包，standalone 扩展不在管理范围，界面以 `+N standalone hidden` 计数透出）——`/extmgr` 交互式 picker（pi-footer 风格：圆角边框、行首 on/off 彩色标记、dim 详情尾 `G:x P:y · loaded`、主题色高亮选中行）与 `manage_extensions` 工具（list/enable/disable）。切换写入原生 Pi settings（整包对象条目、项目层 delta 条目），写入形式与 `pi config` 逐字一致；不可达的原生限制格明确返回 unavailable 原因而不是伪造写入。
-- **交互**：`j/k` 或方向键移动、`Enter` 在活动写入层切换、`Tab` 切换 global/project 写入层、`/` 子串过滤（文件名与包源）、`a` 应用并恰好触发一次 reload、`q`/`Esc` 关闭。非 TUI 模式调用 `/extmgr` 会提示改用工具。
+- **交互**：`j/k` 或方向键移动、`Enter` 在活动写入层切换、`Tab` 切换 global/project 写入层、`/` 子串过滤（文件名与包源）、`a` 应用、`q`/`Esc` 关闭。Enter 切换立即写入设置，按输入顺序串行执行，写入层以按下 Enter 时为准；pending 按扩展和写入层统计净变更，切回原状态后抵消；`a` 等待已排队的切换完成后，恰好触发一次 reload。非 TUI 模式调用 `/extmgr` 会提示改用工具。
 - **解析**：读路径直接走 Pi 原生 `DefaultPackageManager.resolve()`（Pi 1.3.0 起从包根导出）：目录发现、manifest 过滤、pattern 优先级、跨层 dedupe 等 host 语义不再由本仓库复刻；`native.ts` 把原生结果投影成 global/project/effective 三态视图（合并视图 + 仅全局视图两次 resolve）。写入保留 proper-lockfile 锁内读-改-写（公开 SettingsManager API 无法表达该临界区），原生 resolver 为 oracle 的差分 fixture 回归仍在。
 - **测试**：`npm --prefix agent/extensions/extmgr test`（vitest，独立 package.json，依赖 proper-lockfile/typebox）
 
@@ -262,7 +263,7 @@ node --test agent/extensions/*/*.test.ts
 npm --prefix agent/extensions/extmgr test
 ```
 
-前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 状态和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展），包括 Q&A 使用原生 `ModelRuntime` 的离线回归，验证 native/virtual provider 调用、请求时鉴权、预检回退和错误/取消处理；后者用 vitest 运行 extmgr 的测试，包括以原生 resolver 为 oracle 的差分回归与三态投影（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
+前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 交互模块和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展），包括 Q&A 使用原生 `ModelRuntime` 的离线回归，验证 native/virtual provider 调用、请求时鉴权、预检回退和错误/取消处理；后者用 vitest 运行 extmgr 的测试，包括以原生 resolver 为 oracle 的差分回归与三态投影（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
 ## 未入库文件与安全
 
 忽略规则见 [`.gitignore`](.gitignore) 与 [`agent/npm/.gitignore`](agent/npm/.gitignore)。以下内容只保存在本机，不随本仓库提交：

@@ -6,15 +6,17 @@ import { afterEach, describe, test } from "node:test";
 
 import {
 	createGoalLifecycle,
+	type CompletionAuditCall,
 	type GoalLifecycle,
 	type GoalLifecycleContext,
 	type GoalLifecycleEvent,
 	type OutgoingGoalMessage,
 	type OutgoingGoalMessageOptions,
 } from "./goal-lifecycle.ts";
-import { MESSAGE_TYPE_CONTINUATION } from "./types.ts";
+import type { AuditModelResult } from "./audit.ts";
+import { MESSAGE_TYPE_CONTINUATION, type CompleteGoalParams } from "./types.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
-import { defaultGoalState, hasActiveGoal, writeGoalState } from "./state.ts";
+import { defaultGoalState, hasActiveGoal, readGoalState, writeGoalState } from "./state.ts";
 import { getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
 import { buildWidgetLines } from "./ui.ts";
 
@@ -79,6 +81,19 @@ function createHarness(options: { failSends?: boolean; failNotify?: boolean; fai
 
 type Harness = ReturnType<typeof createHarness>;
 
+// ---- canned completion-audit transports (the model port, scripted) ----
+
+const auditUsage = { input: 40, output: 10, cacheRead: 0, cacheWrite: 0 };
+
+const auditModel = (result: AuditModelResult): CompletionAuditCall => async () => result;
+
+/** A host with no auditor at all: the transport itself reports the failure. */
+const noAuditor: CompletionAuditCall = async () => ({ kind: "failed", reason: "no model is available for the completion audit" });
+
+/** Complete through the lifecycle interface (audit included) with a canned transport. */
+const complete = (run: GoalLifecycle, params: CompleteGoalParams, harness: Harness, modelCall: CompletionAuditCall = noAuditor) =>
+	run.complete(params, harness.context(), { modelCall });
+
 /** Decide a settled run's continuation at Pi's before-settle boundary. */
 function decideContinuation(run: GoalLifecycle, harness: Harness, outcome: "completed" | "aborted" | "error" = "completed"): OutgoingGoalMessage | undefined {
 	const result = run.handle({ type: "before-settle", outcome }, harness.context());
@@ -108,7 +123,7 @@ function settleWithProgress(run: GoalLifecycle, harness: Harness): OutgoingGoalM
 }
 
 describe("goal lifecycle", () => {
-	test("covers the lifecycle transitions and materializes the planning workspace", () => {
+	test("covers the lifecycle transitions and materializes the planning workspace", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = createGoalLifecycle(cwd, harness.deps);
@@ -146,7 +161,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, 1);
 		assert.equal(run.getState().impl.pausedSuggestedAction, "");
 
-		result = run.handle({ type: "complete", params: { summary: "Lifecycle is complete" } }, harness.context());
+		result = await complete(run, { summary: "Lifecycle is complete" }, harness);
 		assert.equal(result.rejection, undefined);
 		assert.equal(result.failure, undefined);
 		assert.equal(run.getState().status, "complete");
@@ -154,7 +169,7 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /Lifecycle is complete/);
 	});
 
-	test("rejects every illegal lifecycle operation without mutating state", () => {
+	test("rejects every illegal lifecycle operation without mutating state", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = createGoalLifecycle(cwd, harness.deps);
@@ -169,7 +184,12 @@ describe("goal lifecycle", () => {
 		assertRejected({ type: "commit", params: contractParams }, "commit_plan_goal");
 		assertRejected({ type: "implementation-request" }, "plan-goal-impl");
 		assertRejected({ type: "pause", params: { reason: "blocked" } }, "pause_plan_goal");
-		assertRejected({ type: "complete", params: { summary: "not active" } }, "complete_plan_goal");
+		{
+			const before = run.getState();
+			const result = await run.complete({ summary: "not active" }, harness.context(), { modelCall: noAuditor });
+			assert.equal(result.rejection?.operation, "complete_plan_goal");
+			assert.deepEqual(run.getState(), before);
+		}
 
 		run.handle({ type: "start-drafting", input: "goal" }, harness.context());
 		assertRejected({ type: "commit", params: contractParams }, "commit_plan_goal");
@@ -187,7 +207,7 @@ describe("goal lifecycle", () => {
 		assert.deepEqual(run.getState(), before);
 	});
 
-	test("ready starts a new run while paused resumes the existing run", () => {
+	test("ready starts a new run while paused resumes the existing run", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -195,7 +215,7 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "pause", params: { reason: "pause" } }, harness.context());
 		run.handle({ type: "implementation-request" }, harness.context());
 		assert.equal(run.getState().impl.runId, 1);
-		run.handle({ type: "complete", params: { summary: "done" } }, harness.context());
+		await complete(run, { summary: "done" }, harness);
 
 		// A new drafting/commit cycle returns to ready; the next implementation is run 2.
 		run.handle({ type: "start-drafting", input: "second run" }, harness.context());
@@ -219,7 +239,7 @@ describe("goal lifecycle", () => {
 		assert.equal(restored.getState().status, "active");
 	});
 
-	test("turn stop gate is held by the lifecycle and cleared at turn start", () => {
+	test("turn stop gate is held by the lifecycle and cleared at turn start", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareDraft(cwd, harness);
@@ -236,7 +256,7 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "turn-start" }, harness.context());
 
 		run.handle({ type: "implementation-request" }, harness.context());
-		run.handle({ type: "complete", params: { summary: "done" } }, harness.context());
+		await complete(run, { summary: "done" }, harness);
 		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
 	});
 
@@ -289,7 +309,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, 1);
 	});
 
-	test("an unreadable goal-state path during completion leaves the run active and the workspace untouched", () => {
+	test("an unreadable goal-state path during completion leaves the run active and the workspace untouched", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -301,7 +321,7 @@ describe("goal lifecycle", () => {
 		fs.rmSync(goalStatePath, { force: true });
 		fs.mkdirSync(goalStatePath);
 
-		const result = run.handle({ type: "complete", params: { summary: "cannot persist" } }, harness.context());
+		const result = await complete(run, { summary: "cannot persist" }, harness);
 		assert.match(result.failure?.reason ?? "", /Goal run failed/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.turnStoppedBy(), null);
@@ -310,7 +330,7 @@ describe("goal lifecycle", () => {
 		// Retrying after the storage problem is fixed completes normally.
 		fs.rmSync(goalStatePath, { recursive: true, force: true });
 		writeGoalState(cwd, run.getState());
-		const retry = run.handle({ type: "complete", params: { summary: "cannot persist" } }, harness.context());
+		const retry = await complete(run, { summary: "cannot persist" }, harness);
 		assert.equal(retry.failure, undefined);
 		assert.equal(run.getState().status, "complete");
 	});
@@ -476,14 +496,14 @@ describe("goal lifecycle", () => {
 		assert.match(readText(getPaths(cwd).files["progress.md"]), /Goal implementation paused: The goal run was interrupted by the user\./);
 	});
 
-	test("successful completion finalizes the workspace and releases Q&A suppression", () => {
+	test("successful completion finalizes the workspace and releases Q&A suppression", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		settleWithProgress(run, harness);
 		const paths = getPaths(cwd);
 
-		const result = run.handle({ type: "complete", params: { summary: "done", evidence: ["tests pass"] } }, harness.context());
+		const result = await complete(run, { summary: "done", evidence: ["tests pass"] }, harness);
 		assert.equal(result.failure, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(hasActiveGoal(cwd), false);
@@ -493,7 +513,7 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
 	});
 
-	test("failed completion finalization rolls back lifecycle and transient gates", () => {
+	test("failed completion finalization rolls back lifecycle and transient gates", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -504,7 +524,7 @@ describe("goal lifecycle", () => {
 		const originalTaskPlan = readText(paths.files["task_plan.md"]);
 		const originalProgress = readText(paths.files["progress.md"]);
 
-		const result = run.handle({ type: "complete", params: { summary: "should roll back" } }, harness.context());
+		const result = await complete(run, { summary: "should roll back" }, harness);
 
 		assert.ok(result.failure);
 		assert.equal(run.getState().status, "active");
@@ -515,7 +535,7 @@ describe("goal lifecycle", () => {
 		assert.equal(readText(paths.files["progress.md"]), originalProgress);
 	});
 
-	test("missing progress.md returns a clear failure and rolls completion back to active", () => {
+	test("missing progress.md returns a clear failure and rolls completion back to active", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -524,7 +544,7 @@ describe("goal lifecycle", () => {
 		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 1\n");
 		fs.rmSync(paths.files["progress.md"], { force: true });
 
-		const result = run.handle({ type: "complete", params: { summary: "cannot finish" } }, harness.context());
+		const result = await complete(run, { summary: "cannot finish" }, harness);
 		assert.match(result.failure?.reason ?? "", /progress.md is required/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(hasActiveGoal(cwd), true);
@@ -901,13 +921,13 @@ describe("token budget", () => {
 		assert.equal(run.getState().impl.tokensUsed, 525);
 	});
 
-	test("the closing response of a completed goal counts its usage", () => {
+	test("the closing response of a completed goal counts its usage", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 300 }, harness.context());
-		run.handle({ type: "complete", params: { summary: "done" } }, harness.context());
+		await complete(run, { summary: "done" }, harness);
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 120 }, harness.context());
 		assert.equal(run.getState().status, "complete");
 		assert.equal(run.getState().impl.tokensUsed, 420);
@@ -972,4 +992,216 @@ describe("token budget", () => {
 		assert.ok(prompt.includes("Token budget: 950 / 1k tokens used (95%)."));
 		assert.ok(prompt.includes("Budget critical: stop starting new tasks"));
 	});
+
+describe("completion audit", () => {
+	test("an approved verdict completes the goal and projects note and usage", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		writeText(paths.files["progress.md"], "# Progress\n\n## Timeline\n- tests pass\n");
+
+		const result = await complete(
+			run,
+			{ summary: "done", evidence: ["tests pass"] },
+			harness,
+			auditModel({ kind: "completed", text: "criterion 1: MET\nVERDICT: APPROVE", usage: auditUsage }),
+		);
+
+		assert.equal(result.rejection, undefined);
+		assert.equal(result.failure, undefined);
+		assert.equal(run.getState().status, "complete");
+		assert.equal(result.audit?.note, " (independent audit: approved)");
+		assert.deepEqual(result.audit?.usage, auditUsage);
+		assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
+	});
+
+	test("a rejected verdict blocks completion, keeps the run active, and carries the auditor usage", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "turn-start" }, harness.context()); // clear the commit stop gate like a real turn would
+		const paths = getPaths(cwd);
+		const taskPlanBefore = readText(paths.files["task_plan.md"]);
+		const progressBefore = readText(paths.files["progress.md"]);
+
+		const result = await complete(
+			run,
+			{ summary: "done", evidence: ["asserted only"] },
+			harness,
+			auditModel({ kind: "completed", text: "criterion 1: UNMET - no recorded evidence\nVERDICT: REJECT", usage: auditUsage }),
+		);
+
+		assert.equal(result.rejection?.operation, "complete_plan_goal");
+		assert.match(result.rejection?.reason ?? "", /rejected by independent audit.*criterion 1: UNMET - no recorded evidence/);
+		assert.match(result.rejection?.reason ?? "", /pause_plan_goal/);
+		assert.deepEqual(result.audit?.usage, auditUsage);
+		assert.equal(run.getState().status, "active");
+		assert.equal(hasActiveGoal(cwd), true);
+		assert.equal(run.turnStoppedBy(), null);
+		assert.equal(readText(paths.files["task_plan.md"]), taskPlanBefore);
+		assert.equal(readText(paths.files["progress.md"]), progressBefore);
+	});
+
+	test("an unavailable auditor fails open with a visible skip note", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+
+		const result = await complete(
+			run,
+			{ summary: "done" },
+			harness,
+			auditModel({ kind: "failed", reason: "no model is available for the completion audit", usage: auditUsage }),
+		);
+
+		assert.equal(result.rejection, undefined);
+		assert.equal(result.failure, undefined);
+		assert.equal(run.getState().status, "complete");
+		assert.equal(result.audit?.note, " (independent audit skipped: no model is available for the completion audit)");
+		assert.deepEqual(result.audit?.usage, auditUsage);
+	});
+
+	test("a transport error is an unavailable auditor, not a blocked completion", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const exploding: CompletionAuditCall = async () => {
+			throw new Error("network down");
+		};
+
+		const result = await complete(run, { summary: "done" }, harness, exploding);
+
+		assert.equal(result.rejection, undefined);
+		assert.equal(run.getState().status, "complete");
+		assert.equal(result.audit?.note, " (independent audit skipped: network down)");
+	});
+
+	test("cancelling the audit keeps the run active and still accounts the spent usage", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const progressBefore = readText(paths.files["progress.md"]);
+		const controller = new AbortController();
+		const hanging: CompletionAuditCall = (_system, _user, signal) =>
+			new Promise((resolve) => {
+				signal?.addEventListener("abort", () => resolve({ kind: "failed", reason: "auditor request was aborted", usage: auditUsage }));
+			});
+
+		const pending = run.complete({ summary: "done" }, harness.context(), { modelCall: hanging, signal: controller.signal });
+		controller.abort();
+		const result = await pending;
+
+		assert.equal(result.rejection?.operation, "complete_plan_goal");
+		assert.match(result.rejection?.reason ?? "", /completion cancelled.*stays active/);
+		assert.deepEqual(result.audit?.usage, auditUsage);
+		assert.equal(run.getState().status, "active");
+		assert.equal(hasActiveGoal(cwd), true);
+		assert.equal(readText(paths.files["progress.md"]), progressBefore);
+	});
+
+	test("a goal that changed while the audit was in flight is not completed on the old verdict", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const progressBefore = readText(paths.files["progress.md"]);
+		let releaseAudit!: (result: AuditModelResult) => void;
+		const gate = new Promise<AuditModelResult>((resolve) => {
+			releaseAudit = resolve;
+		});
+
+		const pending = complete(run, { summary: "done" }, harness, () => gate);
+		// While the audit runs, the user re-commits a different goal on disk.
+		const external = readGoalState(cwd);
+		external.goal = { ...external.goal!, objective: "A different objective", successCriteria: ["Different criteria"] };
+		external.impl.runId = external.impl.runId + 1;
+		writeGoalState(cwd, external);
+		releaseAudit({ kind: "completed", text: "VERDICT: APPROVE" });
+		const result = await pending;
+
+		assert.equal(result.rejection?.operation, "complete_plan_goal");
+		assert.match(result.rejection?.reason ?? "", /changed while the audit was in flight/);
+		assert.equal(run.getState().status, "active");
+		assert.equal(readGoalState(cwd).goal?.objective, "A different objective");
+		assert.equal(readText(paths.files["progress.md"]), progressBefore);
+		assert.doesNotMatch(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
+	});
+
+	for (const field of ["successCriteria", "constraints", "outOfScope", "runId"] as const) {
+		test(`a changed ${field} alone invalidates an in-flight audit, including embedded newlines`, async () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			const paths = getPaths(cwd);
+			if (field !== "runId") {
+				const initial = readGoalState(cwd);
+				initial.goal![field] = ["Tests pass\nDocumentation is updated"];
+				writeGoalState(cwd, initial);
+			}
+			const progressBefore = readText(paths.files["progress.md"]);
+			const planBefore = readText(paths.files["task_plan.md"]);
+			const gate = Promise.withResolvers<AuditModelResult>();
+			const pending = complete(run, { summary: "done" }, harness, () => gate.promise);
+			const external = readGoalState(cwd);
+			if (field === "runId") external.impl.runId += 1;
+			else external.goal![field] = ["Tests pass", "Documentation is updated"];
+			writeGoalState(cwd, external);
+			gate.resolve({ kind: "completed", text: "VERDICT: APPROVE" });
+
+			const result = await pending;
+			assert.match(result.rejection?.reason ?? "", /changed while the audit was in flight/);
+			assert.equal(run.getState().status, "active");
+			assert.deepEqual(readGoalState(cwd).goal, external.goal);
+			assert.equal(readGoalState(cwd).impl.runId, external.impl.runId);
+			assert.equal(readText(paths.files["progress.md"]), progressBefore);
+			assert.equal(readText(paths.files["task_plan.md"]), planBefore);
+		});
+	}
+
+	test("the same goal that merely got persisted again still completes after the audit", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const before = readGoalState(cwd);
+		const gate = Promise.withResolvers<AuditModelResult>();
+
+		const pending = complete(run, { summary: "done" }, harness, () => gate.promise);
+		// An external re-write of the identical goal/run must not trip the guard.
+		writeGoalState(cwd, readGoalState(cwd));
+		gate.resolve({ kind: "completed", text: "VERDICT: APPROVE" });
+		const result = await pending;
+
+		assert.equal(result.rejection, undefined);
+		assert.equal(result.failure, undefined);
+		assert.equal(run.getState().status, "complete");
+		assert.equal(readGoalState(cwd).impl.runId, before.impl.runId);
+	});
+
+	test("an invalid completion request never spends audit tokens", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		let calls = 0;
+		const counting = auditModel({ kind: "completed", text: "VERDICT: APPROVE" });
+		const transport: CompletionAuditCall = async (system, user, signal) => {
+			calls += 1;
+			return counting(system, user, signal);
+		};
+
+		const emptySummary = await run.complete({ summary: "  " }, harness.context(), { modelCall: transport });
+		assert.equal(emptySummary.rejection?.operation, "complete_plan_goal");
+		assert.match(emptySummary.rejection?.reason ?? "", /summary is required/);
+		assert.equal(run.getState().status, "active");
+
+		// A run that is not active is rejected by the transition without an audit.
+		run.handle({ type: "pause", params: { reason: "blocked" } }, harness.context());
+		const paused = await run.complete({ summary: "done" }, harness.context(), { modelCall: transport });
+		assert.equal(paused.rejection?.operation, "complete_plan_goal");
+		assert.match(paused.rejection?.reason ?? "", /only an active goal implementation/);
+
+		assert.equal(calls, 0);
+	});
+});
 });

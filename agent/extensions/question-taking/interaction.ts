@@ -1,3 +1,11 @@
+/**
+ * question-taking — 逐题收集用户对「抽取式问题」的回答。
+ *
+ * 接口只有一个 askExtractedQuestions：传入问题清单，拿到按序回答；任何一题
+ * 被取消（Esc）都返回 null。选项渲染、自定义输入、按键路由是模块内部实现，
+ * 调用方（qna）不需要知道。
+ */
+
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
 	Editor,
@@ -8,34 +16,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
-import {
-	allQuestionsAnswered,
-	createQuestionTakingState,
-	currentOptions,
-	currentQuestion,
-	normalizeQuestionnaireQuestions,
-	orderedAnswers,
-	reduceQuestionTakingState,
-	routeQuestionTakingInput,
-	type QuestionTakingAction,
-	type QuestionTakingAnswer,
-	type QuestionTakingKey,
-	type QuestionTakingMode,
-	type QuestionTakingOption,
-	type QuestionTakingQuestion,
-	type QuestionTakingState,
-} from "./state.ts";
-
-export * from "./state.ts";
-
 export type QuestionTakingUI = Pick<ExtensionUIContext, "custom">;
-
-
-export interface QuestionnaireResult {
-	questions: QuestionTakingQuestion[];
-	answers: QuestionTakingAnswer[];
-	cancelled: boolean;
-}
 
 export interface ExtractedQuestion {
 	question: string;
@@ -48,29 +29,53 @@ export interface ExtractedAnswer {
 	answer: string;
 }
 
-export type Presentation = "questionnaire" | "extracted";
-
-export interface QuestionTakingRunOptions {
-	mode: QuestionTakingMode;
-	presentation: Presentation;
-	customEmptyBehavior?: "reject" | "fallback";
+/** 一题的最终结局：作答完成拿到答案，或用户跳过。 */
+interface QuestionOutcome {
+	status: "completed" | "cancelled";
+	value: string;
 }
 
-/**
- * Run one of the shared question-taking interactions. Adapters should use one
- * of the specialized functions below unless they need a custom presentation.
- */
-export async function runQuestionTaking(
+/** 一题会话内的可变视图状态；对外不可见。 */
+interface QuestionViewState {
+	optionIndex: number;
+	inputMode: boolean;
+	status: "active" | "completed" | "cancelled";
+}
+
+interface RenderOption {
+	value: string;
+	label: string;
+	isOther?: boolean;
+}
+
+const OTHER_LABEL = "Type something.";
+
+function optionsFor(question: ExtractedQuestion): RenderOption[] {
+	const base: RenderOption[] = question.options.map((option) => ({ value: option, label: option }));
+	if (question.allowOther !== true) return base;
+	return [...base, { value: "__other__", label: OTHER_LABEL, isOther: true }];
+}
+
+export async function askExtractedQuestions(
 	ui: QuestionTakingUI,
-	questions: QuestionTakingQuestion[],
-	options: QuestionTakingRunOptions,
-): Promise<QuestionTakingState> {
-	const state = await ui.custom<QuestionTakingState>((tui, theme, _keybindings, done) => {
-		let currentState = createQuestionTakingState(questions, options.mode, {
-			customEmptyBehavior: options.customEmptyBehavior,
-		});
+	inputs: ExtractedQuestion[],
+): Promise<ExtractedAnswer[] | null> {
+	const answers: ExtractedAnswer[] = [];
+	for (let index = 0; index < inputs.length; index++) {
+		const input = inputs[index]!;
+		const outcome = await askOneQuestion(ui, input);
+		if (outcome.status !== "completed") return null;
+		answers.push({ question: input.question, answer: outcome.value });
+	}
+	return answers;
+}
+
+async function askOneQuestion(ui: QuestionTakingUI, question: ExtractedQuestion): Promise<QuestionOutcome> {
+	return ui.custom<QuestionOutcome>((tui, theme, _keybindings, done) => {
+		const options = optionsFor(question);
+		let view: QuestionViewState = { optionIndex: 0, inputMode: false, status: "active" };
+		let outcome: QuestionOutcome | undefined;
 		let cachedLines: string[] | undefined;
-		let finished = false;
 
 		const editorTheme: EditorTheme = {
 			borderColor: (text) => theme.fg("accent", text),
@@ -90,23 +95,26 @@ export async function runQuestionTaking(
 		}
 
 		function finishIfDone() {
-			if (!finished && currentState.status !== "active") {
-				finished = true;
-				done(currentState);
-			}
+			if (outcome && view.status !== "active") done(outcome);
 		}
 
-		function dispatch(action: QuestionTakingAction) {
-			currentState = reduceQuestionTakingState(currentState, action);
+		function setView(next: QuestionViewState) {
+			view = next;
 			refresh();
 			finishIfDone();
 		}
 
 		editor.onSubmit = (value) => {
-			currentState = reduceQuestionTakingState(currentState, { type: "submit-custom", value });
+			const trimmed = value.trim();
+			// 空的自定义输入不作答，退回选项列表
+			if (!trimmed) {
+				editor.setText("");
+				setView({ ...view, inputMode: false });
+				return;
+			}
 			editor.setText("");
-			refresh();
-			finishIfDone();
+			outcome = { status: "completed", value: trimmed };
+			setView({ ...view, inputMode: false, status: "completed" });
 		};
 
 		function render(width: number): string[] {
@@ -114,10 +122,6 @@ export async function runQuestionTaking(
 
 			const lines: string[] = [];
 			const renderWidth = Math.max(1, width);
-			const question = currentQuestion(currentState);
-			const optionsForQuestion = currentOptions(currentState);
-			const isMulti = options.mode === "questionnaire" && questions.length > 1;
-			const isSubmitTab = isMulti && currentState.currentIndex === questions.length;
 
 			function addWrapped(text: string) {
 				lines.push(...wrapTextWithAnsi(text, renderWidth));
@@ -136,126 +140,73 @@ export async function runQuestionTaking(
 				}
 			}
 
-			function renderPrompt(prompt: string): string {
-				return theme.fg("text", prompt);
-			}
-
-			function renderOptions() {
-				for (let i = 0; i < optionsForQuestion.length; i++) {
-					const option = optionsForQuestion[i]!;
-					const selected = i === currentState.optionIndex;
-					const isOther = option.isOther === true;
-					const prefix = selected ? theme.fg("accent", "> ") : "  ";
-					const label = `${i + 1}. ${option.label}${isOther && currentState.inputMode ? " ✎" : ""}`;
-					const color = selected || (isOther && currentState.inputMode) ? "accent" : "text";
-					addWrappedWithPrefix(prefix, theme.fg(color, label));
-					if (option.description) {
-						addWrappedWithPrefix("     ", theme.fg("muted", option.description));
-					}
-				}
-			}
-
 			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
-
-			if (isMulti) {
-				const tabs: string[] = ["← "];
-				for (let i = 0; i < questions.length; i++) {
-					const tabQuestion = questions[i]!;
-					const active = i === currentState.currentIndex;
-					const answered = currentState.answers.some((answer) => answer.id === tabQuestion.id);
-					const box = answered ? "■" : "□";
-					const color = answered ? "success" : "muted";
-					const text = ` ${box} ${tabQuestion.label} `;
-					const styled = active
-						? theme.bg("selectedBg", theme.fg("text", text))
-						: theme.fg(color, text);
-					tabs.push(`${styled} `);
-				}
-				const submitText = " ✓ Submit ";
-				const submitStyled = isSubmitTab
-					? theme.bg("selectedBg", theme.fg("text", submitText))
-					: theme.fg(allQuestionsAnswered(currentState) ? "success" : "dim", submitText);
-				tabs.push(`${submitStyled} →`);
-				addWrappedWithPrefix(" ", tabs.join(""));
-				lines.push("");
+			addWrappedWithPrefix(" ", theme.fg("text", question.question));
+			lines.push("");
+			for (let i = 0; i < options.length; i++) {
+				const option = options[i]!;
+				const isSelected = i === view.optionIndex;
+				const prefix = isSelected ? theme.fg("accent", "> ") : "  ";
+				const pencil = option.isOther && view.inputMode ? " ✎" : "";
+				const color = isSelected || (option.isOther && view.inputMode) ? "accent" : "text";
+				addWrappedWithPrefix(prefix, theme.fg(color, `${i + 1}. ${option.label}${pencil}`));
 			}
+			lines.push("");
 
-			if (currentState.inputMode && question) {
-				addWrappedWithPrefix(" ", renderPrompt(question.prompt));
-				lines.push("");
-				renderOptions();
-				lines.push("");
-				const answerLabel = "Your answer:";
-				addWrappedWithPrefix(" ", theme.fg("muted", answerLabel));
+			if (view.inputMode) {
+				addWrappedWithPrefix(" ", theme.fg("muted", "Your answer:"));
 				for (const line of editor.render(Math.max(1, renderWidth - 2))) lines.push(` ${line}`);
 				lines.push("");
-				const help = "Enter to submit • Esc to cancel";
-				addWrappedWithPrefix(" ", theme.fg("dim", help));
-			} else if (isSubmitTab) {
-				addWrappedWithPrefix(" ", theme.fg("accent", theme.bold("Ready to submit")));
-				lines.push("");
-				for (const tabQuestion of questions) {
-					const answer = currentState.answers.find((candidate) => candidate.id === tabQuestion.id);
-					if (answer) {
-						const prefix = answer.wasCustom ? "(wrote) " : "";
-						addWrappedWithPrefix(
-							" ",
-							`${theme.fg("muted", `${tabQuestion.label}: `)}${theme.fg("text", prefix + answer.label)}`,
-						);
-					}
-				}
-				lines.push("");
-				if (allQuestionsAnswered(currentState)) {
-					addWrappedWithPrefix(" ", theme.fg("success", "Press Enter to submit"));
-				} else {
-					const missing = questions
-						.filter((candidate) => !currentState.answers.some((answer) => answer.id === candidate.id))
-						.map((candidate) => candidate.label)
-						.join(", ");
-					addWrappedWithPrefix(" ", theme.fg("warning", `Unanswered: ${missing}`));
-				}
-			} else if (question) {
-				addWrappedWithPrefix(" ", renderPrompt(question.prompt));
-				lines.push("");
-				renderOptions();
-			}
-
-			lines.push("");
-			if (!currentState.inputMode) {
-				const help = options.presentation === "extracted"
-					? "↑↓ 导航 • Enter 选择 • Esc 跳过"
-					: isMulti
-						? "Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
-						: "↑↓ navigate • Enter select • Esc cancel";
-				addWrappedWithPrefix(" ", theme.fg("dim", help));
+				addWrappedWithPrefix(" ", theme.fg("dim", "Enter to submit • Esc to cancel"));
+			} else {
+				addWrappedWithPrefix(" ", theme.fg("dim", "↑↓ 导航 • Enter 选择 • Esc 跳过"));
 			}
 			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 			cachedLines = lines;
 			return lines;
 		}
 
-		function toKey(data: string): QuestionTakingKey {
-			if (matchesKey(data, Key.up)) return "up";
-			if (matchesKey(data, Key.down)) return "down";
-			if (matchesKey(data, Key.left)) return "left";
-			if (matchesKey(data, Key.right)) return "right";
-			if (matchesKey(data, Key.shift("tab"))) return "shift-tab";
-			if (matchesKey(data, Key.tab)) return "tab";
-			if (matchesKey(data, Key.enter)) return "enter";
-			if (matchesKey(data, Key.escape)) return "escape";
-			return "other";
-		}
-
 		function handleInput(data: string) {
-			const route = routeQuestionTakingInput(toKey(data), currentState);
-			if (route.type === "editor") {
+			if (view.status !== "active") return;
+
+			if (view.inputMode) {
+				// Esc 退出自定义输入回到选项；其余按键交给编辑器
+				if (matchesKey(data, Key.escape)) {
+					editor.setText("");
+					setView({ ...view, inputMode: false });
+					return;
+				}
 				editor.handleInput(data);
 				refresh();
 				return;
 			}
-			if (route.type !== "action") return;
-			dispatch(route.action);
-			if (route.action.type === "cancel-custom") editor.setText("");
+
+			if (matchesKey(data, Key.up)) {
+				setView({ ...view, optionIndex: Math.max(0, view.optionIndex - 1) });
+				return;
+			}
+			if (matchesKey(data, Key.down)) {
+				const max = Math.max(0, options.length - 1);
+				setView({ ...view, optionIndex: Math.min(max, view.optionIndex + 1) });
+				return;
+			}
+			if (matchesKey(data, Key.enter)) {
+				const selected = options[view.optionIndex];
+				if (!selected) return;
+				if (selected.isOther) {
+					setView({ ...view, inputMode: true });
+					return;
+				}
+				outcome = { status: "completed", value: selected.value };
+				setView({ ...view, status: "completed" });
+				return;
+			}
+			if (matchesKey(data, Key.escape)) {
+				outcome = { status: "cancelled", value: "" };
+				setView({ ...view, status: "cancelled" });
+				return;
+			}
+			// 其余按键（Tab、左右方向等）在选项模式下是死键
 		}
 
 		return {
@@ -266,54 +217,4 @@ export async function runQuestionTaking(
 			handleInput,
 		};
 	});
-
-	return state;
 }
-
-export async function askQuestionnaire(
-	ui: QuestionTakingUI,
-	inputs: Array<{
-		id: string;
-		label?: string;
-		prompt: string;
-		options: QuestionTakingOption[];
-		allowOther?: boolean;
-	}>,
-): Promise<QuestionnaireResult> {
-	const questions = normalizeQuestionnaireQuestions(inputs);
-	const mode: QuestionTakingMode = questions.length > 1 ? "questionnaire" : "single";
-	const result = await runQuestionTaking(ui, questions, {
-		mode,
-		presentation: "questionnaire",
-		customEmptyBehavior: "fallback",
-	});
-	return { questions, answers: orderedAnswers(result), cancelled: result.status === "cancelled" };
-}
-
-export async function askExtractedQuestions(
-	ui: QuestionTakingUI,
-	inputs: ExtractedQuestion[],
-): Promise<ExtractedAnswer[] | null> {
-	const answers: ExtractedAnswer[] = [];
-	for (let index = 0; index < inputs.length; index++) {
-		const input = inputs[index]!;
-		const question: QuestionTakingQuestion = {
-			id: `extracted-${index}`,
-			label: `Q${index + 1}`,
-			prompt: input.question,
-			options: input.options.map((option) => ({ value: option, label: option })),
-			allowOther: input.allowOther === true,
-		};
-		const result = await runQuestionTaking(ui, [question], {
-			mode: "extracted",
-			presentation: "extracted",
-			customEmptyBehavior: "reject",
-		});
-		if (result.status !== "completed") return null;
-		const answer = result.answers[0];
-		if (!answer) return null;
-		answers.push({ question: input.question, answer: answer.value });
-	}
-	return answers;
-}
-

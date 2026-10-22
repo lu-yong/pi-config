@@ -450,3 +450,61 @@ test("completing without an auditor model fails open with a visible note", async
 	assert.match(result.content[0].text, /independent audit skipped: no model is available for the completion audit/);
 	assert.equal(readGoalState(h.cwd).status, "complete");
 });
+
+test("an approved verdict completes through the real transport and its usage joins the budget", async () => {
+	const h = harness();
+	const usage = { input: 30, output: 5, cacheRead: 0, cacheWrite: 0 };
+	(h.ctx as { model?: unknown }).model = { id: "main" };
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = {
+		find: () => undefined,
+		streamSimple: () => ({
+			result: async () => ({
+				stopReason: "stop",
+				content: [{ type: "text", text: "criterion 1: MET\nVERDICT: APPROVE" }],
+				usage,
+			}),
+		}),
+	};
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("complete_plan_goal", { summary: "Done", evidence: ["Tests pass"] })) as {
+		isError?: boolean;
+		content: Array<{ type: string; text: string }>;
+		usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	};
+	assert.equal(result.isError, undefined);
+	assert.match(result.content[0].text, /Completed plan goal: Done \(independent audit: approved\)/);
+	assert.deepEqual(result.usage, usage);
+	assert.equal(readGoalState(h.cwd).status, "complete");
+	// The auditor usage rides the tool result into the closing turn's budget exactly once.
+	await h.event("turn_end", {
+		message: { role: "assistant", stopReason: "stop", usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 } },
+		toolResults: [{ usage }],
+	});
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 47);
+});
+
+test("a rejected verdict reports an error through the real transport and keeps the goal active", async () => {
+	const h = harness();
+	const usage = { input: 25, output: 4, cacheRead: 0, cacheWrite: 0 };
+	(h.ctx as { model?: unknown }).model = { id: "main" };
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = {
+		find: () => undefined,
+		streamSimple: () => ({
+			result: async () => ({
+				stopReason: "stop",
+				content: [{ type: "text", text: "criterion 1: UNMET - no recorded evidence\nVERDICT: REJECT" }],
+				usage,
+			}),
+		}),
+	};
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("complete_plan_goal", { summary: "Done" })) as {
+		isError?: boolean;
+		content: Array<{ type: string; text: string }>;
+		usage?: { input: number; output: number };
+	};
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /rejected by independent audit.*criterion 1: UNMET - no recorded evidence.*pause_plan_goal/);
+	assert.deepEqual(result.usage, usage);
+	assert.equal(readGoalState(h.cwd).status, "active");
+});

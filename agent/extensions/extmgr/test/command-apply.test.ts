@@ -38,6 +38,7 @@ describe("extmgr /extmgr apply", () => {
 		const cmd = commands.find((c) => c.name === "extmgr")!;
 
 		let component: { handleInput(data: string): void; render(width: number): string[] } | undefined;
+		let closed!: Promise<unknown>;
 		const reload = vi.fn();
 		const keybindings = {
 			matches: (data: string, binding: string) => data === "ctrl+x" && binding === "tui.input.tab",
@@ -53,9 +54,12 @@ describe("extmgr /extmgr apply", () => {
 						keybindings: typeof keybindings,
 						done: (result: unknown) => void,
 					) => { handleInput(data: string): void; render(width: number): string[] },
-				) => new Promise<unknown>((resolve) => {
-					component = factory({ requestRender: () => {}, terminal: { rows: 24 } }, {}, keybindings, resolve);
-				})),
+				) => {
+					closed = new Promise<unknown>((resolve) => {
+						component = factory({ requestRender: () => {}, terminal: { rows: 24 } }, {}, keybindings, resolve);
+					});
+					return closed;
+				}),
 			},
 			reload,
 			isProjectTrusted: () => true,
@@ -75,7 +79,9 @@ describe("extmgr /extmgr apply", () => {
 		expect(text).toContain("+1 standalone hidden");
 
 		// Apply closes the picker and requests exactly one reload.
+		expect(reload).not.toHaveBeenCalled();
 		component!.handleInput("a");
+		await closed;
 		expect(reload).toHaveBeenCalledTimes(1);
 	});
 });

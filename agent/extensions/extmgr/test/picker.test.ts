@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { ExtensionPicker, orderEntries, PickerModel } from "../picker.ts";
+import { orderEntries, renderPickerView, type PickerView } from "../picker.ts";
 import type { LoadedEntry } from "../index.ts";
 
-/** Picker seam: component render(width) + pure model behind it
- * (spec scenario: Picker shows merged view). */
+/** Render seam: `renderPickerView(view, width)` — the projection is pure
+ * data, so every visual fact is pinned through the view alone (spec
+ * scenario: Picker shows merged view; ADR-0003 footer visual language). */
 
 const entries: LoadedEntry[] = [
 	{
@@ -27,11 +28,22 @@ const entries: LoadedEntry[] = [
 	},
 ];
 
-describe("ExtensionPicker", () => {
+function view(rows: LoadedEntry[], overrides: Partial<PickerView> = {}): PickerView {
+	return {
+		rows: orderEntries(rows),
+		cursorIndex: 0,
+		tier: "global",
+		pendingCount: 0,
+		hiddenStandaloneCount: 0,
+		filterText: "",
+		maxVisible: 10,
+		...overrides,
+	};
+}
+
+describe("renderPickerView", () => {
 	it("renders the pi-footer style merged state view", () => {
-		const picker = new ExtensionPicker({ entries });
-		picker.setHiddenStandaloneCount(1);
-		const text = picker.render(100).join("\n");
+		const text = renderPickerView(view(entries, { hiddenStandaloneCount: 1 }), 100).join("\n");
 
 		// Framed layout: border box, title row, dim hint, count line.
 		expect(text).toContain("╭──");
@@ -39,7 +51,7 @@ describe("ExtensionPicker", () => {
 		expect(text).toContain("j/k move");
 		expect(text).toContain("2 file(s) in 1 package(s) · +1 standalone hidden");
 
-		// Both fed entries render with tier states and loaded detail.
+		// Both fed rows render with tier states and loaded detail.
 		expect(text).toContain("tui.ts");
 		expect(text).toContain("pi-open-tui/tui.ts");
 		expect(text).toContain("helper.ts");
@@ -80,9 +92,7 @@ describe("ExtensionPicker", () => {
 				loaded: false,
 			},
 		];
-		const picker = new ExtensionPicker({ entries: idxEntries });
-		picker.setSelectedIndex(0);
-		const lines = picker.render(100);
+		const lines = renderPickerView(view(idxEntries), 100);
 
 		// The conventional entry filename never appears.
 		expect(lines.join("\n")).not.toContain("index.ts");
@@ -95,22 +105,31 @@ describe("ExtensionPicker", () => {
 		expect(extRow).toContain("extmgr");
 		expect(lines.join("\n")).not.toContain("extmgr/index.ts");
 	});
+
 	it("fits compact rows to narrow terminals and scrolls long lists", () => {
-		const picker = new ExtensionPicker({ entries: Array.from({ length: 12 }, (_, i) => ({
+		const many: LoadedEntry[] = Array.from({ length: 12 }, (_, i) => ({
 			...entries[1]!,
 			id: `/work/proj/.pi/extensions/extension-${String(i).padStart(2, "0")}.ts`,
 			name: `extension-${String(i).padStart(2, "0")}-with-a-long-name.ts`,
-		})) });
-		picker.setMaxVisible(4);
-		picker.setSelectedIndex(8);
-
-		const lines = picker.render(48);
+		}));
+		const lines = renderPickerView(view(many, { maxVisible: 4, cursorIndex: 8 }), 48);
 		const listRows = lines.filter((line) => line.includes("on") || line.includes("extension-"));
 		expect(listRows.every((line) => visibleWidth(line) <= 48)).toBe(true);
 		expect(lines.join("\n")).toContain("Showing 7-10 of 12");
 		expect(lines.some((line) => line.includes("›") && line.includes("extension-08"))).toBe(true);
 		expect(lines.some((line) => line.includes("extension-00"))).toBe(false);
-		expect(picker.render(18).every((line) => visibleWidth(line) <= 18)).toBe(true);
+		expect(renderPickerView(view(many, { maxVisible: 4, cursorIndex: 8 }), 18).every((line) => visibleWidth(line) <= 18)).toBe(true);
+	});
+
+	it("shows pending, filter, and empty-list facts in the status area", () => {
+		const pending = renderPickerView(view(entries, { pendingCount: 2 }), 100).join("\n");
+		expect(pending).toContain("2 pending (a apply)");
+
+		const filtered = renderPickerView(view([entries[0]!], { filterText: "tui" }), 100).join("\n");
+		expect(filtered).toContain("filter: tui");
+
+		const empty = renderPickerView(view([], { filterText: "zzz" }), 100).join("\n");
+		expect(empty).toContain("(no matching extensions)");
 	});
 
 	it("orders duplicate package paths consistently", () => {
@@ -119,140 +138,5 @@ describe("ExtensionPicker", () => {
 			duplicate.id,
 			entries[0]!.id,
 		]);
-	});
-
-
-	describe("PickerModel filter", () => {
-		const filterEntries: LoadedEntry[] = [
-			{
-				id: "/a/extensions/pi-hashline-edit-pro.ts",
-				name: "pi-hashline-edit-pro.ts",
-				kind: "standalone",
-				tier: "global",
-				states: { global: "on", project: "unmanaged", effective: "on" },
-				loaded: true,
-			},
-			{
-				id: "/b/extensions/other.ts",
-				name: "other.ts",
-				kind: "package",
-				packageSource: "npm:pi-open-tui",
-				relPath: "extensions/other.ts",
-				tier: "global",
-				states: { global: "on", project: "unmanaged", effective: "on" },
-				loaded: false,
-			},
-		];
-
-		it("filter narrows and restores", () => {
-			const model = new PickerModel({ entries: filterEntries });
-			expect(model.visible()).toHaveLength(2);
-
-			// Substring over names and package sources.
-			model.setFilter("hashline");
-			expect(model.visible().map((e) => e.name)).toEqual(["pi-hashline-edit-pro.ts"]);
-			model.setFilter("open-tui");
-			expect(model.visible().map((e) => e.name)).toEqual(["other.ts"]);
-
-			// Clearing the filter restores the full list.
-			model.setFilter("");
-			expect(model.visible()).toHaveLength(2);
-		});
-
-		it("preserves the selected extension when entries refresh", () => {
-			const model = new PickerModel({ entries: filterEntries });
-			const selectedId = filterEntries[0]!.id;
-			model.selectIndex(model.visible().findIndex((entry) => entry.id === selectedId));
-
-			model.setEntries(filterEntries.map((entry) => ({
-				...entry,
-				states: { ...entry.states, effective: "off" },
-			})));
-
-			expect(model.selected()?.id).toBe(selectedId);
-		});
-
-		it("tab cycles tier", () => {
-			const model = new PickerModel({ entries: filterEntries });
-			expect(model.getTier()).toBe("global");
-
-			model.switchTier(); // first Tab: project, indicator follows
-			expect(model.getTier()).toBe("project");
-
-			model.switchTier(); // second Tab: back to global
-			expect(model.getTier()).toBe("global");
-		});
-
-		describe("PickerModel enter", () => {
-			it("enter toggles only at active tier", async () => {
-				const applied: Array<{ id: string; action: string; tier: string }> = [];
-				const model = new PickerModel({
-					entries,
-					applyToggle: async (entry, action, tier) => {
-						applied.push({ id: entry.id, action, tier });
-						return { ok: true } as const;
-					},
-				});
-
-				// Cursor on tui.ts: global off → enable at the active global tier.
-				const tuiIndex = model.visible().findIndex((e) => e.name === "tui.ts");
-				model.selectIndex(tuiIndex);
-				let res = await model.enter();
-				expect(res.ok).toBe(true);
-				expect(applied).toEqual([{ id: entries[0]!.id, action: "enable", tier: "global" }]);
-
-				// helper.ts is unmanaged at the global tier → unavailable, no write.
-				const helperIndex = model.visible().findIndex((e) => e.name === "helper.ts");
-				model.selectIndex(helperIndex);
-				res = await model.enter();
-				expect(res.ok).toBe(false);
-				expect(res.reason).toBe("unavailable-native-limitation");
-				expect(applied).toHaveLength(1);
-
-				// Tab to project tier: helper.ts project on → disable at project only.
-				model.switchTier();
-				res = await model.enter();
-				expect(res.ok).toBe(true);
-				expect(applied[1]).toEqual({ id: entries[1]!.id, action: "disable", tier: "project" });
-
-				// tui.ts is unmanaged at the project tier → refuses there too.
-				model.selectIndex(model.visible().findIndex((e) => e.name === "tui.ts"));
-				res = await model.enter();
-				expect(res.ok).toBe(false);
-				expect(applied).toHaveLength(2);
-			});
-
-		it("pending accumulates without reload", async () => {
-			const applied: Array<{ id: string; action: string; tier: string }> = [];
-			const onReload = vi.fn();
-			const model = new PickerModel({
-				entries,
-				onReload,
-				applyToggle: async (entry, action, tier) => {
-					applied.push({ id: entry.id, action, tier });
-					return { ok: true } as const;
-				},
-			});
-
-			// Two toggles at different tiers accumulate as pending.
-			model.selectIndex(model.visible().findIndex((e) => e.name === "tui.ts"));
-			expect((await model.enter()).ok).toBe(true);
-			model.switchTier();
-			model.selectIndex(model.visible().findIndex((e) => e.name === "helper.ts"));
-			expect((await model.enter()).ok).toBe(true);
-
-			expect(applied).toHaveLength(2);
-			expect(model.getPending()).toEqual([
-				{ id: entries[0]!.id, action: "enable", tier: "global" },
-				{ id: entries[1]!.id, action: "disable", tier: "project" },
-			]);
-
-			// Counter is shown; entering never triggers a reload (Apply does).
-			const picker = new ExtensionPicker({ entries });
-			picker.setPendingCount(model.getPending().length);
-			expect(picker.render(100).join("\n")).toContain("2 pending");
-			expect(onReload).not.toHaveBeenCalled();
-		});
-		});
 	});
 });

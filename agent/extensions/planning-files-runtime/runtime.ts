@@ -12,8 +12,8 @@ import type {
 	PauseGoalParams,
 	SaveGoalDraftParams,
 } from "./types.ts";
-import { getPaths, normalizeString, normalizeStringArray, readText, sumUsageTokens, tailLines } from "./utils.ts";
-import { parseAuditModelRef, resolveAuditModel, runCompletionAudit, type AuditModelResult } from "./audit.ts";
+import { normalizeString, normalizeStringArray, sumUsageTokens } from "./utils.ts";
+import { parseAuditModelRef, resolveAuditModel, type AuditModelResult } from "./audit.ts";
 import { archivePlanningWorkspace, getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
@@ -24,8 +24,10 @@ import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, typ
 
 /**
  * Pi is an adapter around the Goal lifecycle. goal-lifecycle.ts owns
- * state transitions, effect execution, rollback, and continuation policy;
- * this module only translates Pi events and reads the operation result projection.
+ * state transitions, effect execution, rollback, the completion audit's
+ * adjudication, and continuation policy; this module only translates Pi
+ * events, supplies the audit's model transport, and reads the operation
+ * result projection.
  */
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	let state = getPlanningSnapshot(process.cwd(), false);
@@ -190,62 +192,27 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params: CompleteGoalParams, signal, _onUpdate, ctx) {
 			const lifecycle = lifecycleFor(ctx.cwd);
-			const current = lifecycle.getState();
-			let audit: Awaited<ReturnType<typeof runCompletionAudit>> | null = null;
-			if (current.status === "active" && current.goal) {
-				audit = await runCompletionAudit(
-					{
-						goal: current.goal,
-						summary: normalizeString(params.summary),
-						evidence: normalizeStringArray(params.evidence),
-						progressTail: tailLines(readText(getPaths(ctx.cwd).files["progress.md"]), 80),
-					},
-					(system, user) => callAuditor(ctx, system, user, signal),
-				);
-				// A user cancellation during the audit must not accept the goal:
-				// the aborted settlement pauses the still-active run instead.
-				if (signal?.aborted) {
-					return {
-						content: [{ type: "text", text: "Goal completion cancelled: the audit was aborted before a verdict. The goal stays active." }],
-						isError: true,
-						details: undefined,
-						...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}),
-					};
-				}
-				if (audit.kind === "rejected") {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Goal completion rejected by independent audit. Unmet or unevidenced criteria: ${audit.reasons} Close the gaps, record concrete evidence in progress.md, then call complete_plan_goal again; if the criteria are met but cannot be evidenced, call pause_plan_goal and explain.`,
-							},
-						],
-						isError: true,
-						details: undefined,
-						...(audit.usage ? { usage: audit.usage as Usage } : {}),
-					};
-				}
-			}
-			const result = lifecycle.handle({ type: "complete", params }, contextFor(ctx));
+			// Completion intent + model transport only: the audit, its adjudication,
+			// and the completion transition live behind the lifecycle interface.
+			const result = await lifecycle.complete(
+				params,
+				contextFor(ctx),
+				{ modelCall: (system, user, auditSignal) => callAuditor(ctx, system, user, auditSignal), ...(signal ? { signal } : {}) },
+			);
 			const error = toolError(result);
-			if (error) return { ...error, ...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}) };
-			const auditNote = audit
-				? audit.kind === "approved"
-					? " (independent audit: approved)"
-					: ` (independent audit skipped: ${audit.reason})`
-				: "";
+			if (error) return { ...error, ...(result.audit?.usage ? { usage: result.audit.usage as Usage } : {}) };
 			return {
-				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}${auditNote}` }],
+				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}${result.audit?.note ?? ""}` }],
 				details: { status: lifecycle.getState().status, summary: normalizeString(params.summary), evidence: normalizeStringArray(params.evidence) },
-				// The audit module types usage as a structural subset; the production
-				// adapter supplies the provider's full Usage object, so re-widen it here
-				// for session accounting.
-				...(audit && "usage" in audit && audit.usage ? { usage: audit.usage as Usage } : {}),
+				// The lifecycle types audit usage as a structural subset; the
+				// production transport supplies the provider's full Usage object, so
+				// re-widen it here for session accounting.
+				...(result.audit?.usage ? { usage: result.audit.usage as Usage } : {}),
 			};
 		},
 	});
 
-	// ---- completion audit adapter ----
+	// ---- completion audit transport ----
 
 	/** Read `planning.auditModel` on every completion via `pi.getSettings()`
 	 * (merged global+project view; custom keys preserved as-is). The snapshot

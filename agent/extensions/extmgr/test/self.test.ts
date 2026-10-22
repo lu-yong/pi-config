@@ -90,12 +90,12 @@ describe("self-disable confirmation", () => {
 			reload: vi.fn(),
 			isProjectTrusted: () => true,
 		};
-		const session = await openPickerSession(env, [], ctx as never);
-		void session.open();
+		const session = await openPickerSession({ env, liveSources: () => [], host: ctx as never });
+		const comp = session.component();
 
 		// Packages only: the standalone guard.ts never reaches the list.
-		expect(session.model.visible()).toEqual([]);
-		const text = session.picker.render(80).join("\n");
+		const text = comp.render(80).join("\n");
+		expect(text).toContain("(no matching extensions)");
 		expect(text).not.toContain("guard.ts");
 		expect(text).toContain("+1 standalone hidden");
 	});

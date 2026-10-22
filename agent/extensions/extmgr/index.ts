@@ -4,63 +4,31 @@ import { Type } from "typebox";
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExtensionEntry } from "./resolve.ts";
 import { resolveNative } from "./native.ts";
-import { planToggle } from "./toggle.ts";
-import { mutateSettings } from "./settings-io.ts";
-import { PickerModel, ExtensionPicker, type PickerTheme } from "./picker.ts";
-import { fileURLToPath } from "node:url";
+import { persistToggle } from "./persist.ts";
+import { loadSnapshot, type SourceInfoLike, type LoadedEntry } from "./snapshot.ts";
+import { openPickerSession, type PickerHost } from "./picker-session.ts";
 
-export interface ToolMutationResult {
-	status: "ok" | "unavailable" | "ambiguous" | "error";
-	detail?: string;
-	candidates?: string[];
-	entry?: ExtensionEntry[];
-}
+export { annotateLoaded, loadSnapshot } from "./snapshot.ts";
+export type { SourceInfoLike, LoadedEntry, Snapshot } from "./snapshot.ts";
+export { persistToggle } from "./persist.ts";
+export type { ExtmgrEnv } from "./env.ts";
+export { openPickerSession, PickerSession } from "./picker-session.ts";
+export type { PickerHost, PickerComponent, PickerSessionDeps } from "./picker-session.ts";
+export type { PickerTheme, PickerView } from "./picker.ts";
 
-/** Canonical path of this extension's own entry file (self-detection). */
-const selfPath = fileURLToPath(import.meta.url);
+import type { ExtmgrEnv } from "./env.ts";
 
 /**
  * extmgr — in-session extension management for Pi.
  *
- * Interface layer: registers the `manage_extensions` tool (and later the
- * `/extmgr` command), assembles resolution snapshots from the two settings
- * tiers, and merges live annotation.
+ * Interface layer: registers the `manage_extensions` tool and the
+ * `/extmgr` command. Read paths compose native resolution + live
+ * annotation (snapshot.ts); writes go through persist.ts; the picker
+ * interaction is owned by picker-session.ts.
  */
-
-export interface ExtmgrEnv {
-	agentDir: string;
-	cwd: string;
-}
 
 function defaultEnv(): ExtmgrEnv {
 	return { agentDir: join(homedir(), ".pi", "agent"), cwd: process.cwd() };
-}
-
-// ---------------------------------------------------------------------------
-// Read path: native resolution (native.ts). Snapshot assembly and the
-// hand-written enumeration that used to live here were replaced by Pi's own
-// resolver — the host's semantics are the oracle, not something to replicate.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Live annotation (loaded markers from runtime SourceInfo)
-// ---------------------------------------------------------------------------
-
-export interface SourceInfoLike {
-	path: string;
-	source: string;
-	scope: string;
-	origin: string;
-}
-
-export type LoadedEntry = ExtensionEntry & { loaded: boolean };
-
-/** Merge live command/tool source metadata into enumerated entries:
- * an entry is loaded when some live SourceInfo was registered from its
- * canonical path (runtime ground truth, per design). Pure — inputs are not
- * mutated. */
-export function annotateLoaded(entries: ExtensionEntry[], sources: SourceInfoLike[]): LoadedEntry[] {
-	const livePaths = new Set(sources.map((s) => s.path));
-	return entries.map((e) => ({ ...e, loaded: livePaths.has(e.id) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -92,16 +60,13 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<{ rows: LoadedEntry[] | ExtensionEntry[]; result?: ToolMutationResult }>> {
 			if (params.action === "list") {
-				const entries = await resolveNative(env);
-				const annotated = annotateLoaded(entries, liveSources ? liveSources() : []);
 				// Scope: extmgr manages package extensions only. Standalone
 				// extensions are counted in the note, never listed or toggled.
-				const rows = annotated.filter((e) => e.kind === "package");
-				const standalone = annotated.length - rows.length;
-				const note = standalone > 0 ? `\n\n(${standalone} standalone extension(s) present — not managed by extmgr)` : "";
+				const snap = await loadSnapshot(env, liveSources);
+				const note = snap.standaloneCount > 0 ? `\n\n(${snap.standaloneCount} standalone extension(s) present — not managed by extmgr)` : "";
 				return {
-					content: [{ type: "text", text: renderStateTable(rows) + note }],
-					details: { rows },
+					content: [{ type: "text", text: renderStateTable(snap.packages) + note }],
+					details: { rows: snap.packages },
 				};
 		}
 		// Mutation actions: resolve the target to a package, plan, persist, and
@@ -171,254 +136,11 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 };
 }
 
-function safeSources(fn: () => SourceInfoLike[]): SourceInfoLike[] {
-	try {
-		return fn();
-	} catch {
-		return [];
-	}
-}
-
-/** Shared toggle persistence for the tool and the picker session.
- * Combines independent blockers (native limitation + missing trust). */
-export async function persistToggle(
-	env: ExtmgrEnv,
-	entries: ExtensionEntry[],
-	targetEntry: ExtensionEntry,
-	action: "enable" | "disable",
-	scope: "global" | "project",
-	trusted: boolean,
-	opts?: { selfConfirmed?: boolean },
-): Promise<{ ok: true } | { ok: false; detail: string; reason: "unavailable-native-limitation" | "self-disable-unconfirmed" }> {
-	const isPackage = targetEntry.kind === "package" && targetEntry.packageSource;
-	const pkgFiles = isPackage
-		? entries
-				.filter((e) => e.packageSource === targetEntry.packageSource)
-				.map((e) => e.relPath!)
-				.filter((p): p is string => Boolean(p))
-		: [];
-	const plan = planToggle({
-		entry: targetEntry,
-		action,
-		scope,
-		trusted: true,
-		isSelf: targetEntry.id === (env.selfPath ?? selfPath),
-		selfConfirmed: opts?.selfConfirmed,
-		level: isPackage ? "package" : "file",
-		packageFiles: pkgFiles,
-		env,
-	});
-	const trustBlocked = scope === "project" && !trusted;
-	if (!plan.ok || trustBlocked) {
-		const reasons: string[] = [];
-		if (!plan.ok) reasons.push(`${plan.reason}: ${plan.detail}`);
-		if (trustBlocked) {
-			reasons.push(
-				"untrusted-project: This project is not trusted; grant project trust before writing project-tier settings.",
-			);
-		}
-		return {
-			ok: false,
-			detail: reasons.join(" | "),
-			reason: !plan.ok && plan.reason === "self-disable-unconfirmed" ? "self-disable-unconfirmed" : "unavailable-native-limitation",
-		};
-	}
-	await mutateSettings(env, scope, plan.mutation);
-	return { ok: true };
-}
-
-interface PickerCtxLike {
-	ui: {
-		notify(message: string, type?: "info" | "warning" | "error"): void;
-		custom?(factory: (tui: { requestRender(): void; terminal?: { rows: number } }, theme: unknown, keybindings: { matches(data: string, keybinding: string): boolean }, done: (result: unknown) => void) => unknown, options?: { overlay?: boolean }): Promise<unknown>;
-	};
-	reload(): Promise<void> | void;
-	isProjectTrusted?(): boolean;
-}
-
-export interface ExtmgrSession {
-	model: PickerModel;
-	picker: ExtensionPicker;
-	apply(): void;
-	close(): void;
-	/** Keymap entry point (component handleInput seam). */
-	keys(data: string, requestRender?: () => void, keybindings?: { matches(data: string, keybinding: string): boolean }): void;
-	/** Mount as the focused interactive component; resolves on close. */
-	open(): Promise<unknown>;
-}
-
-
-/** Build the /extmgr picker session: model wired to real persistence,
- * interactive mount, keymap, and a single-reload Apply. */
-export async function openPickerSession(
-	env: ExtmgrEnv,
-	liveSources: () => SourceInfoLike[],
-	ctx: PickerCtxLike,
-): Promise<ExtmgrSession> {
-	let standaloneCount = 0;
-	const readEntries = async (): Promise<LoadedEntry[]> => {
-		const all = annotateLoaded(await resolveNative(env), safeSources(liveSources));
-		// Packages only: standalone extensions are out of extmgr's scope and
-		// surface just as the picker's `+N standalone hidden` count.
-		standaloneCount = all.filter((e) => e.kind === "standalone").length;
-		return all.filter((e) => e.kind === "package");
-	};
-	const model = new PickerModel({
-		entries: await readEntries(),
-		onReload: () => {
-			void ctx.reload();
-		},
-		applyToggle: async (entry, action, tier, opts) => {
-			const out = await persistToggle(
-				env,
-				await resolveNative(env),
-				entry,
-				action,
-				tier,
-				ctx.isProjectTrusted?.() ?? true,
-				opts,
-			);
-			if (!out.ok) {
-				return { ok: false, reason: out.reason, detail: out.detail };
-			}
-			model.setEntries(await readEntries());
-			return { ok: true as const };
-		},
-	});
-	const picker = new ExtensionPicker({ entries: model.visible() });
-	let filterMode = false;
-
-	const sync = () => {
-		picker.setEntries(model.visible());
-		picker.setTier(model.getTier());
-		picker.setPendingCount(model.getPending().length);
-		picker.setSelectedIndex(cursor());
-		picker.setHiddenStandaloneCount(standaloneCount);
-		picker.setFilter(filterMode ? model.getFilter() : "");
-	};
-
-	/** Current cursor index within the canonical ordered visible rows. */
-	const cursor = () => {
-		const current = model.selected();
-		const idx = model.visible().findIndex((e) => e === current);
-		return idx === -1 ? 0 : idx;
-	};
-
-	let done: ((result: unknown) => void) | undefined;
-	let closed = false;
-	const close = () => {
-		if (closed) return;
-		closed = true;
-		done?.(undefined);
-	};
-
-	const apply = () => {
-		model.applyPending();
-		sync();
-	};
-
-	/** Keymap shared by the custom component's handleInput and tests. */
-	const keys = (
-		data: string,
-		requestRender?: () => void,
-		keybindings?: { matches(data: string, keybinding: string): boolean },
-	) => {
-		const input = keybindings?.matches(data, "tui.select.up")
-			? "\u001b[A"
-			: keybindings?.matches(data, "tui.select.down")
-				? "\u001b[B"
-				: keybindings?.matches(data, "tui.select.confirm")
-					? "\r"
-					: keybindings?.matches(data, "tui.input.tab")
-						? "\t"
-						: keybindings?.matches(data, "tui.select.cancel")
-							? "\u001b"
-							: data;
-		if (filterMode) {
-			if (input === "\u001b" || input === "\r") filterMode = false;
-			else if (["\u007f", "\b", "\u001b[3~"].includes(data)) model.setFilter(model.getFilter().slice(0, -1));
-			else if (data >= " ") model.setFilter(model.getFilter() + data);
-			model.selectIndex(0);
-			sync();
-			requestRender?.();
-			return;
-		}
-		const visible = model.visible();
-		const currentIdx = visible.indexOf(model.selected()!);
-		switch (input) {
-			case "\u001b[A":
-			case "k":
-				model.selectIndex(Math.max(0, currentIdx - 1));
-				break;
-			case "\u001b[B":
-			case "j":
-				model.selectIndex(Math.min(visible.length - 1, currentIdx + 1));
-				break;
-			case "\r":
-				void model.enter().then(async (res) => {
-					if (res.ok) {
-						sync();
-						requestRender?.();
-						return;
-					}
-					// (No self-disable confirm branch: sessions list packages
-					// only, so extmgr itself — a standalone extension — can
-					// never be selected here.)
-					ctx.ui.notify(res.detail ?? res.reason ?? "unavailable", "warning");
-				}).catch((error: unknown) => {
-					const detail = error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(`Unable to update extension settings: ${detail}`, "error");
-					requestRender?.();
-				});
-				break;
-			case "\t":
-				model.switchTier();
-				break;
-			case "/":
-				filterMode = true;
-				break;
-			case "a":
-				apply();
-				close();
-				return;
-			case "q":
-			case "\u001b":
-				close();
-				return;
-			default:
-				return;
-		}
-		sync();
-		requestRender?.();
-	};
-
-	/** Mount the picker as the focused interactive component via
-	 * ctx.ui.custom(); resolves when the user closes it. Falls back to a
-	 * notify hint when custom() is unavailable. */
-	const open = async (): Promise<unknown> => {
-		if (!ctx.ui.custom) {
-			ctx.ui.notify("/extmgr needs an interactive terminal with component support.", "warning");
-			return undefined;
-		}
-		return ctx.ui.custom((tui, theme, _keybindings, doneCb) => {
-			if (theme && typeof (theme as PickerTheme).fg === "function") picker.setTheme(theme as PickerTheme);
-			done = doneCb;
-			return {
-				render: (width: number) => {
-					picker.setMaxVisible(Math.max(1, (tui.terminal?.rows ?? 24) - 16));
-					return picker.render(width);
-				},
-				invalidate: () => sync(),
-				handleInput: (data: string) => keys(data, () => tui.requestRender(), _keybindings),
-				dispose: () => {
-					closed = true;
-				},
-			};
-		}, { overlay: true });
-	};
-
-	sync();
-	return { model, picker, apply, close, keys, open };
+export interface ToolMutationResult {
+	status: "ok" | "unavailable" | "ambiguous" | "error";
+	detail?: string;
+	candidates?: string[];
+	entry?: ExtensionEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +170,7 @@ export default function extmgrExtension(pi: ExtensionAPI, env?: ExtmgrEnv): void
 				);
 				return;
 			}
-			const session = await openPickerSession(e, liveSources, ctx as unknown as PickerCtxLike);
+			const session = await openPickerSession({ env: e, liveSources, host: ctx as unknown as PickerHost });
 			void session.open();
 		},
 	});

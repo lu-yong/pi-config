@@ -14,7 +14,8 @@ import {
 } from "./types.ts";
 import { defaultGoalDraft, defaultGoalState, readGoalState, readGoalStateForUpdate, writeGoalState } from "./state.ts";
 import { goalContractFromDraft, mergeDraft } from "./draft.ts";
-import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText } from "./utils.ts";
+import { runCompletionAudit, type AuditModelResult, type AuditUsage } from "./audit.ts";
+import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, tailLines } from "./utils.ts";
 import {
 	appendProgressTimeline,
 	PROGRESS_HEADINGS,
@@ -31,8 +32,10 @@ import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
 /**
  * Goal lifecycle — a single deep module that owns the whole goal lifecycle
  * policy: state transitions (drafting → ready → active/paused/complete),
- * effect execution and rollback, and the Continuation decision for the
- * active implementation run.
+ * effect execution and rollback, the independent completion audit and its
+ * adjudication (rejected blocks, unavailable fails open, cancellation keeps
+ * the run active), and the Continuation decision for the active
+ * implementation run.
  *
  * Pi hooks only express GoalLifecycleEvent values and read the
  * GoalLifecycleResult projection (rejection/failure/continuation). They never
@@ -57,12 +60,22 @@ export type OutgoingGoalMessageOptions = {
 	deliverAs?: "followUp";
 };
 
+/**
+ * Transport for the completion audit: one auditor model call. Production
+ * adapts `ctx.modelRegistry.streamSimple` (model selection included); tests
+ * adapt canned responses. A transport that cannot reach a model reports
+ * `{ kind: "failed" }` — completion then fails open.
+ */
+export type CompletionAuditCall = (system: string, user: string, signal?: AbortSignal) => Promise<AuditModelResult>;
+
 /** Run result projection: what the caller needs to know after an operation. */
 export type GoalLifecycleResult = {
 	rejection?: { operation: string; reason: string };
 	failure?: { operation: string; reason: string };
 	/** Settled-run Continuation for Pi's agent_before_settle boundary, when the run should continue. */
 	continuation?: { message: OutgoingGoalMessage };
+	/** Completion-audit projection: note for the host's success message, plus the auditor's usage for session accounting. Present whenever a completion audit was attempted. */
+	audit?: { note: string; usage?: AuditUsage };
 };
 
 /** Pi-side capabilities injected per operation; the module stays UI-agnostic. */
@@ -85,7 +98,6 @@ export type GoalLifecycleEvent =
 	| { type: "commit"; params: CommitGoalParams }
 	| { type: "implementation-request"; supplementalInput?: string }
 	| { type: "pause"; params: PauseGoalParams }
-	| { type: "complete"; params: CompleteGoalParams }
 	| { type: "agent-start" }
 	| { type: "turn-start" }
 	| { type: "progress-tool-called" }
@@ -95,6 +107,12 @@ export type GoalLifecycleEvent =
 
 export interface GoalLifecycle {
 	handle(event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult;
+	/** Complete the active run. The audit is part of completion, not a caller-side precondition. */
+	complete(
+		params: CompleteGoalParams,
+		context: GoalLifecycleContext,
+		audit: { modelCall: CompletionAuditCall; signal?: AbortSignal },
+	): Promise<GoalLifecycleResult>;
 	getState(): GoalOverlayState;
 	/** Operation that stopped the current turn (commit/pause/complete), if any. */
 	turnStoppedBy(): string | null;
@@ -119,6 +137,19 @@ type GoalLifecycleEffect =
 
 function cloneState(state: GoalOverlayState): GoalOverlayState {
 	return JSON.parse(JSON.stringify(state)) as GoalOverlayState;
+}
+
+/** Internal events: the public `complete` intent reaches the same transition machinery after its audit. */
+type InternalGoalLifecycleEvent = GoalLifecycleEvent | { type: "complete"; params: CompleteGoalParams };
+
+/** Field-wise contract identity: an audit verdict only applies to the goal it judged. */
+function sameGoalContract(a: GoalContract, b: GoalContract): boolean {
+	return a.objective === b.objective
+		&& a.blockerRule === b.blockerRule
+		&& a.tokenBudget === b.tokenBudget
+		&& JSON.stringify(a.successCriteria) === JSON.stringify(b.successCriteria)
+		&& JSON.stringify(a.constraints) === JSON.stringify(b.constraints)
+		&& JSON.stringify(a.outOfScope) === JSON.stringify(b.outOfScope);
 }
 
 function reject(operation: string, reason: string): GoalLifecycleEffect[] {
@@ -262,7 +293,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	};
 	// ---- state machine: GoalLifecycleEvent -> internal effects ----
 
-	const transition = (event: GoalLifecycleEvent): GoalLifecycleEffect[] => {
+	const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
 		rollbackState = null;
 		switch (event.type) {
 			case "sync":
@@ -671,7 +702,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	 * effects, and turn transition-time failures (e.g. goal-state writes)
 	 * into a result instead of an uncaught throw.
 	 */
-	const runInternal = (event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => {
+	const runInternal = (event: InternalGoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => {
 		// The turn boundary is independent of disk health: a new turn must be able
 		// to repair a bad state file instead of inheriting the previous stop gate.
 		if (event.type === "turn-start") turnStopped = null;
@@ -698,8 +729,86 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 	const handle = (event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => runInternal(event, context);
 
+	/**
+	 * Completion is one operation here: read the recorded evidence, audit the
+	 * claim independently, adjudicate the verdict, then run the completion
+	 * transition. The caller supplies only the model transport (and the
+	 * tool-call abort signal); it cannot complete without the audit and never
+	 * needs to know the ordering.
+	 *
+	 * Policy: a rejected verdict blocks completion; an unavailable auditor
+	 * fails open with a visible note; a user cancellation during the audit
+	 * keeps the run active; and a goal/run that changed while the audit was
+	 * in flight is never completed on the old verdict. Auditor usage rides on
+	 * the result so the host can account for it exactly once.
+	 */
+	const complete = async (
+		params: CompleteGoalParams,
+		context: GoalLifecycleContext,
+		audit: { modelCall: CompletionAuditCall; signal?: AbortSignal },
+	): Promise<GoalLifecycleResult> => {
+		// Import disk state first so the audited identity and the transition see
+		// the same fresh view; a broken state file is reported by the transition.
+		try {
+			syncState();
+		} catch {
+			// runInternal re-runs the guarded sync and reports the failure.
+		}
+		const summary = normalizeString(params.summary);
+		let auditProjection: { note: string; usage?: AuditUsage } | undefined;
+		// An invalid request must not spend audit tokens; nor must a run that
+		// is not active (the transition rejects both with its standard reasons).
+		if (summary && state.status === "active" && state.goal) {
+			const auditedGoal = state.goal;
+			const auditedRunId = state.impl.runId;
+			const outcome = await runCompletionAudit(
+				{
+					goal: auditedGoal,
+					summary,
+					evidence: normalizeStringArray(params.evidence),
+					progressTail: tailLines(readText(getPaths(cwd).files["progress.md"]), 80),
+				},
+				(system, user) => audit.modelCall(system, user, audit.signal),
+			);
+			const usage = "usage" in outcome && outcome.usage ? outcome.usage : undefined;
+			const auditResult = (reason: string): GoalLifecycleResult => ({
+				rejection: { operation: "complete_plan_goal", reason },
+				...(usage ? { audit: { note: "", usage } } : {}),
+			});
+			// A user cancellation during the audit must not accept the goal: the
+			// aborted settlement pauses the still-active run instead.
+			if (audit.signal?.aborted) {
+				return auditResult("Goal completion cancelled: the audit was aborted before a verdict. The goal stays active.");
+			}
+			if (outcome.kind === "rejected") {
+				return auditResult(
+					`Goal completion rejected by independent audit. Unmet or unevidenced criteria: ${outcome.reasons} Close the gaps, record concrete evidence in progress.md, then call complete_plan_goal again; if the criteria are met but cannot be evidenced, call pause_plan_goal and explain.`,
+				);
+			}
+			// A long audit raced the world: re-import disk state and make sure the
+			// verdict still describes the goal this transition would complete.
+			try {
+				syncState();
+			} catch {
+				// runInternal re-runs the guarded sync and reports the failure.
+			}
+			if (state.status === "active" && state.goal && (state.impl.runId !== auditedRunId || !sameGoalContract(state.goal, auditedGoal))) {
+				return auditResult(
+					"Goal completion not applied: the goal or implementation run changed while the audit was in flight. Re-check the current goal and call complete_plan_goal again.",
+			);
+			}
+			auditProjection = {
+				note: outcome.kind === "approved" ? " (independent audit: approved)" : ` (independent audit skipped: ${outcome.reason})`,
+				...(usage ? { usage } : {}),
+			};
+		}
+		const result = runInternal({ type: "complete", params }, context);
+		return auditProjection ? { ...result, audit: auditProjection } : result;
+	};
+
 	return {
 		handle,
+		complete,
 		getState: () => cloneState(state),
 		turnStoppedBy: () => turnStopped,
 	};
