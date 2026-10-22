@@ -28,32 +28,35 @@ const entries: LoadedEntry[] = [
 ];
 
 describe("ExtensionPicker", () => {
-	it("renders merged state view", () => {
+	it("renders the pi-footer style merged state view", () => {
 		const picker = new ExtensionPicker({ entries });
+		picker.setHiddenStandaloneCount(1);
 		const text = picker.render(100).join("\n");
 
-		// Both entries visible with package source / standalone grouping.
-		expect(text).toContain("tui.ts");
-		expect(text).toContain("npm:pi-open-tui");
-		expect(text).toContain("helper.ts");
-		expect(text).toContain("(standalone)");
+		// Framed layout: border box, title row, dim hint, count line.
+		expect(text).toContain("╭──");
+		expect(text).toContain("•Manage Extensions");
+		expect(text).toContain("j/k move");
+		expect(text).toContain("2 file(s) in 1 package(s) · +1 standalone hidden");
 
-		// Columns for global/project/effective states and the loaded marker.
-		const lower = text.toLowerCase();
-		expect(lower).toContain("global");
-		expect(lower).toContain("project");
-		expect(lower).toContain("effective");
-		expect(lower).toContain("loaded");
+		// Both fed entries render with tier states and loaded detail.
+		expect(text).toContain("tui.ts");
+		expect(text).toContain("pi-open-tui/tui.ts");
+		expect(text).toContain("helper.ts");
+		expect(text).toContain("G:off P:-");
+		expect(text).toContain("G:- P:on");
 
 		// The globally disabled package extension shows its states.
 		const tuiRow = text.split("\n").find((l) => l.includes("tui.ts"))!;
 		expect(tuiRow).toContain("off"); // global off / effective off
-		expect(tuiRow).toContain("unmanaged");
+		expect(tuiRow).toContain("not loaded");
 
-		// The project standalone shows its states and loaded marker.
+		// The loaded entry shows the live marker text.
 		const helperRow = text.split("\n").find((l) => l.includes("helper.ts"))!;
-		expect(helperRow).toContain("on");
-		expect(helperRow).toMatch(/loaded|●|yes|\*/i);
+		expect(helperRow).toContain("loaded");
+
+		// Status line carries the write tier.
+		expect(text).toContain("write tier: global");
 	});
 
 	it("renders plugin names instead of index.ts entry files", () => {
@@ -84,13 +87,13 @@ describe("ExtensionPicker", () => {
 		// The conventional entry filename never appears.
 		expect(lines.join("\n")).not.toContain("index.ts");
 
-		// The arrow points straight at the package name, npm: prefix stripped.
-		const pkgRow = lines.find((l) => l.startsWith("▶ "))!;
+		const pkgRow = lines.find((l) => l.includes("› "))!;
 		expect(pkgRow).toContain("pi-open-tui");
 
 		// Standalone dir entries collapse to the plugin dir name.
 		const extRow = lines.find((l) => l.includes("extmgr"))!;
-		expect(extRow.trimStart().startsWith("extmgr")).toBe(true);
+		expect(extRow).toContain("extmgr");
+		expect(lines.join("\n")).not.toContain("extmgr/index.ts");
 	});
 	it("fits compact rows to narrow terminals and scrolls long lists", () => {
 		const picker = new ExtensionPicker({ entries: Array.from({ length: 12 }, (_, i) => ({
@@ -105,7 +108,7 @@ describe("ExtensionPicker", () => {
 		const listRows = lines.filter((line) => line.includes("on") || line.includes("extension-"));
 		expect(listRows.every((line) => visibleWidth(line) <= 48)).toBe(true);
 		expect(lines.join("\n")).toContain("Showing 7-10 of 12");
-		expect(lines.some((line) => line.includes("▶ extension-08"))).toBe(true);
+		expect(lines.some((line) => line.includes("›") && line.includes("extension-08"))).toBe(true);
 		expect(lines.some((line) => line.includes("extension-00"))).toBe(false);
 		expect(picker.render(18).every((line) => visibleWidth(line) <= 18)).toBe(true);
 	});

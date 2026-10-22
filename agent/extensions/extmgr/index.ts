@@ -6,7 +6,7 @@ import type { ExtensionEntry } from "./resolve.ts";
 import { resolveNative } from "./native.ts";
 import { planToggle } from "./toggle.ts";
 import { mutateSettings } from "./settings-io.ts";
-import { PickerModel, ExtensionPicker } from "./picker.ts";
+import { PickerModel, ExtensionPicker, type PickerTheme } from "./picker.ts";
 import { fileURLToPath } from "node:url";
 
 export interface ToolMutationResult {
@@ -71,7 +71,7 @@ function renderStateTable(entries: ExtensionEntry[]): string {
 	const header = "| Name | Source | Tier | Global | Project | Effective |";
 	const sep = "| --- | --- | --- | --- | --- | --- |";
 	const rows = entries.map((e) => {
-		const source = e.kind === "package" ? e.packageSource! : "(standalone)";
+		const source = e.packageSource ?? "-";
 		return `| ${e.name} | ${source} | ${e.tier} | ${e.states.global} | ${e.states.project} | ${e.states.effective} |`;
 	});
 	return [header, sep, ...rows].join("\n");
@@ -82,21 +82,25 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		name: "manage_extensions",
 		label: "Manage extensions",
 		description:
-			"List installed Pi extensions with per-tier and effective states, or enable/disable an extension or package at the global or project tier. Persists native Pi settings; changes apply after a reload.",
+			"List installed Pi extension packages with per-tier and effective states, or enable/disable a package at the global or project tier. Manages npm packages only — standalone extensions are not managed. Persists native Pi settings; changes apply after a reload.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("list"), Type.Literal("enable"), Type.Literal("disable")], {
-				description: "list: show every extension's state; enable/disable: toggle a target.",
+				description: "list: show every package's state; enable/disable: toggle a package.",
 			}),
-			target: Type.Optional(Type.String({ description: "Extension or package name (substring match), required for enable/disable." })),
+			target: Type.Optional(Type.String({ description: "Package name (substring match), required for enable/disable." })),
 			scope: Type.Optional(Type.Union([Type.Literal("global"), Type.Literal("project")], { description: "Write tier. Default: global." })),
-			confirmSelfDisable: Type.Optional(Type.Boolean({ description: "Explicit confirmation to disable the extmgr extension itself (after asking the user)." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<{ rows: LoadedEntry[] | ExtensionEntry[]; result?: ToolMutationResult }>> {
 			if (params.action === "list") {
 				const entries = await resolveNative(env);
-				const rows = annotateLoaded(entries, liveSources ? liveSources() : []);
+				const annotated = annotateLoaded(entries, liveSources ? liveSources() : []);
+				// Scope: extmgr manages package extensions only. Standalone
+				// extensions are counted in the note, never listed or toggled.
+				const rows = annotated.filter((e) => e.kind === "package");
+				const standalone = annotated.length - rows.length;
+				const note = standalone > 0 ? `\n\n(${standalone} standalone extension(s) present — not managed by extmgr)` : "";
 				return {
-					content: [{ type: "text", text: renderStateTable(rows) }],
+					content: [{ type: "text", text: renderStateTable(rows) + note }],
 					details: { rows },
 				};
 		}
@@ -107,39 +111,43 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		const entries = await resolveNative(env);
 		const target = params.target ?? "";
 
-		// Fuzzy match (IF-2): substring against entry names and package sources.
-		const matched = entries.filter((e) => e.name.includes(target) || e.packageSource?.includes(target));
-		const standaloneMatches = matched.filter((e) => e.kind === "standalone");
-		const pkgSources = [...new Set(matched.filter((e) => e.packageSource).map((e) => e.packageSource!))];
-		const candidateLabels = [...standaloneMatches.map((e) => `${e.name} (standalone)`), ...pkgSources];
+		// Fuzzy match (IF-2): substring against package entries only —
+		// standalone extensions are out of extmgr's management scope.
+		const matched = entries.filter(
+			(e) => e.kind === "package" && (e.name.includes(target) || e.packageSource?.includes(target)),
+		);
+		const pkgSources = [...new Set(matched.map((e) => e.packageSource!))];
 		if (matched.length === 0) {
+			const standaloneOnly = entries.some(
+				(e) => e.kind === "standalone" && (e.name.includes(target) || e.packageSource?.includes(target)),
+			);
+			const text = standaloneOnly
+				? `"${target}" matches only standalone extension(s), which extmgr does not manage; toggle those via settings files.`
+				: `No installed package matches "${target}". Call list to see names.`;
 			return {
-				content: [{ type: "text", text: `No installed extension or package matches "${target}". Call list to see names.` }],
+				content: [{ type: "text", text }],
 				details: { result: { status: "error", detail: `target-not-found: ${target}` }, rows: entries },
 			};
 		}
-		if (candidateLabels.length > 1) {
+		if (pkgSources.length > 1) {
 			return {
-				content: [{ type: "text", text: `"${target}" matches multiple targets: ${candidateLabels.join(", ")}. Retry with an unambiguous target.` }],
-				details: { result: { status: "ambiguous", candidates: candidateLabels }, rows: entries },
+				content: [{ type: "text", text: `"${target}" matches multiple packages: ${pkgSources.join(", ")}. Retry with an unambiguous target.` }],
+				details: { result: { status: "ambiguous", candidates: pkgSources }, rows: entries },
 			};
 		}
 
-		const isPackage = pkgSources.length === 1;
-		const source = pkgSources[0] ?? "";
-		const pkgEntries = isPackage ? entries.filter((e) => e.packageSource === source) : [];
+		const source = pkgSources[0]!;
+		const pkgEntries = entries.filter((e) => e.packageSource === source);
 		const pkgFiles = pkgEntries.map((e) => e.relPath!);
-		if (isPackage && params.action === "disable" && pkgFiles.length === 0) {
+		if (params.action === "disable" && pkgFiles.length === 0) {
 			return {
 				content: [{ type: "text", text: `Package ${source} declares no extension files to disable.` }],
 				details: { result: { status: "error", detail: `no extension files: ${source}` }, rows: entries },
 			};
 		}
-		const targetEntry = isPackage ? pkgEntries[0]! : standaloneMatches[0]!;
+		const targetEntry = pkgEntries[0]!;
 
-		const out = await persistToggle(env, entries, targetEntry, params.action, scope, trusted, {
-			selfConfirmed: params.action === "disable" ? Boolean(params.confirmSelfDisable) : undefined,
-		});
+		const out = await persistToggle(env, entries, targetEntry, params.action, scope, trusted);
 		if (!out.ok) {
 			return {
 				content: [{ type: "text", text: out.detail }],
@@ -147,11 +155,11 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 			};
 		}
 		const after = await resolveNative(env);
-		const affected = isPackage ? after.filter((e) => e.packageSource === source) : after.filter((e) => e.id === targetEntry.id);
+		const affected = after.filter((e) => e.packageSource === source);
 		const stillOnGlobally = affected.some((e) => e.states.global === "on");
 		const note = scope === "project" && params.action === "disable" && stillOnGlobally ? " (still enabled globally)" : "";
 		const text = [
-			`${params.action === "disable" ? "Disabled" : "Enabled"} ${isPackage ? source : targetEntry.name} at the ${scope} tier${note}. Run /reload to apply.`,
+			`${params.action === "disable" ? "Disabled" : "Enabled"} ${source} at the ${scope} tier${note}. Run /reload to apply.`,
 			"",
 			renderStateTable(affected),
 		].join("\n");
@@ -222,7 +230,6 @@ export async function persistToggle(
 interface PickerCtxLike {
 	ui: {
 		notify(message: string, type?: "info" | "warning" | "error"): void;
-		confirm?(title: string, message: string): Promise<boolean | undefined>;
 		custom?(factory: (tui: { requestRender(): void; terminal?: { rows: number } }, theme: unknown, keybindings: { matches(data: string, keybinding: string): boolean }, done: (result: unknown) => void) => unknown, options?: { overlay?: boolean }): Promise<unknown>;
 	};
 	reload(): Promise<void> | void;
@@ -248,7 +255,14 @@ export async function openPickerSession(
 	liveSources: () => SourceInfoLike[],
 	ctx: PickerCtxLike,
 ): Promise<ExtmgrSession> {
-	const readEntries = async (): Promise<LoadedEntry[]> => annotateLoaded(await resolveNative(env), safeSources(liveSources));
+	let standaloneCount = 0;
+	const readEntries = async (): Promise<LoadedEntry[]> => {
+		const all = annotateLoaded(await resolveNative(env), safeSources(liveSources));
+		// Packages only: standalone extensions are out of extmgr's scope and
+		// surface just as the picker's `+N standalone hidden` count.
+		standaloneCount = all.filter((e) => e.kind === "standalone").length;
+		return all.filter((e) => e.kind === "package");
+	};
 	const model = new PickerModel({
 		entries: await readEntries(),
 		onReload: () => {
@@ -279,7 +293,8 @@ export async function openPickerSession(
 		picker.setTier(model.getTier());
 		picker.setPendingCount(model.getPending().length);
 		picker.setSelectedIndex(cursor());
-		picker.setFilterHint(filterMode ? model.getFilter() : "");
+		picker.setHiddenStandaloneCount(standaloneCount);
+		picker.setFilter(filterMode ? model.getFilter() : "");
 	};
 
 	/** Current cursor index within the canonical ordered visible rows. */
@@ -346,20 +361,9 @@ export async function openPickerSession(
 						requestRender?.();
 						return;
 					}
-					if (res.reason === "self-disable-unconfirmed" && ctx.ui.confirm) {
-						const yes = await ctx.ui.confirm("Disable extmgr itself?", res.detail ?? "");
-						if (yes) {
-							const again = await model.enter({ selfConfirmed: true });
-							if (!again.ok) {
-								ctx.ui.notify(again.detail ?? again.reason ?? "unavailable", "warning");
-							}
-						} else {
-							ctx.ui.notify("Self-disable cancelled.", "info");
-						}
-						sync();
-						requestRender?.();
-						return;
-					}
+					// (No self-disable confirm branch: sessions list packages
+					// only, so extmgr itself — a standalone extension — can
+					// never be selected here.)
 					ctx.ui.notify(res.detail ?? res.reason ?? "unavailable", "warning");
 				}).catch((error: unknown) => {
 					const detail = error instanceof Error ? error.message : String(error);
@@ -396,7 +400,8 @@ export async function openPickerSession(
 			ctx.ui.notify("/extmgr needs an interactive terminal with component support.", "warning");
 			return undefined;
 		}
-		return ctx.ui.custom((tui, _theme, _keybindings, doneCb) => {
+		return ctx.ui.custom((tui, theme, _keybindings, doneCb) => {
+			if (theme && typeof (theme as PickerTheme).fg === "function") picker.setTheme(theme as PickerTheme);
 			done = doneCb;
 			return {
 				render: (width: number) => {

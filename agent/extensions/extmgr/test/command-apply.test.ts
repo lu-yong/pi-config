@@ -67,7 +67,12 @@ describe("extmgr /extmgr apply", () => {
 		expect(component).toBeDefined();
 
 		component!.handleInput("ctrl+x");
-		expect(component!.render(100).join("\\n")).toContain("write tier: project");
+		const text = component!.render(100).join("\n");
+		expect(text).toContain("write tier: project");
+
+		// Packages-only scope: the standalone qna.ts is not listed, only counted.
+		expect(text).not.toContain("qna.ts");
+		expect(text).toContain("+1 standalone hidden");
 
 		// Apply closes the picker and requests exactly one reload.
 		component!.handleInput("a");

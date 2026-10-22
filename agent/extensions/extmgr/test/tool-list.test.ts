@@ -62,7 +62,8 @@ describe("manage_extensions list", () => {
 
 		// One state row per enumerated extension.
 		const rows = (result.details as { rows: unknown[] }).rows;
-		expect(rows).toHaveLength(2);
+		// Packages only: the standalone qna.ts is not listed as a row.
+		expect(rows).toHaveLength(1);
 
 		const byName = new Map(
 			rows.map((r) => {
@@ -70,13 +71,6 @@ describe("manage_extensions list", () => {
 				return [row.name, r];
 			}),
 		);
-
-		const qna = byName.get("qna.ts") as Record<string, unknown>;
-		expect(qna).toMatchObject({
-			kind: "standalone",
-			tier: "global",
-			states: { global: "on", project: "unmanaged", effective: "on" },
-		});
 
 		const pkgExt = byName.get("a.ts") as Record<string, unknown>;
 		expect(pkgExt).toMatchObject({
@@ -86,12 +80,13 @@ describe("manage_extensions list", () => {
 			states: { global: "on", project: "unmanaged", effective: "on" },
 		});
 
-		// Human-facing content includes a state table naming both entries.
-		const text = (result.content as Array<{ type: string; text: string }>)
+		// Human-facing content: package table plus the standalone note.
+		const text = (result.content as Array<{ type: "text"; text: string }>)
 			.filter((c) => c.type === "text")
 			.map((c) => c.text)
 			.join("\n");
-		expect(text).toContain("qna.ts");
 		expect(text).toContain("a.ts");
+		expect(text).not.toContain("| qna.ts");
+		expect(text).toMatch(/1 standalone extension\(s\) present — not managed/);
 	});
 });

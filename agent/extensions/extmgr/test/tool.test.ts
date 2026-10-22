@@ -79,40 +79,46 @@ describe("manage_extensions mutations", () => {
 		expect(text).toMatch(/still enabled globally/i);
 	});
 
-	it("fuzzy target resolves or asks for disambiguation", async () => {
-		// Unique substring match: a standalone extension named after the package
-		// style of the spec scenario; target `hashline` resolves to it.
+	it("standalone targets are refused and packages disambiguate", async () => {
+		// Standalone files exist, but extmgr manages packages only: a target
+		// matching just standalone entries is refused with nothing written.
 		writeRel("settings.json", JSON.stringify({ extensions: [] }), agentDir);
 		writeRel("extensions/pi-hashline-edit-pro.ts", "export default () => {};", agentDir);
 		let tool = makeTool();
 		let result = await tool.execute("c1", { action: "disable", target: "hashline", scope: "global" }, undefined, undefined, trustedCtx);
 
+		let details = result.details as { result?: { status?: string } };
+		expect(details.result?.status).toBe("error");
+		const text1 = (result.content as Array<{ type: string; text: string }>)[0]!.text;
+		expect(text1).toMatch(/standalone extension\(s\), which extmgr does not manage/);
 		let doc = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-		expect(doc.extensions).toEqual(["-extensions/pi-hashline-edit-pro.ts"]);
-		expect((result.details as { result?: { status?: string } }).result?.status).toBe("ok");
+		expect(doc.extensions).toEqual([]); // nothing written
 
-		// Multiple matches: nothing modified, disambiguation requested.
-		writeRel("extensions/hashline-extra.ts", "export default () => {};", agentDir);
+		// Two packages share the substring: ambiguity asks for a retry with
+		// package-only candidates.
+		writeRel("package.json", JSON.stringify({ name: "pi-hashline-extra", version: "1.0.0", pi: { extensions: ["ext/extra.ts"] } }), join(agentDir, "npm/node_modules/pi-hashline-extra"));
+		writeRel("ext/extra.ts", "export default () => {};", join(agentDir, "npm/node_modules/pi-hashline-extra"));
+		writeRel("settings.json", JSON.stringify({ packages: ["npm:pi-hashline-edit-pro", "npm:pi-hashline-extra"] }), agentDir);
 		tool = makeTool();
 		result = await tool.execute("c2", { action: "disable", target: "hashline", scope: "global" }, undefined, undefined, trustedCtx);
 
-		const details = result.details as { result?: { status?: string; candidates?: string[] } };
+		details = result.details as { result?: { status?: string; candidates?: string[] } };
 		expect(details.result?.status).toBe("ambiguous");
 		expect(new Set(details.result?.candidates)).toEqual(
-			new Set(["pi-hashline-edit-pro.ts (standalone)", "hashline-extra.ts (standalone)"]),
+			new Set(["npm:pi-hashline-edit-pro", "npm:pi-hashline-extra"]),
 		);
 		doc = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-		expect(doc.extensions).toEqual(["-extensions/pi-hashline-edit-pro.ts"]); // unchanged
+		expect(doc.packages).toEqual(["npm:pi-hashline-edit-pro", "npm:pi-hashline-extra"]); // unchanged
 	});
 
 	it("unavailable action explains and writes nothing", async () => {
-		writeRel("settings.json", JSON.stringify({ extensions: [] }), agentDir);
-		writeRel("extensions/hashline.ts", "export default () => {};", agentDir);
+		// Package target (the beforeEach fixture) blocked at an untrusted
+		// project tier: no write happens and the reason is explained.
 		const tool = makeTool();
 
 		const result = await tool.execute(
 			"c1",
-			{ action: "disable", target: "hashline", scope: "project" },
+			{ action: "disable", target: "pi-hashline-edit-pro", scope: "project" },
 			undefined,
 			undefined,
 			{ isProjectTrusted: () => false, mode: "tui" } as never,
@@ -120,13 +126,11 @@ describe("manage_extensions mutations", () => {
 
 		const details = result.details as { result?: { status?: string; detail?: string } };
 		expect(details.result?.status).toBe("unavailable");
-		// Both blocking reasons are explained.
-		expect(details.result?.detail).toMatch(/unavailable-native-limitation/);
 		expect(details.result?.detail).toMatch(/untrusted-project/);
 
 		// Nothing was modified: no project settings created, global untouched.
 		expect(existsSync(join(cwd, ".pi", "settings.json"))).toBe(false);
 		const doc = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-		expect(doc.extensions).toEqual([]);
+		expect(doc.packages).toEqual(["npm:pi-hashline-edit-pro"]);
 	});
 });

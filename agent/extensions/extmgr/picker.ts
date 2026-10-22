@@ -1,14 +1,37 @@
 /**
- * TUI picker for extension management (modeled on Pi's /model picker).
+ * TUI picker for extension management (visual language modeled on
+ * pi-footer's config UI: rounded border frame, `•Title` + dim subtitle,
+ * dim keymap hint, colored on/off markers with dim detail tails, and a
+ * selected row picked out with the theme's selection colors).
  *
  * `ExtensionPicker` implements the pi-tui Component shape (`render(width)`
  * returning lines, optional `handleInput`); width math is pi-tui's, so the
  * merged view and interaction model stay testable headlessly. Interaction
  * state lives in the pure `PickerModel`.
+ *
+ * Sessions feed the picker package extensions only; standalone extensions
+ * are out of extmgr's scope and surface solely as the dim
+ * `+N standalone hidden` count line.
  */
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { LoadedEntry } from "./index.ts";
+
+/**
+ * Color seam for the picker. The runtime `Theme` satisfies this
+ * structurally; the identity default keeps headless renders plain text.
+ */
+export interface PickerTheme {
+	fg(color: "accent" | "border" | "dim" | "success" | "warning", text: string): string;
+	bg(color: "selectedBg", text: string): string;
+	bold(text: string): string;
+}
+
+const identityTheme: PickerTheme = {
+	fg: (_color, text) => text,
+	bg: (_color, text) => text,
+	bold: (text) => text,
+};
 
 /** Pure interaction model behind the picker: filter text, write tier,
  * pending list. All state changes are plain data operations. */
@@ -121,34 +144,29 @@ export interface PickerOptions {
 }
 
 /** Canonical grouped order: package extensions (sorted by source, then
- * relPath) followed by standalone extensions (sorted by name). The model's
+ * relPath) followed by any remaining entries (sorted by name). The model's
  * visible() and the picker's render both use it so the cursor index maps
- * 1:1 onto rendered rows. */
+ * 1:1 onto rendered rows. Sessions pass packages-only lists; standalone
+ * entries only reach this seam through direct unit tests. */
 export function orderEntries(entries: LoadedEntry[]): LoadedEntry[] {
 	const packages: LoadedEntry[] = [];
-	const standalone: LoadedEntry[] = [];
+	const rest: LoadedEntry[] = [];
 	for (const e of entries) {
 		if (e.kind === "package" && e.packageSource) packages.push(e);
-		else standalone.push(e);
+		else rest.push(e);
 	}
 	packages.sort((a, b) => {
 		const sourceOrder = (a.packageSource ?? "").localeCompare(b.packageSource ?? "");
-		return sourceOrder || (a.relPath ?? "").localeCompare(b.relPath ?? "");
+		if (sourceOrder !== 0) return sourceOrder;
+		// The conventional index entry leads its package; then relPath order.
+		const isIndex = (e: LoadedEntry) => (e.name === "index.ts" || e.name === "index.js" ? 0 : 1);
+		const indexOrder = isIndex(a) - isIndex(b);
+		return indexOrder || (a.relPath ?? "").localeCompare(b.relPath ?? "");
 	});
-	standalone.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-	return [...packages, ...standalone];
-}
-/** Fit `s` into exactly `width` terminal cells: truncate with an ellipsis
- * when too long, pad with spaces when short. pi-tui's grapheme-cluster
- * implementation (delegates ANSI-aware width, emoji ZWJ sequences). */
-function fit(s: string, width: number): string {
-	return truncateToWidth(s, width, "…", true);
+	rest.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	return [...packages, ...rest];
 }
 
-function stateLabel(value: string, compact: boolean): string {
-	if (compact && value === "unmanaged") return "-";
-	return value;
-}
 /** Row display name: the plugin's own name instead of the conventional
  * `index.ts`/`index.js` entry filename, so the cursor arrow points straight
  * at the plugin name. Package index entries show the package name (`npm:`
@@ -172,6 +190,9 @@ export class ExtensionPicker {
 	private pendingCount = 0;
 	private selectedIndex = 0;
 	private maxVisible = 10;
+	private theme: PickerTheme = identityTheme;
+	private hiddenStandalone = 0;
+	private filterText = "";
 
 	setSelectedIndex(i: number): void {
 		this.selectedIndex = i;
@@ -198,75 +219,83 @@ export class ExtensionPicker {
 		this.pendingCount = count;
 	}
 
+	/** Color the render (identity default keeps headless tests plain). */
+	setTheme(theme: PickerTheme): void {
+		this.theme = theme;
+	}
+
+	/** Standalone entries are never listed; show only their count. */
+	setHiddenStandaloneCount(count: number): void {
+		this.hiddenStandalone = count;
+	}
+
+	/** Filter text shown in the status line (empty string clears it). */
+	setFilter(text: string): void {
+		this.filterText = text;
+	}
+
 	render(width: number): string[] {
-		const lines: string[] = [];
-		const compact = width < 82;
-		const ultraCompact = width < 32;
-		const widths = ultraCompact
-			? { name: Math.max(1, width - 12), global: 3, project: 3, effective: 3, loaded: 3 }
-			: compact
-				? { name: Math.max(1, width - 21), global: 5, project: 5, effective: 5, loaded: 6 }
-				: { name: Math.min(40, width - 39), global: 10, project: 10, effective: 11, loaded: 8 };
-		const title = `Extension management — write tier: ${this.tier}${this.pendingCount > 0 ? ` — ${this.pendingCount} pending` : ""}${this.filterHint}`;
-		lines.push(fit(title, width));
-		const headings = ultraCompact
-			? ["E", "G", "P", "E", "L"]
-			: compact
-				? ["Ext", "G", "P", "Eff", "Load"]
-				: ["Extension", "Global", "Project", "Effective", "Loaded"];
-		lines.push(
-			fit(headings[0]!, widths.name) +
-				fit(headings[1]!, widths.global) +
-				fit(headings[2]!, widths.project) +
-				fit(headings[3]!, widths.effective) +
-				fit(headings[4]!, widths.loaded),
-		);
-		lines.push("─".repeat(Math.max(1, width)));
+		const t = this.theme;
+		const inner = Math.max(1, width - 2);
+		// One framed line: borders outside, content truncated/padded to inner.
+		const line = (content: string) =>
+			t.fg("border", "│") + truncateToWidth(content, inner, "…", true) + t.fg("border", "│");
+
+		const title = " Extensions ";
+		const top =
+			t.fg("border", "╭──") +
+			t.fg("accent", t.bold(title)) +
+			t.fg("border", "─".repeat(Math.max(1, inner - 2 - title.length))) +
+			t.fg("border", "╮");
+
+		const lines = [top];
+		lines.push(line(t.fg("success", "•Manage Extensions") + " " + t.fg("dim", "toggle loading per write tier")));
+		lines.push(line(t.fg("dim", "j/k move · enter toggle · tab tier · / filter · a apply · q close")));
 
 		const ordered = orderEntries(this.entries);
+		const packageCount = new Set(ordered.filter((e) => e.kind === "package" && e.packageSource).map((e) => e.packageSource)).size;
+		const counts = `${ordered.length} file(s) in ${packageCount} package(s)` +
+			(this.hiddenStandalone > 0 ? ` · +${this.hiddenStandalone} standalone hidden` : "");
+		lines.push(line(t.fg("dim", counts)));
+		lines.push(line(""));
+
 		const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), ordered.length - this.maxVisible));
 		const end = Math.min(start + this.maxVisible, ordered.length);
-		let source: string | undefined;
 		for (let i = start; i < end; i++) {
-			const e = ordered[i]!;
-			const group = e.kind === "package" && e.packageSource ? e.packageSource : "(standalone)";
-			if (group !== source) {
-				lines.push(fit(group, width));
-				source = group;
-			}
-			lines.push(this.renderRow(e, i === this.selectedIndex, widths, compact, ultraCompact));
+			lines.push(line(this.renderRow(ordered[i]!, i === this.selectedIndex)));
 		}
 		if (start > 0 || end < ordered.length) {
-			lines.push(fit(`Showing ${start + 1}-${end} of ${ordered.length}`, width));
+			lines.push(line(t.fg("dim", `Showing ${start + 1}-${end} of ${ordered.length}`)));
 		}
+		if (ordered.length === 0) lines.push(line(t.fg("dim", "(no matching extensions)")));
+		lines.push(line(""));
 
-		if (ordered.length === 0) lines.push(fit("(no matching extensions)", width));
+		let status = t.fg("dim", `write tier: ${this.tier}`);
+		if (this.pendingCount > 0) status += t.fg("warning", ` · ${this.pendingCount} pending (a apply)`);
+		if (this.filterText) status += t.fg("dim", ` · filter: ${this.filterText}`);
+		lines.push(line(status));
 
-		lines.push("");
-		lines.push(fit("j/k move · Enter toggle · Tab tier · / filter · a apply · q close", width));
+		lines.push(t.fg("border", `╰${"─".repeat(inner)}╯`));
 		return lines;
 	}
 
-	private filterHint = "";
-
-	setFilterHint(text: string): void {
-		this.filterHint = text ? ` — filter: ${text}` : "";
-	}
-
-	private renderRow(
-		e: LoadedEntry,
-		selected: boolean,
-		widths: { name: number; global: number; project: number; effective: number; loaded: number },
-		compact: boolean,
-		ultraCompact: boolean,
-	): string {
-		const name = `${selected ? "▶ " : "  "}${displayName(e)}`;
-		return (
-			fit(name, widths.name) +
-			fit(stateLabel(e.states.global, compact), widths.global) +
-			fit(stateLabel(e.states.project, compact), widths.project) +
-			fit(stateLabel(e.states.effective, compact), widths.effective) +
-			fit(ultraCompact ? (e.loaded ? "●" : "-") : e.loaded ? "● yes" : "·", widths.loaded)
-		);
+	private renderRow(e: LoadedEntry, selected: boolean): string {
+		const t = this.theme;
+		// Marker: the active write tier's state — the thing Enter will change.
+		const state = this.tier === "global" ? e.states.global : e.states.project;
+		const marker =
+			state === "on" ? t.fg("success", "on ") : state === "off" ? t.fg("dim", "off") : t.fg("dim", "-");
+		const tier = (v: string) => (v === "unmanaged" ? "-" : v);
+		// Multi-file package rows carry pkg/file in the name; index rows show
+		// the package name. The dim tail then only needs states + live marker.
+		const source = e.kind === "package" && e.packageSource ? e.packageSource.replace(/^npm:/, "") : undefined;
+		const name =
+			source && e.name !== "index.ts" && e.name !== "index.js" ? `${source}/${e.name}` : displayName(e);
+		const parts = [
+			`G:${tier(e.states.global)} P:${tier(e.states.project)}`,
+			e.loaded ? "loaded" : "not loaded",
+		];
+		const text = `${marker} ${name} ${t.fg("dim", parts.join(" · "))}`;
+		return selected ? t.bg("selectedBg", t.fg("accent", `› ${text}`)) : `  ${text}`;
 	}
 }
