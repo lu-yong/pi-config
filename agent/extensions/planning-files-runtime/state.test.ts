@@ -89,6 +89,39 @@ test("lifecycle reads reject unreadable state while read-only queries remain com
 	assert.equal(readGoalStateForUpdate(cwd)?.status, "paused");
 });
 
+test("lifecycle reads reject structurally invalid state", () => {
+	const cwd = makeCwd();
+	const target = getPaths(cwd).goalState;
+
+	writeText(target, "not-json\n");
+	assert.throws(() => readGoalStateForUpdate(cwd), SyntaxError);
+
+	for (const raw of [{ version: 1 }, { status: 3 }, [{ status: "none" }], "active"]) {
+		writeText(target, `${JSON.stringify(raw)}\n`);
+		assert.throws(
+			() => readGoalStateForUpdate(cwd),
+			/Invalid goal state in .*; repair the file before continuing\./,
+		);
+	}
+});
+
+test("lifecycle reads converge partial state instead of rejecting it", () => {
+	const cwd = makeCwd();
+	// No draft/impl records or version: a real state file always carries a
+	// string status, so normalization fills in the rest.
+	writeText(
+		getPaths(cwd).goalState,
+		`${JSON.stringify({ status: "active", updatedAt: "2026-01-01T00:00:00.000Z" })}\n`,
+	);
+	const state = readGoalStateForUpdate(cwd);
+	assert.equal(state?.status, "active");
+	assert.equal(state?.version, 1);
+	assert.equal(state?.impl.runId, 0);
+	assert.equal(state?.updatedAt, "2026-01-01T00:00:00.000Z");
+
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({ status: "unexpected" })}\n`);
+	assert.equal(readGoalStateForUpdate(cwd)?.status, "none");
+});
 
 test("goal state round-trips the token budget fields", () => {
 	const cwd = makeCwd();

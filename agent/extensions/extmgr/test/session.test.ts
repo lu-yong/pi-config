@@ -384,7 +384,7 @@ describe("picker session (component seam)", () => {
 		comp.handleInput("\r");
 		await session.settle();
 
-		expect(host.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/untrusted-project/), "warning");
+		expect(host.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/project is not trusted/), "warning");
 		expect(globalDoc().packages).toEqual(["npm:pi-hashline-edit-pro"]);
 		const projectDoc = JSON.parse(readFileSync(join(cwd, ".pi", "settings.json"), "utf-8"));
 		expect(projectDoc.packages).toEqual([{ source: "npm:pi-hashline-edit-pro", autoload: false, extensions: ["-ext/hashline.ts"] }]);

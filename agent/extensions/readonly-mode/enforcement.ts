@@ -85,7 +85,6 @@ class Enforcement implements ReadonlyEnforcement {
           return [{ type: 'set-section', content: READONLY_INSTRUCTIONS }];
         }
         if (!this.sectionActive) return [];
-        if (!this.sectionActive) return [];
         // Disabled since the section was contributed: remove it once.
         // patch when the section actually exists in the replayed prompt.
         // sectionActive guards this, but even a stray null on a branch that

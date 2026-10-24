@@ -126,7 +126,7 @@ describe("manage_extensions mutations", () => {
 
 		const details = result.details as { result?: { status?: string; detail?: string } };
 		expect(details.result?.status).toBe("unavailable");
-		expect(details.result?.detail).toMatch(/untrusted-project/);
+		expect(details.result?.detail).toMatch(/project is not trusted/);
 
 		// Nothing was modified: no project settings created, global untouched.
 		expect(existsSync(join(cwd, ".pi", "settings.json"))).toBe(false);

@@ -128,13 +128,7 @@ export function readGoalStateForUpdate(cwd: string): GoalOverlayState | null {
 		throw error;
 	}
 	const raw = JSON.parse(text);
-	const isRecord = (value: unknown): value is Record<string, unknown> =>
-		value !== null && typeof value === "object" && !Array.isArray(value);
-	if (!isRecord(raw) || raw.version !== 1
-		|| !["none", "drafting", "ready", "active", "paused", "complete"].includes(raw.status as string)
-		|| !isRecord(raw.draft) || !isRecord(raw.impl)
-		|| (raw.goal !== null && (!isRecord(raw.goal) || !normalizeGoalContract(raw.goal)))
-		|| !Number.isSafeInteger(raw.impl.runId) || (raw.impl.runId as number) < 0) {
+	if (raw === null || typeof raw !== "object" || typeof (raw as Record<string, unknown>).status !== "string") {
 		throw new Error(`Invalid goal state in ${target}; repair the file before continuing.`);
 	}
 	return normalizeGoalState(raw);
