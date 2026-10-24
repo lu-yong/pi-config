@@ -1,4 +1,4 @@
-import type { DraftingStage, GoalContract, GoalDraft, SaveGoalDraftParams } from "./types.ts";
+import type { DraftingStage, GoalDraft, SaveGoalDraftParams } from "./types.ts";
 import { normalizeString, normalizeStringArray } from "./utils.ts";
 
 /**
@@ -28,21 +28,4 @@ export function mergeDraft(current: GoalDraft, params: SaveGoalDraftParams): Goa
 		draftingStage: nextStage && (validStages as string[]).includes(nextStage) ? nextStage : current.draftingStage,
 	};
 	return next;
-}
-
-/**
- * Derive a GoalContract from a completed draft.
- * Returns null if any required field is still empty.
- */
-export function goalContractFromDraft(draft: GoalDraft): GoalContract | null {
-	if (!draft.objective || draft.successCriteria.length === 0 || draft.constraints.length === 0 || draft.outOfScope.length === 0 || !draft.blockerRule) {
-		return null;
-	}
-	return {
-		objective: draft.objective,
-		successCriteria: draft.successCriteria,
-		constraints: draft.constraints,
-		outOfScope: draft.outOfScope,
-		blockerRule: draft.blockerRule,
-	};
 }
