@@ -24,7 +24,7 @@ import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, typ
 
 /**
  * Pi is an adapter around the Goal lifecycle. goal-lifecycle.ts owns
- * state transitions, effect execution, rollback, the completion audit's
+ * state transitions, effect execution, the completion audit's
  * adjudication, and continuation policy; this module only translates Pi
  * events, supplies the audit's model transport, and reads the operation
  * result projection.
@@ -52,15 +52,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		};
 	}
 	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession, syncGoal = true): void {
-		// Widget projection is best-effort; a failure here must never roll back
-		// persisted goal state, but it must be visible instead of silently leaving
-		// a stale widget in place.
+		// Widget projection is best-effort; a failure here must be visible
+		// instead of silently leaving a stale widget in place.
 		try {
 			const lifecycle = lifecycleFor(ctx.cwd);
 			// Lifecycle effects already own an in-flight transaction; do not re-enter it.
 			if (syncGoal) {
 				const result = lifecycle.handle({ type: "sync" }, contextFor(ctx, resumedFromPreviousSession));
-				if (result.failure) throw new Error(result.failure.reason);
+				if (result.error) throw new Error(result.error.reason);
 			}
 			state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
 			state.goalState = lifecycle.getState();
@@ -89,12 +88,12 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		console.error(`[planning-files-runtime] ${message}`);
 	}
 	function notifyRejection(ctx: ExtensionContext, result: GoalLifecycleResult): void {
-		const message = result.failure?.reason ?? result.rejection?.reason;
+		const message = result.error?.reason;
 		if (message) ctx.ui.notify(message, "warning");
 	}
 
 	function toolError(result: GoalLifecycleResult): { content: Array<{ type: "text"; text: string }>; isError: true; details: undefined } | undefined {
-		const message = result.failure?.reason ?? result.rejection?.reason;
+		const message = result.error?.reason;
 		if (!message) return undefined;
 		return { content: [{ type: "text", text: message }], isError: true, details: undefined };
 	}
@@ -281,7 +280,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 						const lifecycle = lifecycleFor(ctx.cwd);
 						const result = lifecycle.handle({ type: "reset" }, contextFor(ctx));
 						notifyRejection(ctx, result);
-						return !(result.failure || result.rejection);
+						return !result.error;
 					},
 				},
 			);

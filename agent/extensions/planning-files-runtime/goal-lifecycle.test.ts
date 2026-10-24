@@ -97,7 +97,7 @@ const complete = (run: GoalLifecycle, params: CompleteGoalParams, harness: Harne
 /** Decide a settled run's continuation at Pi's before-settle boundary. */
 function decideContinuation(run: GoalLifecycle, harness: Harness, outcome: "completed" | "aborted" | "error" = "completed"): OutgoingGoalMessage | undefined {
 	const result = run.handle({ type: "before-settle", outcome }, harness.context());
-	assert.equal(result.failure, undefined);
+	assert.equal(result.error, undefined);
 	return result.continuation?.message;
 }
 
@@ -130,18 +130,17 @@ describe("goal lifecycle", () => {
 		const paths = getPaths(cwd);
 
 		let result = run.handle({ type: "start-drafting", input: "goal run" }, harness.context());
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "drafting");
 		assert.equal(fileExists(paths.goalDesign), true);
 
 		run.handle({ type: "save-draft", params: contractParams }, harness.context());
 		result = run.handle({ type: "commit", params: contractParams }, harness.context());
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "ready");
 
 		result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.getState().impl.runId, 1);
 		assert.equal(fileExists(paths.files["task_plan.md"]), true);
@@ -151,7 +150,7 @@ describe("goal lifecycle", () => {
 			type: "pause",
 			params: { reason: "external dependency unavailable", suggestedAction: "Restore the dependency, then retry." },
 		}, harness.context());
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.equal(run.getState().impl.pausedSuggestedAction, "Restore the dependency, then retry.");
 		assert.match(readText(paths.files["progress.md"]), /Goal paused: external dependency unavailable/);
@@ -162,8 +161,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.pausedSuggestedAction, "");
 
 		result = await complete(run, { summary: "Lifecycle is complete" }, harness);
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
 		assert.match(readText(paths.files["progress.md"]), /Lifecycle is complete/);
@@ -176,7 +174,7 @@ describe("goal lifecycle", () => {
 		const assertRejected = (event: GoalLifecycleEvent, operation: string) => {
 			const before = run.getState();
 			const result = run.handle(event, harness.context());
-			assert.equal(result.rejection?.operation, operation);
+			assert.equal(result.error?.operation, operation);
 			assert.deepEqual(run.getState(), before);
 		};
 
@@ -187,13 +185,17 @@ describe("goal lifecycle", () => {
 		{
 			const before = run.getState();
 			const result = await run.complete({ summary: "not active" }, harness.context(), { modelCall: noAuditor });
-			assert.equal(result.rejection?.operation, "complete_plan_goal");
+			assert.equal(result.error?.operation, "complete_plan_goal");
 			assert.deepEqual(run.getState(), before);
 		}
 
 		run.handle({ type: "start-drafting", input: "goal" }, harness.context());
-		assertRejected({ type: "commit", params: contractParams }, "commit_plan_goal");
 		assertRejected({ type: "implementation-request" }, "plan-goal-impl");
+		// The stored contract comes from the tool params, so a commit with a
+		// complete contract succeeds even while the saved draft is still partial.
+		const committed = run.handle({ type: "commit", params: contractParams }, harness.context());
+		assert.equal(committed.error, undefined);
+		assert.equal(run.getState().status, "ready");
 	});
 
 	test("active repeated implementation requests are a true no-op", () => {
@@ -202,8 +204,7 @@ describe("goal lifecycle", () => {
 		const run = prepareActive(cwd, harness);
 		const before = run.getState();
 		const result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.deepEqual(run.getState(), before);
 	});
 
@@ -234,8 +235,7 @@ describe("goal lifecycle", () => {
 		const restored = createGoalLifecycle(cwd, harness.deps);
 		assert.equal(restored.getState().status, "active");
 		const result = restored.handle({ type: "restore" }, harness.context());
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(restored.getState().status, "active");
 	});
 
@@ -260,7 +260,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
 	});
 
-	test("a failing effect rolls back the lifecycle state but keeps prior effects", () => {
+	test("a failing effect reports the error and keeps the already-persisted transition", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareDraft(cwd, harness);
@@ -272,10 +272,10 @@ describe("goal lifecycle", () => {
 		const result = run.handle({ type: "implementation-request" }, harness.context());
 		harness.setFailSends(false);
 
-		assert.match(result.failure?.reason ?? "", /Goal run failed; state restored/);
-		assert.equal(run.getState().status, "ready");
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "ready");
-		// Effects before the failing send stay applied; the failure is not transactional.
+		assert.match(result.error?.reason ?? "", /Goal operation failed: send exploded/);
+		// The transition was already persisted and is kept; effects before the failing send stay applied too.
+		assert.equal(run.getState().status, "active");
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "active");
 		assert.equal(fileExists(paths.files["task_plan.md"]), true);
 		assert.match(readText(paths.files["progress.md"]), /Goal implementation started \(run 1\)/);
 	});
@@ -295,7 +295,7 @@ describe("goal lifecycle", () => {
 		fs.mkdirSync(goalStatePath);
 
 		const result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.match(result.failure?.reason ?? "", /Goal run failed/);
+		assert.match(result.error?.reason ?? "", /Goal run failed/);
 		assert.equal(run.getState().status, "ready"); // memory never published
 		assert.equal(hasActiveGoal(cwd), false);
 
@@ -303,8 +303,7 @@ describe("goal lifecycle", () => {
 		fs.rmSync(goalStatePath, { recursive: true, force: true });
 		writeGoalState(cwd, run.getState()); // restore the file, not just directory access
 		const retry = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(retry.failure, undefined);
-		assert.equal(retry.rejection, undefined);
+		assert.equal(retry.error, undefined);
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.getState().impl.runId, 1);
 	});
@@ -322,7 +321,7 @@ describe("goal lifecycle", () => {
 		fs.mkdirSync(goalStatePath);
 
 		const result = await complete(run, { summary: "cannot persist" }, harness);
-		assert.match(result.failure?.reason ?? "", /Goal run failed/);
+		assert.match(result.error?.reason ?? "", /Goal run failed/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(run.turnStoppedBy(), null);
 		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nPhase 1/); // workspace not finalized
@@ -331,26 +330,26 @@ describe("goal lifecycle", () => {
 		fs.rmSync(goalStatePath, { recursive: true, force: true });
 		writeGoalState(cwd, run.getState());
 		const retry = await complete(run, { summary: "cannot persist" }, harness);
-		assert.equal(retry.failure, undefined);
+		assert.equal(retry.error, undefined);
 		assert.equal(run.getState().status, "complete");
 	});
 
-	test("a failed reset effect reports failure and rolls back the lifecycle", () => {
+	test("a failed reset effect reports the error and keeps the reset state", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareDraft(cwd, harness);
 		assert.equal(run.getState().status, "drafting");
 
 		// A throwing UI refresh makes the reset effect fail; the run must
-		// surface it as a failure result (the adapter can then suppress the
+		// surface it as an error result (the adapter can then suppress the
 		// unconditional "reset succeeded" notification).
 		const result = run.handle(
 			{ type: "reset" },
 			{ ...harness.context(), refresh: () => { throw new Error("ui exploded"); } },
 		);
-		assert.match(result.failure?.reason ?? "", /Goal run failed; state restored/);
-		assert.equal(run.getState().status, "drafting"); // rolled back, not wiped
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "drafting");
+		assert.match(result.error?.reason ?? "", /Goal operation failed: ui exploded/);
+		assert.equal(run.getState().status, "none"); // the reset itself was persisted and kept
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "none");
 	});
 
 	test("a failed atomic goal-state write leaves the prior file intact", () => {
@@ -370,7 +369,7 @@ describe("goal lifecycle", () => {
 		fs.chmodSync(getPaths(cwd).root, 0o555);
 		try {
 			const result = run.handle({ type: "implementation-request" }, harness.context());
-			assert.match(result.failure?.reason ?? "", /Goal run failed; state preserved/);
+			assert.match(result.error?.reason ?? "", /Goal operation failed/);
 			assert.equal(run.getState().status, "ready");
 			assert.equal(readText(goalStatePath), original); // destination untouched
 		} finally {
@@ -420,7 +419,7 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "error", errorMessage: "provider overloaded" }, harness.context());
 		const result = run.handle({ type: "before-settle", outcome: "error" }, harness.context());
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(result.continuation, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.match(run.getState().impl.pausedReason, /will not retry automatically: provider overloaded/);
@@ -452,8 +451,7 @@ describe("goal lifecycle", () => {
 		settleWithProgress(run, harness);
 
 		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
-		assert.equal(result.failure, undefined);
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
 		assert.equal(harness.sent.length, 0);
@@ -464,19 +462,20 @@ describe("goal lifecycle", () => {
 		assert.equal(readText(progressPath), before);
 	});
 
-	test("aborted settlement preserves pause effect rollback and consumes the progress gate", () => {
+	test("a failed refresh during the aborted-settlement pause still pauses the run and blocks continuation", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		harness.clearSent();
 		harness.setFailRefresh(true);
 		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
-		assert.match(result.failure?.reason ?? "", /Goal run failed; state restored.*refresh exploded/);
-		assert.equal(run.getState().status, "active");
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "active");
+		assert.match(result.error?.reason ?? "", /Goal operation failed: refresh exploded/);
+		// The pause itself was persisted and kept.
+		assert.equal(run.getState().status, "paused");
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
 		harness.setFailRefresh(false);
-		// The rolled-back pause also consumed the progress gate, so the
-		// boundary cannot silently continue what the user interrupted.
+		// A paused run does not continue at the boundary, so the interrupted
+		// run cannot silently resume.
 		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
 		assert.equal(decideContinuation(run, harness), undefined);
 		assert.equal(harness.sent.length, 0);
@@ -490,7 +489,7 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "turn-start" }, harness.context());
 		run.handle({ type: "progress-tool-called" }, harness.context());
 		const result = run.handle({ type: "turn-end", stopReason: "aborted" }, harness.context());
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "paused");
 		assert.equal(run.getState().impl.pausedReason, "The goal run was interrupted by the user.");
 		assert.match(readText(getPaths(cwd).files["progress.md"]), /Goal implementation paused: The goal run was interrupted by the user\./);
@@ -504,7 +503,7 @@ describe("goal lifecycle", () => {
 		const paths = getPaths(cwd);
 
 		const result = await complete(run, { summary: "done", evidence: ["tests pass"] }, harness);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(hasActiveGoal(cwd), false);
 		// A later boundary cannot continue a completed goal.
@@ -513,7 +512,7 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
 	});
 
-	test("failed completion finalization rolls back lifecycle and transient gates", async () => {
+	test("failed completion finalization reports the error and keeps the completed state", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -524,18 +523,24 @@ describe("goal lifecycle", () => {
 		const originalTaskPlan = readText(paths.files["task_plan.md"]);
 		const originalProgress = readText(paths.files["progress.md"]);
 
-		const result = await complete(run, { summary: "should roll back" }, harness);
+		const result = await complete(run, { summary: "cannot finish" }, harness);
 
-		assert.ok(result.failure);
-		assert.equal(run.getState().status, "active");
-		assert.equal(hasActiveGoal(cwd), true);
-		assert.equal(run.turnStoppedBy(), null);
-		// The failed completion must not leak partial finalization into the workspace.
+		assert.match(result.error?.reason ?? "", /duplicate "## Blocker" headings/);
+		// The message states the preserved status and the only viable route:
+		// complete_plan_goal rejects a retry on a completed goal, so /plan-new
+		// is the way out, not a literal retry.
+		assert.match(result.error?.reason ?? "", /current status: complete/);
+		assert.match(result.error?.reason ?? "", /complete_plan_goal cannot run again/);
+		assert.match(result.error?.reason ?? "", /\/plan-new/);
+		// The completion transition was already persisted and is kept; the
+		// workspace keeps its originals because finalization failed before writing.
+		assert.equal(run.getState().status, "complete");
+		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
 		assert.equal(readText(paths.files["task_plan.md"]), originalTaskPlan);
 		assert.equal(readText(paths.files["progress.md"]), originalProgress);
 	});
 
-	test("missing progress.md returns a clear failure and rolls completion back to active", async () => {
+	test("missing progress.md returns a clear failure and keeps the completed state", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -545,9 +550,9 @@ describe("goal lifecycle", () => {
 		fs.rmSync(paths.files["progress.md"], { force: true });
 
 		const result = await complete(run, { summary: "cannot finish" }, harness);
-		assert.match(result.failure?.reason ?? "", /progress.md is required/);
-		assert.equal(run.getState().status, "active");
-		assert.equal(hasActiveGoal(cwd), true);
+		assert.match(result.error?.reason ?? "", /progress.md is required/);
+		assert.equal(run.getState().status, "complete");
+		assert.equal(hasActiveGoal(cwd), false);
 	});
 
 	test("agent settlement refreshes a paused widget without restoring task-plan next actions", () => {
@@ -575,7 +580,7 @@ describe("goal lifecycle", () => {
 				},
 			},
 		);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.deepEqual(widgetLines?.filter((line) => /^(goal|phase|next):/.test(line)), [
 			"goal: paused",
 			"phase: Phase 4",
@@ -593,8 +598,7 @@ describe("goal lifecycle", () => {
 		writeGoalState(cwd, external);
 		harness.clearSent();
 		const result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.equal(result.failure, undefined);
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
 		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.draft.constraints, external.draft.constraints);
 		assert.match(harness.sent[0].message.content, /Updated delegation policy/);
@@ -625,7 +629,7 @@ describe("goal lifecycle", () => {
 		external.goal!.constraints = ["Latest constraint"];
 		writeGoalState(cwd, external);
 		const result = run.handle({ type: "sync" }, harness.context());
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
 		assert.equal(run.turnStoppedBy(), "commit_plan_goal");
 	});
@@ -656,7 +660,7 @@ describe("goal lifecycle", () => {
 			writeText(getPaths(cwd).goalState, badState);
 			for (const type of ["sync", "implementation-request", "before-settle"] as const) {
 				const result = run.handle(type === "before-settle" ? { type, outcome: "completed" } : { type }, harness.context());
-				assert.equal(result.failure?.operation, "state-sync");
+				assert.equal(result.error?.operation, "state-sync");
 				assert.equal(result.continuation, undefined);
 			}
 			assert.equal(readText(getPaths(cwd).goalState), badState);
@@ -665,7 +669,7 @@ describe("goal lifecycle", () => {
 			// The adapter surfaces the sync failure as a warning; the lifecycle
 			// only keeps the explicit /plan-goal-impl recovery route.
 			writeGoalState(cwd, before);
-			assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
+			assert.equal(run.handle({ type: "implementation-request" }, harness.context()).error, undefined);
 			assert.equal(harness.sent.length, 1);
 		});
 	}
@@ -676,11 +680,11 @@ describe("goal lifecycle", () => {
 		const run = prepareActive(cwd, harness);
 		fs.rmSync(getPaths(cwd).goalState);
 		const result = run.handle({ type: "pause", params: { reason: "do not recreate" } }, harness.context());
-		assert.equal(result.failure?.operation, "state-sync");
+		assert.equal(result.error?.operation, "state-sync");
 		assert.equal(fileExists(getPaths(cwd).goalState), false);
 	});
 
-	test("effect rollback preserves the externally updated contract", () => {
+	test("a failing send does not clobber the externally updated contract", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareDraft(cwd, harness);
@@ -690,8 +694,8 @@ describe("goal lifecycle", () => {
 		writeGoalState(cwd, external);
 		harness.setFailSends(true);
 		const result = run.handle({ type: "implementation-request" }, harness.context());
-		assert.match(result.failure?.reason ?? "", /state restored/);
-		assert.equal(run.getState().status, "ready");
+		assert.match(result.error?.reason ?? "", /send exploded/);
+		assert.equal(run.getState().status, "active");
 		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.goal!.constraints, external.goal!.constraints);
 	});
 
@@ -704,10 +708,10 @@ describe("goal lifecycle", () => {
 		const before = run.getState();
 		writeText(getPaths(cwd).goalState, "{");
 		const failed = run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
-		assert.equal(failed.failure?.operation, "state-sync");
+		assert.equal(failed.error?.operation, "state-sync");
 		assert.equal(failed.continuation, undefined);
 		writeGoalState(cwd, before);
-		assert.equal(run.handle({ type: "implementation-request" }, harness.context()).failure, undefined);
+		assert.equal(run.handle({ type: "implementation-request" }, harness.context()).error, undefined);
 		assert.equal(harness.sent.length, 1);
 		assert.equal(harness.sent[0].message.customType, MESSAGE_TYPE_CONTINUATION);
 		run.handle({ type: "implementation-request" }, harness.context());
@@ -723,7 +727,7 @@ describe("goal lifecycle", () => {
 		run.handle({ type: "sync" }, harness.context());
 		assert.equal(run.turnStoppedBy(), "pause_plan_goal"); // same turn remains stopped
 		const result = run.handle({ type: "turn-start" }, harness.context());
-		assert.equal(result.failure?.operation, "state-sync");
+		assert.equal(result.error?.operation, "state-sync");
 		assert.equal(run.turnStoppedBy(), null); // the next turn can repair the file
 		assert.equal(readText(getPaths(cwd).goalState), "{");
 	});
@@ -741,7 +745,7 @@ describe("goal lifecycle", () => {
 			harness.clearSent();
 			const input = "我使用重置卡，额度已恢复\n  请核验后继续。";
 			const result = run.handle({ type: "implementation-request", supplementalInput: ` \n${input}\n ` }, harness.context());
-			assert.deepEqual(result, { rejection: undefined, failure: undefined });
+			assert.deepEqual(result, { error: undefined });
 			assert.equal(run.getState().status, "active");
 			assert.equal(run.getState().impl.runId, 1);
 			assert.equal(harness.sent.length, 1);
@@ -773,7 +777,7 @@ describe("goal lifecycle", () => {
 		});
 
 		for (const retryInput of [undefined, "本次重试补充\n请重新核验"] as const) {
-			test(`${status} send failure rolls back and retries with only the new input (${retryInput ? "supplied" : "omitted"})`, () => {
+			test(`${status} send failure reports the error and never caches the failed input (${retryInput ? "supplied" : "omitted"})`, () => {
 				const cwd = makeCwd();
 				const harness = createHarness();
 				const run = prepareDraft(cwd, harness);
@@ -782,19 +786,24 @@ describe("goal lifecycle", () => {
 					run.handle({ type: "implementation-request" }, harness.context());
 					run.handle({ type: "pause", params: { reason: "额度耗尽" } }, harness.context());
 				}
-				const before = run.getState();
 				harness.clearSent();
 				harness.setFailSends(true);
 				const failed = run.handle({ type: "implementation-request", supplementalInput: "失败请求的补充" }, harness.context());
-				assert.match(failed.failure?.reason ?? "", /state restored/);
-				assert.deepEqual(run.getState(), before);
-				// Rollback persists the prior contract/run with a fresh write timestamp.
-				assert.deepEqual({ ...createGoalLifecycle(cwd, harness.deps).getState(), updatedAt: before.updatedAt }, before);
+				assert.match(failed.error?.reason ?? "", /send exploded/);
+				// The message states the preserved status and the route that fits
+				// it: a bare /plan-goal-impl retry is a no-op on the active run,
+				// so it must point at pausing first.
+				assert.match(failed.error?.reason ?? "", /current status: active/);
+				assert.match(failed.error?.reason ?? "", /Pause the run first \(pause_plan_goal\)/);
+				// The transition was already persisted and kept: the run is
+				// active even though its message never went out.
+				assert.equal(run.getState().status, "active");
 				assert.equal(harness.sent.length, 0);
 				harness.setFailSends(false);
+				// The failed input was never cached: after pausing, a retry sends only what it supplies.
+				run.handle({ type: "pause", params: { reason: "重发实现请求" } }, harness.context());
 				const retry = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
-				assert.deepEqual(retry, { rejection: undefined, failure: undefined });
-				assert.equal(run.getState().impl.runId, 1);
+				assert.deepEqual(retry, { error: undefined });
 				assert.equal(harness.sent.length, 1);
 				assert.doesNotMatch(harness.sent[0].message.content, /失败请求的补充/);
 				if (retryInput) assert.ok(harness.sent[0].message.content.includes(retryInput));
@@ -815,11 +824,10 @@ describe("goal lifecycle", () => {
 		const diskBefore = readText(getPaths(cwd).goalState);
 		const logBefore = [...harness.log];
 		const rejected = run.handle({ type: "implementation-request", supplementalInput: "额度已恢复" }, harness.context());
-		assert.equal(rejected.rejection?.operation, "plan-goal-impl");
-		assert.match(rejected.rejection?.reason ?? "", /not accepted.*normal message.*pause.*plan-goal-impl/);
-		assert.equal(rejected.failure, undefined);
+		assert.equal(rejected.error?.operation, "plan-goal-impl");
+		assert.match(rejected.error?.reason ?? "", /not accepted.*normal message.*pause.*plan-goal-impl/);
 		const blank = run.handle({ type: "implementation-request", supplementalInput: " \t\n　" }, harness.context());
-		assert.deepEqual(blank, { rejection: undefined, failure: undefined });
+		assert.deepEqual(blank, { error: undefined });
 		assert.deepEqual(run.getState(), before);
 		assert.equal(readText(getPaths(cwd).goalState), diskBefore);
 		assert.deepEqual(harness.log, logBefore);
@@ -840,18 +848,18 @@ describe("goal lifecycle", () => {
 			const before = run.getState();
 			writeText(getPaths(cwd).goalState, "{");
 			const failed = run.handle({ type: "before-settle", outcome: "completed" }, harness.context());
-			assert.equal(failed.failure?.operation, "state-sync");
+			assert.equal(failed.error?.operation, "state-sync");
 			const repaired = writeGoalState(cwd, before);
 			harness.setFailSends(true);
 			for (let attempt = 0; attempt < 2; attempt++) {
 				const result = run.handle({ type: "implementation-request", supplementalInput: "未发送的旧补充" }, harness.context());
-				assert.match(result.failure?.reason ?? "", /state preserved.*send exploded/);
+				assert.match(result.error?.reason ?? "", /send exploded/);
 				assert.deepEqual(run.getState(), repaired);
 				assert.equal(harness.sent.length, 0);
 			}
 			harness.setFailSends(false);
 			const result = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
-			assert.deepEqual(result, { rejection: undefined, failure: undefined });
+			assert.deepEqual(result, { error: undefined });
 			assert.deepEqual(run.getState(), repaired);
 			assert.deepEqual(createGoalLifecycle(cwd, harness.deps).getState(), repaired);
 			assert.equal(harness.sent.length, 1);
@@ -895,7 +903,7 @@ describe("token budget", () => {
 			const otherHarness = createHarness();
 			const otherRun = prepareDraft(other, otherHarness);
 			const rejected = otherRun.handle({ type: "commit", params: { ...contractParams, tokenBudget: bad } }, otherHarness.context());
-			assert.ok(rejected.rejection?.reason.includes("positive integer"));
+			assert.ok(rejected.error?.reason.includes("positive integer"));
 		}
 	});
 
@@ -1008,8 +1016,7 @@ describe("completion audit", () => {
 			auditModel({ kind: "completed", text: "criterion 1: MET\nVERDICT: APPROVE", usage: auditUsage }),
 		);
 
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(result.audit?.note, " (independent audit: approved)");
 		assert.deepEqual(result.audit?.usage, auditUsage);
@@ -1032,9 +1039,9 @@ describe("completion audit", () => {
 			auditModel({ kind: "completed", text: "criterion 1: UNMET - no recorded evidence\nVERDICT: REJECT", usage: auditUsage }),
 		);
 
-		assert.equal(result.rejection?.operation, "complete_plan_goal");
-		assert.match(result.rejection?.reason ?? "", /rejected by independent audit.*criterion 1: UNMET - no recorded evidence/);
-		assert.match(result.rejection?.reason ?? "", /pause_plan_goal/);
+		assert.equal(result.error?.operation, "complete_plan_goal");
+		assert.match(result.error?.reason ?? "", /rejected by independent audit.*criterion 1: UNMET - no recorded evidence/);
+		assert.match(result.error?.reason ?? "", /pause_plan_goal/);
 		assert.deepEqual(result.audit?.usage, auditUsage);
 		assert.equal(run.getState().status, "active");
 		assert.equal(hasActiveGoal(cwd), true);
@@ -1055,8 +1062,7 @@ describe("completion audit", () => {
 			auditModel({ kind: "failed", reason: "no model is available for the completion audit", usage: auditUsage }),
 		);
 
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(result.audit?.note, " (independent audit skipped: no model is available for the completion audit)");
 		assert.deepEqual(result.audit?.usage, auditUsage);
@@ -1072,7 +1078,7 @@ describe("completion audit", () => {
 
 		const result = await complete(run, { summary: "done" }, harness, exploding);
 
-		assert.equal(result.rejection, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(result.audit?.note, " (independent audit skipped: network down)");
 	});
@@ -1093,8 +1099,8 @@ describe("completion audit", () => {
 		controller.abort();
 		const result = await pending;
 
-		assert.equal(result.rejection?.operation, "complete_plan_goal");
-		assert.match(result.rejection?.reason ?? "", /completion cancelled.*stays active/);
+		assert.equal(result.error?.operation, "complete_plan_goal");
+		assert.match(result.error?.reason ?? "", /completion cancelled.*stays active/);
 		assert.deepEqual(result.audit?.usage, auditUsage);
 		assert.equal(run.getState().status, "active");
 		assert.equal(hasActiveGoal(cwd), true);
@@ -1121,8 +1127,8 @@ describe("completion audit", () => {
 		releaseAudit({ kind: "completed", text: "VERDICT: APPROVE" });
 		const result = await pending;
 
-		assert.equal(result.rejection?.operation, "complete_plan_goal");
-		assert.match(result.rejection?.reason ?? "", /changed while the audit was in flight/);
+		assert.equal(result.error?.operation, "complete_plan_goal");
+		assert.match(result.error?.reason ?? "", /changed while the audit was in flight/);
 		assert.equal(run.getState().status, "active");
 		assert.equal(readGoalState(cwd).goal?.objective, "A different objective");
 		assert.equal(readText(paths.files["progress.md"]), progressBefore);
@@ -1151,7 +1157,7 @@ describe("completion audit", () => {
 			gate.resolve({ kind: "completed", text: "VERDICT: APPROVE" });
 
 			const result = await pending;
-			assert.match(result.rejection?.reason ?? "", /changed while the audit was in flight/);
+			assert.match(result.error?.reason ?? "", /changed while the audit was in flight/);
 			assert.equal(run.getState().status, "active");
 			assert.deepEqual(readGoalState(cwd).goal, external.goal);
 			assert.equal(readGoalState(cwd).impl.runId, external.impl.runId);
@@ -1173,8 +1179,7 @@ describe("completion audit", () => {
 		gate.resolve({ kind: "completed", text: "VERDICT: APPROVE" });
 		const result = await pending;
 
-		assert.equal(result.rejection, undefined);
-		assert.equal(result.failure, undefined);
+		assert.equal(result.error, undefined);
 		assert.equal(run.getState().status, "complete");
 		assert.equal(readGoalState(cwd).impl.runId, before.impl.runId);
 	});
@@ -1191,15 +1196,15 @@ describe("completion audit", () => {
 		};
 
 		const emptySummary = await run.complete({ summary: "  " }, harness.context(), { modelCall: transport });
-		assert.equal(emptySummary.rejection?.operation, "complete_plan_goal");
-		assert.match(emptySummary.rejection?.reason ?? "", /summary is required/);
+		assert.equal(emptySummary.error?.operation, "complete_plan_goal");
+		assert.match(emptySummary.error?.reason ?? "", /summary is required/);
 		assert.equal(run.getState().status, "active");
 
 		// A run that is not active is rejected by the transition without an audit.
 		run.handle({ type: "pause", params: { reason: "blocked" } }, harness.context());
 		const paused = await run.complete({ summary: "done" }, harness.context(), { modelCall: transport });
-		assert.equal(paused.rejection?.operation, "complete_plan_goal");
-		assert.match(paused.rejection?.reason ?? "", /only an active goal implementation/);
+		assert.equal(paused.error?.operation, "complete_plan_goal");
+		assert.match(paused.error?.reason ?? "", /only an active goal implementation/);
 
 		assert.equal(calls, 0);
 	});

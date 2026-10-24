@@ -13,7 +13,7 @@ import {
 	MESSAGE_TYPE_GOAL_SET,
 } from "./types.ts";
 import { defaultGoalDraft, defaultGoalState, readGoalState, readGoalStateForUpdate, writeGoalState } from "./state.ts";
-import { goalContractFromDraft, mergeDraft } from "./draft.ts";
+import { mergeDraft } from "./draft.ts";
 import { runCompletionAudit, type AuditModelResult, type AuditUsage } from "./audit.ts";
 import { ensureDir, fileExists, getPaths, normalizeString, normalizeStringArray, nowIso, readText, tailLines } from "./utils.ts";
 import {
@@ -32,14 +32,14 @@ import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
 /**
  * Goal lifecycle — a single deep module that owns the whole goal lifecycle
  * policy: state transitions (drafting → ready → active/paused/complete),
- * effect execution and rollback, the independent completion audit and its
+ * effect execution, the independent completion audit and its
  * adjudication (rejected blocks, unavailable fails open, cancellation keeps
  * the run active), and the Continuation decision for the active
  * implementation run.
  *
  * Pi hooks only express GoalLifecycleEvent values and read the
- * GoalLifecycleResult projection (rejection/failure/continuation). They never
- * see the internal effect vocabulary or the rollback protocol. The automatic
+ * GoalLifecycleResult projection (error/continuation). They never
+ * see the internal effect vocabulary. The automatic
  * Continuation is decided at Pi's agent_before_settle boundary and returned
  * as data — Pi schedules the next model request itself, so nothing here races
  * compaction for the idle window. "Goal implementation run" (see CONTEXT.md)
@@ -70,8 +70,8 @@ export type CompletionAuditCall = (system: string, user: string, signal?: AbortS
 
 /** Run result projection: what the caller needs to know after an operation. */
 export type GoalLifecycleResult = {
-	rejection?: { operation: string; reason: string };
-	failure?: { operation: string; reason: string };
+	/** Single error channel: the rejected or failed operation, and why. */
+	error?: { operation: string; reason: string };
 	/** Settled-run Continuation for Pi's agent_before_settle boundary, when the run should continue. */
 	continuation?: { message: OutgoingGoalMessage };
 	/** Completion-audit projection: note for the host's success message, plus the auditor's usage for session accounting. Present whenever a completion audit was attempted. */
@@ -156,10 +156,6 @@ function reject(operation: string, reason: string): GoalLifecycleEffect[] {
 	return [{ type: "reject", operation, reason }];
 }
 
-function isCompleteDraft(state: GoalOverlayState): boolean {
-	return goalContractFromDraft(state.draft) !== null;
-}
-
 function contractFromParams(params: CommitGoalParams): GoalContract | null {
 	const objective = normalizeString(params.objective);
 	const successCriteria = normalizeStringArray(params.successCriteria);
@@ -173,35 +169,11 @@ function contractFromParams(params: CommitGoalParams): GoalContract | null {
 }
 
 /**
- * Outcome of a rollback attempt: whether a prior state was actually restored
- * (or nothing had been published), and whether restoring it could itself be
- * persisted — a rollback write failure leaves disk validity unknown.
- */
-type RollbackOutcome = { restored: boolean; error: string | null };
-
-/**
- * Compose the user-facing failure reason. The message only claims a clean
- * restoration when a rollback write actually succeeded; when nothing was
- * ever published it says the prior state is preserved instead.
- */
-function buildFailureReason(message: string, outcome: RollbackOutcome): string {
-	if (outcome.error) {
-		return `Goal run failed and the prior state could not be persisted; state may be inconsistent. Retry the operation. ${message} Rollback write error: ${outcome.error}`;
-	}
-	if (outcome.restored) {
-		return `Goal run failed; state restored. Retry the operation. ${message}`;
-	}
-	// Nothing was ever published: the prior state is preserved in memory and on disk.
-	return `Goal run failed; state preserved. Retry the operation. ${message}`;
-}
-
-/**
  * Create the goal lifecycle for one planning workspace (cwd). `deps` are the
  * stable Pi-side capabilities; per-operation context is passed with each event.
  */
 export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalLifecycle {
 	let state = readGoalState(cwd);
-	let rollbackState: GoalOverlayState | null = null;
 	let progressSeenThisRun = false;
 	let terminalStopReason: string | undefined;
 	let terminalErrorMessage = "";
@@ -233,38 +205,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 	/**
 	 * Persist before publishing: a goal-state write failure must not leave
-	 * memory ahead of disk, and must not install a rollback target for a
-	 * state that never landed.
+	 * memory ahead of disk.
 	 */
 	const persist = (next: GoalOverlayState): void => {
-		const previous = state;
-		const persisted = writeGoalState(cwd, next);
-		rollbackState = cloneState(previous);
-		state = persisted;
-	};
-
-	/**
-	 * Restore the pre-mutation state, persisting it back. `restored` is false
-	 * only when nothing was ever published (so there is nothing to restore);
-	 * `error` is set when the rollback write itself failed.
-	 */
-	const rollback = (): RollbackOutcome => {
-		if (!rollbackState) return { restored: false, error: null };
-		const target = rollbackState;
-		rollbackState = null;
-		let writeError: unknown = null;
-		try {
-			writeGoalState(cwd, target);
-		} catch (error) {
-			writeError = error;
-		}
-		state = target;
-		progressSeenThisRun = false;
-		terminalStopReason = undefined;
-		terminalErrorMessage = "";
-		turnStopped = null;
-		if (writeError) return { restored: true, error: writeError instanceof Error ? writeError.message : String(writeError) };
-		return { restored: true, error: null };
+		state = writeGoalState(cwd, next);
 	};
 
 	const mutate = (mutation: (current: GoalOverlayState) => GoalOverlayState): void => {
@@ -291,17 +235,42 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			{ type: "refresh" },
 		];
 	};
-	// ---- state machine: GoalLifecycleEvent -> internal effects ----
+		/**
+		 * Recovery route for an effect that failed after its transition was
+		 * persisted: the route must be one the status now on disk still
+		 * accepts. A bare retry of the same operation is a silent no-op on an
+		 * active run (implementation-request without input) and a rejection on
+		 * a completed one (complete_plan_goal), so the message routes around
+		 * the persisted status instead of suggesting a literal retry.
+		 */
+		const effectFailureGuidance = (): string => {
+			switch (state.status) {
+				case "complete":
+					return "The completion is already saved and complete_plan_goal cannot run again on it; use /plan-new to archive the workspace and start a new goal.";
+				case "active":
+					return recoveryPending
+						? "Retry /plan-goal-impl; it re-sends the continuation."
+						: "Pause the run first (pause_plan_goal), then retry /plan-goal-impl; a bare retry is a no-op while the run is active.";
+				case "paused":
+					return "The pause was saved; resume with /plan-goal-impl.";
+				case "drafting":
+					return "Retry /plan-goal-set to re-create the goal design and re-send the drafting prompt.";
+				case "ready":
+					return "The commit was saved; start implementation with /plan-goal-impl.";
+				default:
+					return "Retry the operation, or use /plan-new to repair the workspace if the failure persists.";
+			}
+		};
 
-	const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
-		rollbackState = null;
+		// ---- state machine: GoalLifecycleEvent -> internal effects ----
+
+		const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
 		switch (event.type) {
 			case "sync":
 				return [];
 
 			case "restore":
 				state = readGoalStateForUpdate(cwd) ?? defaultGoalState();
-				rollbackState = null;
 				progressSeenThisRun = false;
 				terminalStopReason = undefined;
 				terminalErrorMessage = "";
@@ -380,12 +349,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			case "commit": {
 				if (state.status !== "drafting") {
 					return reject("commit_plan_goal", "commit_plan_goal rejected: goal drafting is not in progress.");
-				}
-				if (!isCompleteDraft(state)) {
-					return reject(
-						"commit_plan_goal",
-						"Goal commit rejected: the saved goal draft must contain non-empty objective, successCriteria, constraints, outOfScope, and blockerRule.",
-					);
 				}
 				const goal = contractFromParams(event.params);
 				if (!goal) {
@@ -596,11 +559,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		}
 	};
 
-	// ---- effect execution and rollback ----
+	// ---- effect execution ----
 
 	const execute = (effects: GoalLifecycleEffect[], context: GoalLifecycleContext): GoalLifecycleResult => {
-		let rejection: GoalLifecycleResult["rejection"];
-		let failure: GoalLifecycleResult["failure"];
+		let error: GoalLifecycleResult["error"];
 		let continuation: GoalLifecycleResult["continuation"];
 		try {
 			for (const effect of effects) {
@@ -684,17 +646,22 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						context.notify(effect.message, effect.level);
 						break;
 					case "reject":
-						rejection = { operation: effect.operation, reason: effect.reason };
+						error = { operation: effect.operation, reason: effect.reason };
 						break;
 				}
 			}
-		} catch (error) {
-			const outcome = rollback();
+		} catch (caught) {
+			// No rollback: the transition was already persisted (single writes
+			// never tear), and the original error carries the recovery route
+			// that fits the status now on disk.
 			continuation = undefined;
-			const message = error instanceof Error ? error.message : String(error);
-			failure = { operation: "effect-execution", reason: buildFailureReason(message, outcome) };
+			const detail = caught instanceof Error ? caught.message : String(caught);
+			error = {
+				operation: "effect-execution",
+				reason: `Goal operation failed: ${detail} Saved changes are preserved (current status: ${state.status}). ${effectFailureGuidance()}`,
+			};
 		}
-		return { rejection, failure, ...(continuation ? { continuation } : {}) };
+		return { error, ...(continuation ? { continuation } : {}) };
 	};
 
 	/**
@@ -706,8 +673,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		// The turn boundary is independent of disk health: a new turn must be able
 		// to repair a bad state file instead of inheriting the previous stop gate.
 		if (event.type === "turn-start") turnStopped = null;
-		// A failed read must not roll back a previous, already successful operation.
-		rollbackState = null;
 		if (event.type !== "restore" && event.type !== "reset") {
 			try {
 				syncState();
@@ -715,15 +680,17 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				// Keep an explicit retry route once the file has been repaired.
 				if (state.status === "active") recoveryPending = true;
 				const detail = error instanceof Error ? error.message : String(error);
-				return { failure: { operation: "state-sync", reason: `Goal run failed: cannot read current goal state; no state was written. ${detail}` } };
+				return { error: { operation: "state-sync", reason: `Goal run failed: cannot read current goal state; no state was written. ${detail}` } };
 			}
 		}
 		try {
 			return execute(transition(event), context);
-		} catch (error) {
-			const outcome = rollback();
-			const message = error instanceof Error ? error.message : String(error);
-			return { failure: { operation: "effect-execution", reason: buildFailureReason(message, outcome) } };
+		} catch (caught) {
+			// A transition-time failure (e.g. the goal-state write) wrote
+			// nothing — memory and disk still agree — so a literal retry of
+			// the same operation is the correct first route.
+			const detail = caught instanceof Error ? caught.message : String(caught);
+			return { error: { operation: "effect-execution", reason: `Goal operation failed: ${detail} No state was written; saved changes are preserved (current status: ${state.status}). Retry the operation, or use /plan-new to repair the workspace if the failure persists.` } };
 		}
 	};
 
@@ -772,7 +739,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			);
 			const usage = "usage" in outcome && outcome.usage ? outcome.usage : undefined;
 			const auditResult = (reason: string): GoalLifecycleResult => ({
-				rejection: { operation: "complete_plan_goal", reason },
+				error: { operation: "complete_plan_goal", reason },
 				...(usage ? { audit: { note: "", usage } } : {}),
 			});
 			// A user cancellation during the audit must not accept the goal: the

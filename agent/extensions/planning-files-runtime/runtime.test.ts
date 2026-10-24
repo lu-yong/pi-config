@@ -270,13 +270,13 @@ test("before-agent refresh and tool-call drafting gate import external status", 
 	assert.ok(h.widget()?.includes("goal: drafting"));
 });
 
-test("adapter refresh does not discard the lifecycle rollback target", async () => {
+test("a failed implementation send surfaces a warning and keeps the persisted transition", async () => {
 	const h = harness("ready");
 	await h.event("session_start", { reason: "new" });
 	h.failSend();
 	await h.command("plan-goal-impl");
-	assert.equal(readGoalState(h.cwd).status, "ready");
-	assert.ok(h.warnings.some((message) => /state restored/.test(message)));
+	assert.equal(readGoalState(h.cwd).status, "active");
+	assert.ok(h.warnings.some((message) => /send failed/.test(message)));
 });
 
 test("bad JSON is reported without replacing the widget with an empty goal or rewriting disk", async () => {
@@ -397,7 +397,7 @@ for (const input of ["我使用重置卡，额度已恢复\n请继续核验", " 
 		const repaired = writeGoalState(h.cwd, before);
 		h.failSend();
 		await h.command("plan-goal-impl", "失败的旧补充");
-		assert.match(h.warnings.at(-1)!, /state preserved.*send failed/);
+		assert.match(h.warnings.at(-1)!, /send failed/);
 		h.failSend(false);
 		await h.command("plan-goal-impl", input);
 		assert.equal(h.messages.length, 1);
