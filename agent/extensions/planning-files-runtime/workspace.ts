@@ -197,54 +197,39 @@ export function initializePlanningWorkspace(cwd: string, goal?: GoalContract, ru
 	writeText(paths.files["progress.md"], `${createProgressTemplate(goal, runId)}\n`);
 }
 
-export type GoalWorkspaceFileOps = {
-	readFileSync(target: string, encoding: "utf8"): string;
-	writeFileSync(target: string, content: string, encoding: "utf8"): void;
-	renameSync(source: string, destination: string): void;
-	rmSync(target: string, options: { force: true }): void;
-};
-
-const defaultGoalWorkspaceFileOps: GoalWorkspaceFileOps = {
-	readFileSync: (target, encoding) => fs.readFileSync(target, encoding),
-	writeFileSync: (target, content, encoding) => fs.writeFileSync(target, content, encoding),
-	renameSync: (source, destination) => fs.renameSync(source, destination),
-	rmSync: (target, options) => fs.rmSync(target, options),
-};
-
-function replaceFileAtomically(target: string, content: string, ops: GoalWorkspaceFileOps): void {
+function replaceFileAtomically(target: string, content: string): void {
 	const temporary = path.join(path.dirname(target), `.${path.basename(target)}.goal-finalize-${process.pid}-${Math.random().toString(16).slice(2)}.tmp`);
 	try {
-		ops.writeFileSync(temporary, content, "utf8");
-		ops.renameSync(temporary, target);
+		fs.writeFileSync(temporary, content, "utf8");
+		fs.renameSync(temporary, target);
 	} finally {
-		ops.rmSync(temporary, { force: true });
+		fs.rmSync(temporary, { force: true });
 	}
 }
 
 /**
- * Finalize both human-readable Goal projections as one compensating workspace
- * operation. Individual replacements are atomic; caught later failures restore
- * both originals before the error is returned to the overlay executor.
+ * Finalize both human-readable Goal projections. Each file is replaced
+ * atomically in turn; a failure throws naming the file that failed and the
+ * files already finalized are left in place.
  */
 export function finalizeGoalWorkspace(
 	cwd: string,
 	completion: GoalCompletion,
-	options: { fileOps?: GoalWorkspaceFileOps; timestamp?: string } = {},
+	options: { timestamp?: string } = {},
 ): void {
 	const paths = getPaths(cwd);
 	const taskPlanPath = paths.files["task_plan.md"];
 	const progressPath = paths.files["progress.md"];
-	const ops = options.fileOps ?? defaultGoalWorkspaceFileOps;
 	let originalTaskPlan: string;
 	try {
-		originalTaskPlan = ops.readFileSync(taskPlanPath, "utf8");
+		originalTaskPlan = fs.readFileSync(taskPlanPath, "utf8");
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(`Cannot finalize Goal workspace: task_plan.md is required. ${reason}`);
 	}
 	let originalProgress: string;
 	try {
-		originalProgress = ops.readFileSync(progressPath, "utf8");
+		originalProgress = fs.readFileSync(progressPath, "utf8");
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(`Cannot finalize Goal workspace: progress.md is required. ${reason}`);
@@ -253,111 +238,38 @@ export function finalizeGoalWorkspace(
 	const nextProgress = finalizeProgressMarkdown(originalProgress, completion, options.timestamp ?? new Date().toISOString());
 	if (nextTaskPlan === originalTaskPlan && nextProgress === originalProgress) return;
 
-	try {
-		if (nextTaskPlan !== originalTaskPlan) replaceFileAtomically(taskPlanPath, nextTaskPlan, ops);
-		if (nextProgress !== originalProgress) replaceFileAtomically(progressPath, nextProgress, ops);
-	} catch (error) {
-		const restoreErrors: string[] = [];
-		for (const [target, original] of [[taskPlanPath, originalTaskPlan], [progressPath, originalProgress]] as const) {
-			try {
-				replaceFileAtomically(target, original, ops);
-			} catch (restoreError) {
-				restoreErrors.push(`${path.basename(target)}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
-			}
+	const pending: Array<{ name: string; target: string; next: string }> = [];
+	if (nextTaskPlan !== originalTaskPlan) pending.push({ name: "task_plan.md", target: taskPlanPath, next: nextTaskPlan });
+	if (nextProgress !== originalProgress) pending.push({ name: "progress.md", target: progressPath, next: nextProgress });
+	const finalized: string[] = [];
+	for (const file of pending) {
+		try {
+			replaceFileAtomically(file.target, file.next);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			const landed = finalized.length > 0
+				? ` ${finalized.join(" and ")} ${finalized.length > 1 ? "were" : "was"} already finalized and left in place.`
+				: "";
+			throw new Error(`Cannot finalize Goal workspace: writing ${file.name} failed: ${reason}.${landed}`);
 		}
-		const reason = error instanceof Error ? error.message : String(error);
-		const restoration = restoreErrors.length > 0 ? ` Restoration also failed (${restoreErrors.join("; ")}).` : " Both files were restored.";
-		throw new Error(`Cannot finalize Goal workspace: ${reason}.${restoration}`);
+		finalized.push(file.name);
 	}
 }
-
-export type PlanningArchiveFileOps = {
-	renameSync(source: string, destination: string): void;
-	copyFileSync(source: string, destination: string): void;
-	cpSync(source: string, destination: string, options: { recursive: true }): void;
-	rmSync(target: string, options: { force: true; recursive?: true }): void;
-};
 
 type PlanningArchiveEntry = {
 	source: string;
 	destination: string;
-	kind: "file" | "directory";
 };
-
-const defaultPlanningArchiveFileOps: PlanningArchiveFileOps = {
-	renameSync: (source, destination) => fs.renameSync(source, destination),
-	copyFileSync: (source, destination) => fs.copyFileSync(source, destination),
-	cpSync: (source, destination, options) => fs.cpSync(source, destination, options),
-	rmSync: (target, options) => fs.rmSync(target, options),
-};
-
-function archiveErrorCode(error: unknown): string {
-	return typeof error === "object" && error !== null && "code" in error
-		? String((error as { code?: unknown }).code ?? "")
-		: "";
-}
 
 function archiveErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-class ArchiveEntryRecoveryError extends Error {
-	readonly recoveryReason: string;
-
-	constructor(message: string, recoveryReason: string) {
-		super(message);
-		this.recoveryReason = recoveryReason;
-	}
-}
-
-function copyArchiveEntry(entry: PlanningArchiveEntry, ops: PlanningArchiveFileOps): void {
-	if (entry.kind === "directory") {
-		ops.cpSync(entry.source, entry.destination, { recursive: true });
-		return;
-	}
-	ops.copyFileSync(entry.source, entry.destination);
-}
-
-function removeArchiveEntry(target: string, kind: PlanningArchiveEntry["kind"], ops: PlanningArchiveFileOps): void {
-	if (kind === "directory") {
-		ops.rmSync(target, { force: true, recursive: true });
-		return;
-	}
-	ops.rmSync(target, { force: true });
-}
-
-function moveArchiveEntry(entry: PlanningArchiveEntry, ops: PlanningArchiveFileOps): void {
+function moveArchiveEntry(entry: PlanningArchiveEntry): void {
 	try {
-		ops.renameSync(entry.source, entry.destination);
-		return;
+		fs.renameSync(entry.source, entry.destination);
 	} catch (error) {
-		if (archiveErrorCode(error) !== "EXDEV") throw error;
-	}
-
-	try {
-		copyArchiveEntry(entry, ops);
-	} catch (error) {
-		try {
-			removeArchiveEntry(entry.destination, entry.kind, ops);
-		} catch (cleanupError) {
-			throw new Error(`${archiveErrorMessage(error)} Cross-device copy cleanup also failed: ${archiveErrorMessage(cleanupError)}`);
-		}
-		throw error;
-	}
-
-	try {
-		removeArchiveEntry(entry.source, entry.kind, ops);
-	} catch (error) {
-		try {
-			copyArchiveEntry({ source: entry.destination, destination: entry.source, kind: entry.kind }, ops);
-			removeArchiveEntry(entry.destination, entry.kind, ops);
-		} catch (recoveryError) {
-			throw new ArchiveEntryRecoveryError(
-				archiveErrorMessage(error),
-				`Cross-device source removal recovery failed: ${archiveErrorMessage(recoveryError)}`,
-			);
-		}
-		throw error;
+		throw new Error(`${path.basename(entry.source)}: ${archiveErrorMessage(error)}`);
 	}
 }
 
@@ -367,7 +279,6 @@ export function archivePlanningWorkspace(
 		includeGoalState: boolean;
 		includeGoalDesign: boolean;
 		label: string;
-		fileOps?: PlanningArchiveFileOps;
 	},
 ): string | null {
 	const paths = getPaths(cwd);
@@ -385,42 +296,32 @@ export function archivePlanningWorkspace(
 	const entries: PlanningArchiveEntry[] = sources.map((source) => ({
 		source,
 		destination: path.join(archiveDir, path.basename(source)),
-		kind: "file",
 	}));
 	if (includeTasks) {
-		entries.push({ source: paths.tasksDir, destination: path.join(archiveDir, "tasks"), kind: "directory" });
+		entries.push({ source: paths.tasksDir, destination: path.join(archiveDir, "tasks") });
 	}
 
-	const ops = options.fileOps ?? defaultPlanningArchiveFileOps;
 	const moved: PlanningArchiveEntry[] = [];
 	try {
 		for (const entry of entries) {
-			moveArchiveEntry(entry, ops);
+			moveArchiveEntry(entry);
 			moved.push(entry);
 		}
 		return archiveDir;
 	} catch (error) {
-		const rollbackErrors: string[] = error instanceof ArchiveEntryRecoveryError
-			? [`current entry: ${error.recoveryReason}`]
-			: [];
+		const restoreErrors: string[] = [];
 		for (const entry of [...moved].reverse()) {
 			try {
-				moveArchiveEntry({ source: entry.destination, destination: entry.source, kind: entry.kind }, ops);
-			} catch (rollbackError) {
-				rollbackErrors.push(`${path.basename(entry.source)}: ${archiveErrorMessage(rollbackError)}`);
+				moveArchiveEntry({ source: entry.destination, destination: entry.source });
+			} catch (restoreError) {
+				restoreErrors.push(archiveErrorMessage(restoreError));
 			}
 		}
-
 		const reason = archiveErrorMessage(error);
-		if (rollbackErrors.length > 0) {
-			throw new Error(`${reason} Archive rollback also failed (${rollbackErrors.join("; ")}). Partial archive retained at ${archiveDir}.`);
-		}
-		try {
-			ops.rmSync(archiveDir, { force: true, recursive: true });
-		} catch (cleanupError) {
-			throw new Error(`${reason} Workspace restored, but incomplete archive cleanup failed: ${archiveErrorMessage(cleanupError)}`);
-		}
-		throw error;
+		const restoration = restoreErrors.length > 0
+			? `Restoring the workspace also failed (${restoreErrors.join("; ")}).`
+			: "The workspace was restored.";
+		throw new Error(`${reason}. ${restoration} Partial archive retained at ${archiveDir}.`);
 	}
 }
 
