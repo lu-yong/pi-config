@@ -2,8 +2,7 @@
  * qna 扩展的配置解析 — 纯逻辑，零 import（连 node 内置模块都不引），读盘留给 index.ts 这层适配器。
  *
  * 配置位置: ~/.pi/agent/settings.json 顶层的 "qna" 键。
- * 顶层按扩展名开一个块是本机 settings.json 已有的约定（见 "observational-memory"），
- * 抽取模型的 { provider, id, thinking } 形状也照抄它，避免再发明一套。
+ * 抽取模型通过 { provider, id, thinking } 指定。
  *
  * 全部字段都是可选的：文件缺失、JSON 损坏、类型不对，一律降级到默认值，绝不抛异常 ——
  * 配置出问题不能让 /qna 不可用。
