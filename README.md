@@ -7,7 +7,7 @@
 - `agent/` 对应 `~/.pi/agent/`，其中的扩展、技能、prompt、键位和追加系统说明面向所有项目。
 - `.pi/` 是**本配置仓库自己的项目配置**，目前只剩 `planning/`（planning-files-runtime 的项目状态）；项目级扩展和技能已移除，仓库根的 `AGENTS.md` 提供最小化指引，不再预设工作流。
 - `agent/settings.json`、`agent/models.json`、认证文件及 npm 安装目录只保存在本机，未入库。下文的包、模型和默认设置是本机快照，**不是 clone 后即可还原的完整配置**。
-- `agent/skills/` 中除 `impl-with-spawn`、`wayfinder` 外均为指向 `~/.cc-switch/skills/` 的软链接。迁移时需另行准备这些技能源，并配置包和模型认证。
+- `agent/skills/` 中除 `impl-with-spawn`、`wayfinder` 外均是 `magpie` 管理的软链接。迁移时需另行准备这些技能源，并配置包和模型认证。
 
 ## 安装的插件（Packages）
 
@@ -33,7 +33,7 @@
   "provider": "zai",
   "zaiApiKey": "$ZAI_CODING_CN_API_KEY",
   "zaiEndpoint": "china",
-  "summaryModel": "cc-switch-zhipu-glm/glm-5.3-flash:low",
+  "summaryModel": "magpie/auto/glm-5.3-flash:low",
   "workflow": "summary-review",
   "ssrf": {
     "allowRanges": ["198.18.0.0/15"]
@@ -144,7 +144,7 @@
 
 ### 外部依赖：taskmd
 
-`wayfinder` 技能依赖本机的 `taskmd` 命令（Markdown 任务管理 CLI，附带 Web 看板与 MCP server），它是显式前置依赖，不随 Pi 自动安装。其来源为 GitHub 项目 [driangle/taskmd](https://github.com/driangle/taskmd)：本机安装的是 release 压缩包 `taskmd-v0.4.1-linux-amd64.tar.gz`，解包后将二进制移至 `~/.local/bin/taskmd`，当前版本 0.4.1（commit `52dd1bf`，2026-08-19 构建）。来源通过二进制内嵌的 Go module 路径（`github.com/driangle/taskmd/...`）确认。该二进制只保存在本机、不入库；迁移机器时需从该项目 release 页重新下载对应平台的压缩包。
+`wayfinder` 技能依赖本机的 `taskmd` 命令（Markdown 任务管理 CLI，附带 Web 看板与 MCP server），它是显式前置依赖，不随 Pi 自动安装。其来源为 GitHub 项目 [driangle/taskmd](https://github.com/driangle/taskmd)。迁移机器时Linux系统可以安装对应架构的 release 压缩包, 将里面的可执行程序放到能被系统找到的路径即可例如~/.local/bin下；Macos请看项目README通过brew下载。
 
 
 ## 子 Agent 管理
@@ -174,7 +174,7 @@
 
 工具默认按角色的 `tools.allow` 过滤；`All except blocked` / `All` 模式会放宽这一限制。子 agent 共享工作目录和 OS 权限，工具策略不是沙箱；`bash` 只读行为由角色约束，产生文件的测试/构建交给父 agent。不要假定父会话的只读模式自动约束子线程，也不要让多个写入任务同时修改同一文件。
 
-`agent/subagent-manager/settings.json` 和运行状态只保存在本机；仓库仅纳管 `agents/` 下的自定义定义。迁移时安装新包并移除旧的 `pi-herdr-agents` 及其依赖宿主的 `pi-herdr-roles` 包；二者的旧角色、配置和专属命令不再使用。
+`agent/subagent-manager/settings.json` 和运行状态只保存在本机；仓库仅纳管 `agents/` 下的自定义定义。
 
 ### 原生入口与保留的工作流
 
@@ -190,8 +190,6 @@
 | `/goal-review <目标或变更范围>` | 将目标、范围及 skill 元数据交给专用 `code-reviewer` |
 
 也可直接说“用 `code-reviewer` subagent 审查最后一次提交”。主 agent 通过 `agent_types` 选择类型，再调用 `agent_spawn`；使用 `agent_steer` 继续已有线程，长报告通过 `agent_output` 获取。独立任务先全部以 `wait: false` 启动，再按需等待；依赖任务顺序执行。
-
-旧包的 `/subagent`、`/plan`、`/skill:orchestrate`、`/iterate`、`/btw` 和 `/worktree` 入口已停用；本地 planning-files-runtime 的 `/plan-*` 命令继续使用。
 
 ### 普通交互命令与长期进程
 
@@ -214,15 +212,9 @@
 
 ## 架构决策记录（`docs/adr/`）
 
-影响仓库设计的决策记录在 `docs/adr/`。当前仅 ADR-0001：provider 扩展保持独立配置、不提取共享模型目录；文中提到的 provider 扩展目录现已不在本仓库，该篇按历史决策保留。
+影响仓库设计的决策记录在 `docs/adr/`。
 
 ## TUI 配置
-
-### 主题与模式（`agent/settings.json`，本机）
-
-- **主题**：`tokyo-night-storm`（`@firstpick/pi-themes-bundle` 提供）。
-- **TUI 模式**：`fullscreen`。
-- 当前没有 `agent/zentui.json`，也未在 `packages` 中启用独立的 zentui 包。
 
 ### pi-footer（`agent/extensions/pi-footer.json`）
 
