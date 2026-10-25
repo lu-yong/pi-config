@@ -5,8 +5,8 @@ description: Non-mutating change review or scoped code audit using the local
   gathers Git evidence independently and reports demonstrable findings without
   implementing fixes.
 models:
-  - magpie/auto/glm-5.3
   - magpie/auto/gpt-6.1-sol
+  - magpie/auto/glm-5.3
 modelSuggestions:
   - glm-5.3
   - gpt-6.1-sol
