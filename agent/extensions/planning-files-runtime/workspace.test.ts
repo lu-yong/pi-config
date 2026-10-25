@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, mock, test } from "node:test";
 
 import {
 	archivePlanningWorkspace,
@@ -135,6 +135,42 @@ test("a write failure throws naming the file and leaves both originals on disk",
 	} finally {
 		fs.chmodSync(paths.root, 0o755);
 	}
+});
+
+test("retries a partial finalization without rolling back the task plan or duplicating completion records", () => {
+	const cwd = makeCwd();
+	const originals = seed(cwd);
+	const paths = getPaths(cwd);
+	const renameSync = fs.renameSync;
+	const rename = mock.method(fs, "renameSync", (source, destination) => {
+		if (destination === paths.files["progress.md"]) throw new Error("simulated progress replacement failure");
+		renameSync(source, destination);
+	});
+	let finalizedTaskPlan: string;
+	try {
+		const message = expectError(() => finalizeGoalWorkspace(cwd, completion, { timestamp: "2026-08-12T00:00:00.000Z" }));
+		assert.match(message, /writing progress\.md failed: simulated progress replacement failure/);
+		assert.match(message, /task_plan\.md was already finalized and left in place/);
+		finalizedTaskPlan = readText(paths.files["task_plan.md"]);
+		assert.match(finalizedTaskPlan, /## Current Phase\nComplete/);
+		assert.match(finalizedTaskPlan, /## Findings\n- untouched/);
+		assert.notEqual(finalizedTaskPlan, originals.taskPlan);
+		assert.equal(readText(paths.files["progress.md"]), originals.progress);
+	} finally {
+		rename.mock.restore();
+	}
+
+	finalizeGoalWorkspace(cwd, completion, { timestamp: "2026-08-12T00:01:00.000Z" });
+	assert.equal(readText(paths.files["task_plan.md"]), finalizedTaskPlan);
+	const progress = readText(paths.files["progress.md"]);
+	assert.match(progress, /Workspace finalized \| evidence: tests pass/);
+	assert.match(progress, /Goal implementation completed \(run 3\): Workspace finalized/);
+	for (const kind of ["evidence", "timeline"]) {
+		assert.equal(progress.split(`<!-- goal-completion:run-3:${kind} -->`).length - 1, 1);
+	}
+	finalizeGoalWorkspace(cwd, completion, { timestamp: "2026-08-12T00:02:00.000Z" });
+	assert.equal(readText(paths.files["task_plan.md"]), finalizedTaskPlan);
+	assert.equal(readText(paths.files["progress.md"]), progress);
 });
 
 test("archives an active planning workspace without creating replacement templates", () => {

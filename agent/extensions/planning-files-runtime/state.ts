@@ -128,10 +128,13 @@ export function readGoalStateForUpdate(cwd: string): GoalOverlayState | null {
 		throw error;
 	}
 	const raw = JSON.parse(text);
-	if (raw === null || typeof raw !== "object" || typeof (raw as Record<string, unknown>).status !== "string") {
+	const normalized = normalizeGoalState(raw);
+	if (raw === null || typeof raw !== "object"
+		|| normalized.status !== raw.status
+		|| (raw.goal != null && normalized.goal === null)) {
 		throw new Error(`Invalid goal state in ${target}; repair the file before continuing.`);
 	}
-	return normalizeGoalState(raw);
+	return normalized;
 }
 
 export function readGoalState(cwd: string): GoalOverlayState {

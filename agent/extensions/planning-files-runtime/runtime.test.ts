@@ -270,6 +270,30 @@ test("before-agent refresh and tool-call drafting gate import external status", 
 	assert.ok(h.widget()?.includes("goal: drafting"));
 });
 
+test("an unknown status preserves the drafting gate until a valid state is restored", async () => {
+	const h = harness("drafting");
+	await h.event("session_start", { reason: "new" });
+	const target = getPaths(h.cwd).goalState;
+	const original = readGoalState(h.cwd);
+	const sourceWrite = { toolName: "write", input: { path: "src/app.ts" } };
+	assert.equal((await h.event("tool_call", sourceWrite) as { block?: boolean })?.block, true);
+
+	const corrupt = `${JSON.stringify({ ...original, status: "draftng" })}\n`;
+	writeText(target, corrupt);
+	const blocked = await h.event("tool_call", sourceWrite);
+	assert.equal((blocked as { block?: boolean })?.block, true);
+	assert.ok(h.warnings.some((message) => /cannot read current goal state.*Invalid goal state/.test(message)));
+	assert.equal(fs.readFileSync(target, "utf8"), corrupt);
+	assert.equal(await h.event("tool_call", { toolName: "write", input: { path: target } }), undefined);
+
+	writeGoalState(h.cwd, { ...original, status: "ready" });
+	const warningCount = h.warnings.length;
+	assert.equal(await h.event("tool_call", sourceWrite), undefined);
+	assert.equal(h.warnings.length, warningCount);
+	await h.event("before_agent_start");
+	assert.ok(h.widget()?.includes("goal: ready"));
+});
+
 test("a failed implementation send surfaces a warning and keeps the persisted transition", async () => {
 	const h = harness("ready");
 	await h.event("session_start", { reason: "new" });

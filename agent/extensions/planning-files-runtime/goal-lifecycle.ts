@@ -235,36 +235,32 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			{ type: "refresh" },
 		];
 	};
-		/**
-		 * Recovery route for an effect that failed after its transition was
-		 * persisted: the route must be one the status now on disk still
-		 * accepts. A bare retry of the same operation is a silent no-op on an
-		 * active run (implementation-request without input) and a rejection on
-		 * a completed one (complete_plan_goal), so the message routes around
-		 * the persisted status instead of suggesting a literal retry.
-		 */
-		const effectFailureGuidance = (): string => {
-			switch (state.status) {
-				case "complete":
-					return "The completion is already saved and complete_plan_goal cannot run again on it; use /plan-new to archive the workspace and start a new goal.";
-				case "active":
-					return recoveryPending
-						? "Retry /plan-goal-impl; it re-sends the continuation."
-						: "Pause the run first (pause_plan_goal), then retry /plan-goal-impl; a bare retry is a no-op while the run is active.";
-				case "paused":
-					return "The pause was saved; resume with /plan-goal-impl.";
-				case "drafting":
-					return "Retry /plan-goal-set to re-create the goal design and re-send the drafting prompt.";
-				case "ready":
-					return "The commit was saved; start implementation with /plan-goal-impl.";
-				default:
-					return "Retry the operation, or use /plan-new to repair the workspace if the failure persists.";
-			}
-		};
+	/** Recovery guidance follows the saved status and the operation that failed. */
+	const effectFailureGuidance = (effect: GoalLifecycleEffect | undefined): string => {
+		if (effect?.type === "finalize-goal-workspace") {
+			return "Repair the workspace or storage error, then retry complete_plan_goal; the goal remains active.";
+		}
+		switch (state.status) {
+			case "complete":
+				return "The completion is already saved; use /plan-new to archive the workspace and start a new goal.";
+			case "active":
+				return recoveryPending && !state.impl.planningResetRequired
+					? "Retry /plan-goal-impl; it re-sends the continuation."
+					: "Pause the run first (pause_plan_goal), then retry /plan-goal-impl; a bare retry is a no-op while the run is active.";
+			case "paused":
+				return "The pause was saved; resume with /plan-goal-impl.";
+			case "drafting":
+				return "Retry /plan-goal-set to re-create the goal design and re-send the drafting prompt.";
+			case "ready":
+				return "The commit was saved; start implementation with /plan-goal-impl.";
+			default:
+				return "Retry the operation, or use /plan-new to repair the workspace if the failure persists.";
+		}
+	};
 
-		// ---- state machine: GoalLifecycleEvent -> internal effects ----
+	// ---- state machine: GoalLifecycleEvent -> internal effects ----
 
-		const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
+	const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
 		switch (event.type) {
 			case "sync":
 				return [];
@@ -389,7 +385,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					// A stalled run — its Continuation was lost to a failed
 					// delivery and the pause recovery could not be persisted —
 					// is recoverable by re-sending the same run's continuation.
-					if (recoveryPending && state.goal) {
+					if (recoveryPending && state.goal && !state.impl.planningResetRequired) {
 						return [{ type: "send-continuation", runId: state.impl.runId, supplementalInput }];
 					}
 					if (supplementalInput) {
@@ -401,8 +397,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					return reject("plan-goal-impl", "No committed goal is ready to implement. Run /plan-goal-set first.");
 				}
 				if (!state.goal) return reject("plan-goal-impl", "No committed goal is ready to implement. Run /plan-goal-set first.");
-				if (state.status === "ready") {
-					const runId = state.impl.runId + 1;
+				if (state.status === "ready" || state.impl.planningResetRequired) {
+					const runId = state.status === "ready" ? state.impl.runId + 1 : state.impl.runId || 1;
 					mutate((current) => ({
 						...current,
 						status: "active",
@@ -410,8 +406,9 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 							...current.impl,
 							runId,
 							tokensUsed: 0,
-							planningResetRequired: false,
-							initializedAt: nowIso(),
+							// Keep the reset pending until both archive and initialization succeed.
+							planningResetRequired: true,
+							initializedAt: null,
 							lastResumedAt: nowIso(),
 							pausedReason: "",
 							pausedSuggestedAction: "",
@@ -465,16 +462,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				if (state.status !== "active") {
 					return reject("complete_plan_goal", "complete_plan_goal rejected: only an active goal implementation can be completed.");
 				}
+				if (state.impl.planningResetRequired) {
+					return reject("complete_plan_goal", "Goal workspace initialization is incomplete. Pause the run, then retry /plan-goal-impl before completing it.");
+				}
 				const summary = normalizeString(event.params.summary);
 				if (!summary) return reject("complete_plan_goal", "complete_plan_goal rejected: summary is required.");
 				const evidence = normalizeStringArray(event.params.evidence);
-				mutate((current) => ({
-					...current,
-					status: "complete",
-					impl: { ...current.impl, completedSummary: summary, pausedReason: "", pausedSuggestedAction: "" },
-				}));
-				turnStopped = "complete_plan_goal";
-				recoveryPending = false;
 				return [
 					{ type: "finalize-goal-workspace", completion: { summary, evidence, runId: state.impl.runId } },
 				];
@@ -516,7 +509,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				// The terminal stop reason is authoritative here: an aborted turn
 				// already paused at turn-end, so this branch only decides whether
 				// a completed run continues.
-				if (state.status !== "active") {
+				if (state.status !== "active" || state.impl.planningResetRequired) {
 					progressSeenThisRun = false;
 					return [{ type: "refresh" }];
 				}
@@ -564,8 +557,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	const execute = (effects: GoalLifecycleEffect[], context: GoalLifecycleContext): GoalLifecycleResult => {
 		let error: GoalLifecycleResult["error"];
 		let continuation: GoalLifecycleResult["continuation"];
+		let executingEffect: GoalLifecycleEffect | undefined;
 		try {
 			for (const effect of effects) {
+				executingEffect = effect;
 				switch (effect.type) {
 					case "ensure-goal-design":
 						ensureDir(getPaths(cwd).root);
@@ -580,6 +575,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						break;
 					case "initialize-implementation-workspace":
 						initializePlanningWorkspace(cwd, effect.goal, effect.runId);
+						mutate((current) => ({
+							...current,
+							impl: { ...current.impl, planningResetRequired: false, initializedAt: nowIso() },
+						}));
 						break;
 					case "ensure-implementation-workspace":
 						if (!hasPlanningFiles(cwd)) initializePlanningWorkspace(cwd, effect.goal, effect.runId);
@@ -589,6 +588,14 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						break;
 					case "finalize-goal-workspace":
 						finalizeGoalWorkspace(cwd, effect.completion);
+						// Finalization is idempotent; only publish completion after it succeeds.
+						mutate((current) => ({
+							...current,
+							status: "complete",
+							impl: { ...current.impl, completedSummary: effect.completion.summary, pausedReason: "", pausedSuggestedAction: "" },
+						}));
+						turnStopped = "complete_plan_goal";
+						recoveryPending = false;
 						break;
 					case "refresh":
 						context.refresh();
@@ -651,14 +658,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				}
 			}
 		} catch (caught) {
-			// No rollback: the transition was already persisted (single writes
-			// never tear), and the original error carries the recovery route
-			// that fits the status now on disk.
+			// Preserve completed writes and offer a retry route for the failed effect.
 			continuation = undefined;
 			const detail = caught instanceof Error ? caught.message : String(caught);
 			error = {
 				operation: "effect-execution",
-				reason: `Goal operation failed: ${detail} Saved changes are preserved (current status: ${state.status}). ${effectFailureGuidance()}`,
+				reason: `Goal operation failed: ${detail} Saved changes are preserved (current status: ${state.status}). ${effectFailureGuidance(executingEffect)}`,
 			};
 		}
 		return { error, ...(continuation ? { continuation } : {}) };
@@ -725,7 +730,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		let auditProjection: { note: string; usage?: AuditUsage } | undefined;
 		// An invalid request must not spend audit tokens; nor must a run that
 		// is not active (the transition rejects both with its standard reasons).
-		if (summary && state.status === "active" && state.goal) {
+		if (summary && state.status === "active" && state.goal && !state.impl.planningResetRequired) {
 			const auditedGoal = state.goal;
 			const auditedRunId = state.impl.runId;
 			const outcome = await runCompletionAudit(

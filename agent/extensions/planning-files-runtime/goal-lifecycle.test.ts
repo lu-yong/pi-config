@@ -280,6 +280,80 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /Goal implementation started \(run 1\)/);
 	});
 
+	test("a failed first archive is retried after pause and reload before using the new goal", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		initializePlanningWorkspace(cwd, { ...contractParams, objective: "OLD GOAL" }, 0);
+		let run = prepareDraft(cwd, harness);
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		const paths = getPaths(cwd);
+		const oldPlan = readText(paths.files["task_plan.md"]);
+		writeText(paths.archiveRoot, "block archive directory");
+		harness.clearSent();
+
+		const failed = run.handle({ type: "implementation-request" }, harness.context());
+		assert.match(failed.error?.reason ?? "", /Pause the run first/);
+		assert.equal(readGoalState(cwd).impl.planningResetRequired, true);
+		assert.equal(run.getState().impl.initializedAt, null);
+		assert.equal(harness.sent.length, 0);
+		assert.equal(settleWithProgress(run, harness), undefined);
+		let audits = 0;
+		const completion = await complete(run, { summary: "must not finish the old workspace" }, harness, async () => {
+			audits++;
+			return { kind: "failed", reason: "unexpected audit" };
+		});
+		assert.match(completion.error?.reason ?? "", /initialization is incomplete/);
+		assert.equal(audits, 0);
+
+		fs.rmSync(paths.archiveRoot);
+		assert.equal(run.handle({ type: "pause", params: { reason: "archive repaired" } }, harness.context()).error, undefined);
+		run = createGoalLifecycle(cwd, harness.deps);
+		const resumed = run.handle({ type: "implementation-request", supplementalInput: "storage repaired" }, harness.context());
+		assert.equal(resumed.error, undefined);
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.getState().impl.runId, 1);
+		assert.equal(readGoalState(cwd).impl.planningResetRequired, false);
+		assert.ok(run.getState().impl.initializedAt);
+		assert.equal(getPlanningSnapshot(cwd, false).goalFromPlan, contractParams.objective);
+		const archives = fs.readdirSync(paths.archiveRoot);
+		assert.equal(archives.length, 1);
+		assert.equal(readText(path.join(paths.archiveRoot, archives[0]!, "task_plan.md")), oldPlan);
+		assert.equal(harness.sent.length, 1);
+		assert.doesNotMatch(harness.sent[0]!.message.content, /OLD GOAL/);
+		assert.match(harness.sent[0]!.message.content, /storage repaired/);
+	});
+
+	test("resume rebuilds all templates after initialization only wrote the task plan", (t) => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareDraft(cwd, harness);
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		const paths = getPaths(cwd);
+		const writeFile = fs.writeFileSync;
+		const write = t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+			if (args[0] === paths.files["findings.md"]) throw new Error("findings write failed");
+			return writeFile(...args);
+		});
+		const failed = run.handle({ type: "implementation-request" }, harness.context());
+		write.mock.restore();
+		assert.match(failed.error?.reason ?? "", /findings write failed/);
+		assert.equal(fileExists(paths.files["task_plan.md"]), true);
+		assert.equal(fileExists(paths.files["findings.md"]), false);
+		assert.equal(readGoalState(cwd).impl.planningResetRequired, true);
+
+		run.handle({ type: "pause", params: { reason: "storage repaired" } }, harness.context());
+		harness.clearSent();
+		const resumed = run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(resumed.error, undefined);
+		assert.equal(run.getState().impl.runId, 1);
+		assert.equal(readGoalState(cwd).impl.planningResetRequired, false);
+		for (const name of ["task_plan.md", "findings.md", "progress.md"] as const) {
+			assert.ok(readText(paths.files[name]).includes(contractParams.objective));
+		}
+		assert.equal(harness.sent.length, 1);
+	});
+
 	test("an unreadable goal-state path does not publish the transition and a repaired retry is not a no-op", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
@@ -512,11 +586,12 @@ describe("goal lifecycle", () => {
 		assert.match(readText(paths.files["progress.md"]), /done \| evidence: tests pass/);
 	});
 
-	test("failed completion finalization reports the error and keeps the completed state", async () => {
+	test("failed completion finalization keeps the run active and succeeds after the plan is repaired", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
 		settleWithProgress(run, harness);
+		run.handle({ type: "turn-start" }, harness.context());
 		const paths = getPaths(cwd);
 
 		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 1\n\n## Blocker\nold\n\n## Blocker\nduplicate\n");
@@ -526,21 +601,23 @@ describe("goal lifecycle", () => {
 		const result = await complete(run, { summary: "cannot finish" }, harness);
 
 		assert.match(result.error?.reason ?? "", /duplicate "## Blocker" headings/);
-		// The message states the preserved status and the only viable route:
-		// complete_plan_goal rejects a retry on a completed goal, so /plan-new
-		// is the way out, not a literal retry.
-		assert.match(result.error?.reason ?? "", /current status: complete/);
-		assert.match(result.error?.reason ?? "", /complete_plan_goal cannot run again/);
-		assert.match(result.error?.reason ?? "", /\/plan-new/);
-		// The completion transition was already persisted and is kept; the
-		// workspace keeps its originals because finalization failed before writing.
-		assert.equal(run.getState().status, "complete");
-		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
+		assert.match(result.error?.reason ?? "", /current status: active/);
+		assert.match(result.error?.reason ?? "", /retry complete_plan_goal/);
+		assert.equal(readGoalState(cwd).status, "active");
+		assert.equal(run.turnStoppedBy(), null);
 		assert.equal(readText(paths.files["task_plan.md"]), originalTaskPlan);
 		assert.equal(readText(paths.files["progress.md"]), originalProgress);
+
+		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 1\n\n## Blocker\n[empty]\n");
+		const retry = await complete(run, { summary: "finished", evidence: ["verified"] }, harness);
+		assert.equal(retry.error, undefined);
+		assert.equal(readGoalState(cwd).status, "complete");
+		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
+		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
+		assert.match(readText(paths.files["progress.md"]), /finished \| evidence: verified/);
 	});
 
-	test("missing progress.md returns a clear failure and keeps the completed state", async () => {
+	test("missing progress.md can be restored before retrying completion", async () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness);
@@ -551,8 +628,62 @@ describe("goal lifecycle", () => {
 
 		const result = await complete(run, { summary: "cannot finish" }, harness);
 		assert.match(result.error?.reason ?? "", /progress.md is required/);
-		assert.equal(run.getState().status, "complete");
-		assert.equal(hasActiveGoal(cwd), false);
+		assert.equal(run.getState().status, "active");
+		assert.equal(hasActiveGoal(cwd), true);
+		writeText(paths.files["progress.md"], "# Progress\n");
+		const retry = await complete(run, { summary: "finished" }, harness);
+		assert.equal(retry.error, undefined);
+		assert.equal(readGoalState(cwd).status, "complete");
+		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
+		assert.match(readText(paths.files["progress.md"]), /finished/);
+	});
+
+	test("completion retries a failed state commit without duplicating finalized evidence", async (t) => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "turn-start" }, harness.context());
+		const paths = getPaths(cwd);
+		const originalState = readText(paths.goalState);
+		const renameFile = fs.renameSync;
+		const rename = t.mock.method(fs, "renameSync", (source: fs.PathLike, destination: fs.PathLike) => {
+			if (destination === paths.goalState) throw new Error("state commit failed");
+			renameFile(source, destination);
+		});
+		const params = { summary: "finished", evidence: ["verified once"] };
+		const failed = await complete(run, params, harness);
+		rename.mock.restore();
+		assert.match(failed.error?.reason ?? "", /state commit failed/);
+		assert.match(failed.error?.reason ?? "", /retry complete_plan_goal/);
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.turnStoppedBy(), null);
+		assert.equal(readText(paths.goalState), originalState);
+		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
+		const finalizedProgress = readText(paths.files["progress.md"]);
+
+		const retry = await complete(run, params, harness);
+		assert.equal(retry.error, undefined);
+		assert.equal(readGoalState(cwd).status, "complete");
+		assert.equal(run.turnStoppedBy(), "complete_plan_goal");
+		assert.equal(readText(paths.files["progress.md"]), finalizedProgress);
+		assert.equal(finalizedProgress.split("goal-completion:run-1:evidence").length - 1, 1);
+	});
+
+	test("a malformed stored goal cannot bypass completion auditing", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "turn-start" }, harness.context());
+		const paths = getPaths(cwd);
+		const malformed = JSON.stringify({ ...run.getState(), goal: { objective: "" } });
+		writeText(paths.goalState, malformed);
+		const originalPlan = readText(paths.files["task_plan.md"]);
+		const result = await complete(run, { summary: "must not complete" }, harness);
+		assert.match(result.error?.reason ?? "", /Invalid goal state/);
+		assert.equal(run.getState().status, "active");
+		assert.equal(run.turnStoppedBy(), null);
+		assert.equal(readText(paths.goalState), malformed);
+		assert.equal(readText(paths.files["task_plan.md"]), originalPlan);
 	});
 
 	test("agent settlement refreshes a paused widget without restoring task-plan next actions", () => {

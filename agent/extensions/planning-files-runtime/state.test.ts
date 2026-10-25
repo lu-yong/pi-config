@@ -105,10 +105,33 @@ test("lifecycle reads reject structurally invalid state", () => {
 	}
 });
 
+for (const invalidStatus of ["unexpected", "draftng"]) {
+	test(`lifecycle reads reject unknown status ${invalidStatus} while read-only queries remain compatible`, () => {
+		const cwd = makeCwd();
+		const target = getPaths(cwd).goalState;
+		const content = `${JSON.stringify({ status: invalidStatus })}\n`;
+		writeText(target, content);
+		assert.throws(() => readGoalStateForUpdate(cwd), /Invalid goal state in .*; repair the file before continuing\./);
+		assert.equal(fs.readFileSync(target, "utf8"), content);
+		assert.equal(readGoalState(cwd).status, "none");
+	});
+}
+
+for (const goal of [{ objective: "" }, { objective: "   " }, {}, [], "broken"]) {
+	test(`lifecycle reads reject an invalid supplied goal ${JSON.stringify(goal)}`, () => {
+		const cwd = makeCwd();
+		const target = getPaths(cwd).goalState;
+		const content = `${JSON.stringify({ ...defaultGoalState(), status: "active", goal })}\n`;
+		writeText(target, content);
+		assert.throws(() => readGoalStateForUpdate(cwd), /Invalid goal state in .*; repair the file before continuing\./);
+		assert.equal(fs.readFileSync(target, "utf8"), content);
+		assert.equal(readGoalState(cwd).goal, null);
+	});
+}
+
 test("lifecycle reads converge partial state instead of rejecting it", () => {
 	const cwd = makeCwd();
-	// No draft/impl records or version: a real state file always carries a
-	// string status, so normalization fills in the rest.
+	// A known status is enough when optional state fields are absent.
 	writeText(
 		getPaths(cwd).goalState,
 		`${JSON.stringify({ status: "active", updatedAt: "2026-01-01T00:00:00.000Z" })}\n`,
@@ -117,10 +140,15 @@ test("lifecycle reads converge partial state instead of rejecting it", () => {
 	assert.equal(state?.status, "active");
 	assert.equal(state?.version, 1);
 	assert.equal(state?.impl.runId, 0);
+	assert.deepEqual(state?.draft, defaultGoalState().draft);
+	assert.equal(state?.goal, null);
 	assert.equal(state?.updatedAt, "2026-01-01T00:00:00.000Z");
 
-	writeText(getPaths(cwd).goalState, `${JSON.stringify({ status: "unexpected" })}\n`);
-	assert.equal(readGoalStateForUpdate(cwd)?.status, "none");
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({ status: "drafting", goal: null })}\n`);
+	assert.equal(readGoalStateForUpdate(cwd)?.status, "drafting");
+
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({ status: "ready", goal: { objective: "Partial contract" } })}\n`);
+	assert.equal(readGoalStateForUpdate(cwd)?.goal?.objective, "Partial contract");
 });
 
 test("goal state round-trips the token budget fields", () => {
