@@ -62,7 +62,7 @@ export type GoalCompletion = {
 
 export type GoalImplState = {
 	runId: number;
-	/** Tokens consumed by the current budget window; reset by each start/resume. */
+	/** Cumulative tokens for this goal, including drafting and every implementation resume. Reset with the planning workspace. */
 	tokensUsed: number;
 	planningResetRequired: boolean;
 	initializedAt: string | null;

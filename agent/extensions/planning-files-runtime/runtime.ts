@@ -14,11 +14,11 @@ import type {
 } from "./types.ts";
 import { normalizeString, normalizeStringArray, sumUsageTokens } from "./utils.ts";
 import { parseAuditModelRef, resolveAuditModel, type AuditModelResult } from "./audit.ts";
-import { archivePlanningWorkspace, getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
+import { archivePlanningWorkspace, getPlanningSnapshot, getPlanningDetails, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt } from "./prompts.ts";
-import { buildWidgetLines } from "./ui.ts";
+import { buildWidgetLines, PlanningGoalDialog } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
 import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
 
@@ -32,6 +32,7 @@ import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, typ
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	let state = getPlanningSnapshot(process.cwd(), false);
 	const lifecycles = new Map<string, GoalLifecycle>();
+	let widget: { requestRender(): void } | undefined;
 
 	function lifecycleFor(cwd: string): GoalLifecycle {
 		let lifecycle = lifecycles.get(cwd);
@@ -69,7 +70,24 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		}
 		if (!ctx.hasUI) return;
 		try {
-			ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state), { placement: "aboveEditor" });
+			if (ctx.mode === "rpc") {
+				ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state, 80, ctx.ui.theme), { placement: "aboveEditor" });
+			} else if (widget) {
+				widget.requestRender();
+			} else {
+				// Keep an empty component mounted too: later goals reuse the same slot.
+				// Pi deletes/reinserts a widget on every setWidget(), changing its order.
+				ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
+					const mounted = { requestRender: () => tui.requestRender() };
+					widget = mounted;
+					return {
+						render: (width) => (buildWidgetLines(state, Math.max(0, width - 2), theme) ?? [])
+							.map((line) => width > 1 ? ` ${line}` : line),
+						invalidate: () => {},
+						dispose: () => { if (widget === mounted) widget = undefined; },
+					};
+				}, { placement: "aboveEditor" });
+			}
 		} catch (error) {
 			reportRefreshFailure(ctx, "更新 planning widget 失败", error);
 		}
@@ -246,6 +264,25 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	}
 
 	// ---- commands ----
+	pi.registerCommand("planning-goal", {
+		description: "Show the full planning goal, current phase, next action, blockers, and token usage.",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/planning-goal requires interactive TUI mode.", "info");
+				return;
+			}
+			try {
+				const snapshot = getPlanningDetails(ctx.cwd, state.resumedFromPreviousSession);
+				await ctx.ui.custom<void>((tui, theme, keys, done) => new PlanningGoalDialog(snapshot, tui, theme, keys, done), {
+					overlay: true,
+					overlayOptions: { width: "90%", anchor: "center" },
+				});
+			} catch (error) {
+				reportRefreshFailure(ctx, "打开 planning goal 失败", error);
+			}
+		},
+	});
+
 	pi.registerCommand("plan-archive", {
 		description: "Archive the current .pi/planning workspace without creating a new one, regardless of goal status.",
 		handler: async (_args, ctx) => {

@@ -23,10 +23,23 @@ export function hasPlanningFiles(cwd: string): boolean {
 
 // ---- snapshot ----
 
-/** Read the live planning state callers reason about, without exposing markdown. */
+/** Read the compact live planning state used by summaries and prompts. */
 export function getPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
+	return readPlanningSnapshot(cwd, resumedFromPreviousSession, false);
+}
+
+/** Read complete planning section bodies for the inspector, including every line. */
+export function getPlanningDetails(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
+	return readPlanningSnapshot(cwd, resumedFromPreviousSession, true);
+}
+
+function readPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean, fullValues: boolean): PlanningSnapshot {
 	const paths = getPaths(cwd);
 	const taskPlan = readText(paths.files["task_plan.md"]);
+	const sectionValue = (heading: string) => {
+		const body = extractSection(taskPlan, heading);
+		return fullValues ? body : firstMeaningfulLine(body);
+	};
 	return {
 		planningRoot: paths.root,
 		files: paths.files,
@@ -34,10 +47,10 @@ export function getPlanningSnapshot(cwd: string, resumedFromPreviousSession: boo
 		tasksDir: paths.tasksDir,
 		goalStatePath: paths.goalState,
 		exists: hasPlanningFiles(cwd),
-		currentPhase: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.currentPhase)),
-		goalFromPlan: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.goal)),
-		nextAction: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.nextAction)),
-		blocker: firstMeaningfulLine(extractSection(taskPlan, HEADINGS.blocker)),
+		currentPhase: sectionValue(HEADINGS.currentPhase),
+		goalFromPlan: sectionValue(HEADINGS.goal),
+		nextAction: sectionValue(HEADINGS.nextAction),
+		blocker: sectionValue(HEADINGS.blocker),
 		goalState: readGoalState(cwd),
 		resumedFromPreviousSession,
 	};

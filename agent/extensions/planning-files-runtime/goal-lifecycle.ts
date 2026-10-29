@@ -180,6 +180,9 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	// In-memory, never persisted: the turn-stop gate and the recovery intent
 	// must not survive a process restart.
 	let turnStopped: string | null = null;
+	// A successful terminal tool owns its automatic follow-up turns until the
+	// agent run settles, independently of the per-turn tool-stop gate.
+	let countClosingRun = false;
 	// Set when a lost Continuation's pause recovery could not be persisted:
 	// the run stays active (memory and disk agree), and an explicit
 	// /plan-goal-impl re-sends the same run's continuation once storage works.
@@ -374,6 +377,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					impl: { ...current.impl, planningResetRequired: true, pausedReason: "", pausedSuggestedAction: "", completedSummary: "" },
 				}));
 				turnStopped = "commit_plan_goal";
+				countClosingRun = true;
 				return [
 					{ type: "refresh" },
 				];
@@ -405,7 +409,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						impl: {
 							...current.impl,
 							runId,
-							tokensUsed: 0,
 							// Keep the reset pending until both archive and initialization succeed.
 							planningResetRequired: true,
 							initializedAt: null,
@@ -427,7 +430,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				mutate((current) => ({
 					...current,
 					status: "active",
-					impl: { ...current.impl, runId, tokensUsed: 0, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "", pausedSuggestedAction: "" },
+					impl: { ...current.impl, runId, planningResetRequired: false, lastResumedAt: nowIso(), pausedReason: "", pausedSuggestedAction: "" },
 				}));
 				return [
 					{ type: "ensure-implementation-workspace", goal: state.goal, runId },
@@ -450,6 +453,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					impl: { ...current.impl, pausedReason: reason, pausedSuggestedAction: suggestedAction },
 				}));
 				turnStopped = "pause_plan_goal";
+				countClosingRun = true;
 				recoveryPending = false;
 				return [
 					{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
@@ -490,12 +494,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalErrorMessage = normalizeString(event.errorMessage);
 				// Count this turn's tokens before any stop handling: provider-error
 				// responses still consume input tokens, and an aborted turn may have
-				// streamed partial output before the user pressed Esc. The closing
-				// response of a pause/complete tool call already changed the status,
-				// so the stop gate — not the status — identifies its turn.
+				// streamed partial output before the user pressed Esc. A terminal
+				// tool changes status before turn-end, but its follow-up responses
+				// still belong to this goal until the agent run settles.
 				const usageTokens = event.usageTokens;
-				const closingTurn = turnStopped === "pause_plan_goal" || turnStopped === "complete_plan_goal";
-				if ((state.status === "active" || closingTurn) && usageTokens !== undefined && usageTokens > 0) {
+				if ((state.status === "drafting" || state.status === "active" || countClosingRun) && usageTokens !== undefined && usageTokens > 0) {
 					mutate((current) => ({ ...current, impl: { ...current.impl, tokensUsed: current.impl.tokensUsed + usageTokens } }));
 				}
 				if (state.status === "active" && event.stopReason === "aborted") {
@@ -528,10 +531,10 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				const tokenBudget = state.goal?.tokenBudget;
 				if (tokenBudget !== undefined && state.impl.tokensUsed >= tokenBudget) {
 					return pauseForSystem(
-						`Token budget exhausted: ${state.impl.tokensUsed} / ${tokenBudget} tokens used in this budget window.`,
+						`Token budget exhausted: ${state.impl.tokensUsed} / ${tokenBudget} tokens used over this goal's lifecycle.`,
 						{
-							suggestedAction: "Resume with /plan-goal-impl to open a fresh budget window, or re-commit the goal with a larger tokenBudget.",
-							notify: "Goal implementation paused: token budget exhausted. Resume with /plan-goal-impl to open a fresh budget window.",
+							suggestedAction: "Use /plan-goal-set to revise and re-commit this goal with a larger tokenBudget, then resume with /plan-goal-impl. Resuming preserves cumulative token usage.",
+							notify: "Goal implementation paused: token budget exhausted. Increase the goal's tokenBudget before continuing; /plan-goal-impl preserves cumulative token usage.",
 						},
 					);
 				}
@@ -595,6 +598,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 							impl: { ...current.impl, completedSummary: effect.completion.summary, pausedReason: "", pausedSuggestedAction: "" },
 						}));
 						turnStopped = "complete_plan_goal";
+						countClosingRun = true;
 						recoveryPending = false;
 						break;
 					case "refresh":
@@ -678,6 +682,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		// The turn boundary is independent of disk health: a new turn must be able
 		// to repair a bad state file instead of inheriting the previous stop gate.
 		if (event.type === "turn-start") turnStopped = null;
+		// End accounting ownership even if a corrupt state file prevents the
+		// lifecycle transition. A new run must not inherit stale ownership.
+		if (event.type === "agent-start" || event.type === "agent-settled" || event.type === "restore" || event.type === "reset") {
+			countClosingRun = false;
+		}
 		if (event.type !== "restore" && event.type !== "reset") {
 			try {
 				syncState();

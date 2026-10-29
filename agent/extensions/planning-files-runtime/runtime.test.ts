@@ -40,7 +40,15 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
 	const messages: Array<OutgoingGoalMessage & { options: OutgoingGoalMessageOptions }> = [];
 	const warnings: string[] = [];
-	let widget: string[] | undefined;
+	type TestWidget = { render(width: number): string[]; handleInput?(data: string): void; dispose?(): void };
+	let widget: string[] | TestWidget | undefined;
+	let dialog: TestWidget | undefined;
+	let customOptions: unknown;
+	let registrations = 0;
+	const widgetOrder = new Map<string, unknown>();
+	const theme = { fg: (_color: string, value: string) => value };
+	const tui = { terminal: { rows: 24 }, requestRender: () => {} };
+	const keys = { matches: (data: string, key: string) => data === key };
 	let failSend = false;
 	const pi = {
 		on: (name: string, callback: (event: any, ctx: ExtensionContext) => Promise<unknown>) => hooks.set(name, callback),
@@ -54,16 +62,33 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	const ctx = {
 		cwd,
 		hasUI: true,
+		mode: "tui",
 		isIdle: () => true,
 		ui: {
-			setWidget: (_key: string, lines: string[] | undefined) => { widget = lines; },
+			theme,
+			setWidget: (key: string, content: string[] | ((...args: any[]) => TestWidget) | undefined) => {
+				registrations++;
+				if (widget && !Array.isArray(widget)) widget.dispose?.();
+				widgetOrder.delete(key);
+				widget = typeof content === "function" ? content(tui, theme) : content;
+				if (widget) widgetOrder.set(key, widget);
+			},
+			custom: async (factory: (...args: any[]) => TestWidget, options: unknown) => {
+				dialog = factory(tui, theme, keys, () => {});
+				customOptions = options;
+			},
 			notify: (message: string, level: string) => { if (level === "warning") warnings.push(message); },
 		},
 	} as unknown as ExtensionContext;
 	planningFilesRuntime(pi);
 	return {
 		cwd, ctx, messages, warnings,
-		widget: () => widget,
+		widget: (width = 1000) => Array.isArray(widget) ? widget : widget?.render(width).map((line) => line.trim()),
+		registrations: () => registrations,
+		widgetOrder,
+		disposeWidget: () => { if (widget && !Array.isArray(widget)) widget.dispose?.(); widget = undefined; widgetOrder.clear(); },
+		dialog: () => dialog,
+		customOptions: () => customOptions,
 		failSend: (fail = true) => { failSend = fail; },
 		event: (name: string, event: unknown = {}) => hooks.get(name)!(event, ctx),
 		/** Invoke the native before-settle boundary; returns the hook's entries/continue decision. */
@@ -139,7 +164,7 @@ for (const progress of [true, false]) {
 		assert.equal(state.status, "paused");
 		assert.equal(state.impl.pausedReason, "The goal run was interrupted by the user.");
 		assert.equal(state.impl.pausedSuggestedAction, "");
-		assert.ok(h.widget()?.includes("goal: paused"));
+		assert.ok(h.widget()?.includes("state: paused"));
 		// The cancelled run can no longer continue.
 		assert.equal(await h.boundary(), undefined);
 		const progressPath = getPaths(h.cwd).files["progress.md"];
@@ -267,7 +292,7 @@ test("before-agent refresh and tool-call drafting gate import external status", 
 	const blocked = await h.event("tool_call", { toolName: "write", input: { path: "src/app.ts" } });
 	assert.equal((blocked as { block?: boolean })?.block, true);
 	await h.event("before_agent_start");
-	assert.ok(h.widget()?.includes("goal: drafting"));
+	assert.ok(h.widget()?.includes("state: drafting"));
 });
 
 test("an unknown status preserves the drafting gate until a valid state is restored", async () => {
@@ -291,7 +316,7 @@ test("an unknown status preserves the drafting gate until a valid state is resto
 	assert.equal(await h.event("tool_call", sourceWrite), undefined);
 	assert.equal(h.warnings.length, warningCount);
 	await h.event("before_agent_start");
-	assert.ok(h.widget()?.includes("goal: ready"));
+	assert.ok(h.widget()?.includes("state: ready"));
 });
 
 test("a failed implementation send surfaces a warning and keeps the persisted transition", async () => {
@@ -475,7 +500,7 @@ test("completing without an auditor model fails open with a visible note", async
 	assert.equal(readGoalState(h.cwd).status, "complete");
 });
 
-test("an approved verdict completes through the real transport and its usage joins the budget", async () => {
+test("an approved verdict completes through the real transport and its usage joins the goal total after an interrupted resume", async () => {
 	const h = harness();
 	const usage = { input: 30, output: 5, cacheRead: 0, cacheWrite: 0 };
 	(h.ctx as { model?: unknown }).model = { id: "main" };
@@ -490,6 +515,16 @@ test("an approved verdict completes through the real transport and its usage joi
 		}),
 	};
 	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	await h.event("turn_end", {
+		message: { role: "assistant", stopReason: "aborted", usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 10 } },
+	});
+	assert.equal(readGoalState(h.cwd).status, "paused");
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 160);
+	await h.event("session_start", { reason: "resume" });
+	await h.command("plan-goal-impl");
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 160);
+	await h.event("turn_start");
 	const result = (await h.tool("complete_plan_goal", { summary: "Done", evidence: ["Tests pass"] })) as {
 		isError?: boolean;
 		content: Array<{ type: string; text: string }>;
@@ -504,7 +539,21 @@ test("an approved verdict completes through the real transport and its usage joi
 		message: { role: "assistant", stopReason: "stop", usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 } },
 		toolResults: [{ usage }],
 	});
-	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 47);
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 207);
+	// Pi starts another turn to respond to the successful tool result.
+	await h.event("turn_start");
+	await h.event("turn_end", {
+		message: { role: "assistant", stopReason: "stop", usage: { input: 20, output: 3, cacheRead: 4, cacheWrite: 1 } },
+	});
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 235);
+	await h.event("agent_settled", { aborted: false });
+	assert.ok(h.widget()?.includes("tokens: 235"));
+	await h.event("agent_start");
+	await h.event("turn_start");
+	await h.event("turn_end", {
+		message: { role: "assistant", stopReason: "stop", usage: { input: 90, output: 10, cacheRead: 0, cacheWrite: 0 } },
+	});
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 235);
 });
 
 test("a rejected verdict reports an error through the real transport and keeps the goal active", async () => {
@@ -531,4 +580,106 @@ test("a rejected verdict reports an error through the real transport and keeps t
 	assert.match(result.content[0].text, /rejected by independent audit.*criterion 1: UNMET - no recorded evidence.*pause_plan_goal/);
 	assert.deepEqual(result.usage, usage);
 	assert.equal(readGoalState(h.cwd).status, "active");
+});
+
+test("planning refreshes keep their slot beside a repeatedly updated Agents widget", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	for (let i = 0; i < 5; i++) {
+		// Pi's setWidget contract deletes and reinserts the other extension's entry.
+		h.widgetOrder.delete("pi-subagent");
+		h.widgetOrder.set("pi-subagent", {});
+		writeText(getPaths(h.cwd).files["task_plan.md"], "# Task Plan\n\n## Blocker\nBlocker " + i + "\n");
+		await h.event("tool_result", { toolName: "replace_match", input: {} });
+		assert.deepEqual([...h.widgetOrder.keys()], ["planning-files-runtime", "pi-subagent"]);
+		assert.ok(h.widget()?.includes("blocker: Blocker " + i));
+	}
+	assert.equal(h.registrations(), 1);
+	await h.command("plan-archive");
+	assert.deepEqual(h.widget(), []);
+	await h.command("plan-new");
+	assert.ok(h.widget()?.includes("planning: initialized"));
+	assert.equal(h.registrations(), 1);
+	assert.deepEqual([...h.widgetOrder.keys()], ["planning-files-runtime", "pi-subagent"]);
+	// Pi disposes widgets on session replacement; the next session must mount anew.
+	h.disposeWidget();
+	await h.event("session_start", { reason: "resume" });
+	assert.equal(h.registrations(), 2);
+	assert.ok(h.widget()?.includes("Planning goal"));
+});
+
+test("/planning-goal reads fresh full values in an overlay without changing goal state", async () => {
+	const h = harness("paused");
+	await h.event("session_start", { reason: "new" });
+	const state = readGoalState(h.cwd);
+	state.goal!.objective = "Fresh objective from disk";
+	state.goal!.constraints = ["CURRENT_CONSTRAINT"];
+	writeGoalState(h.cwd, state);
+	const before = fs.readFileSync(getPaths(h.cwd).goalState, "utf8");
+	await h.command("planning-goal");
+	assert.ok(h.dialog()?.render(120).join("\n").includes("Fresh objective from disk"));
+	assert.deepEqual(h.customOptions(), { overlay: true, overlayOptions: { width: "90%", anchor: "center" } });
+	assert.equal(fs.readFileSync(getPaths(h.cwd).goalState, "utf8"), before);
+	assert.equal(h.messages.length, 0);
+	assert.deepEqual(h.warnings, []);
+});
+
+for (const status of ["none", "active", "paused", "complete"] as const) {
+	test(`/planning-goal reads every Markdown line while retaining ${status} projections`, async () => {
+		const h = harness(status);
+		await h.event("session_start", { reason: "new" });
+		const paths = getPaths(h.cwd);
+		const state = readGoalState(h.cwd);
+		if (status === "none") state.goal = null;
+		state.impl.pausedReason = "PAUSE_FIRST\nPAUSE_SECOND";
+		state.impl.pausedSuggestedAction = "RESUME_FIRST\nRESUME_SECOND";
+		writeGoalState(h.cwd, state);
+		const markdown = [
+			"## Goal", "GOAL_FIRST", "GOAL_SECOND", "",
+			"## Current Phase", "PHASE_FIRST", "PHASE_SECOND", "",
+			"## Next Concrete Action", "- NEXT_FIRST", ...Array.from({ length: 20 }, (_, i) => `- NEXT_STEP_${i}`), "- NEXT_LAST", "",
+			"## Blocker", "BLOCKER_FIRST", "BLOCKER_SECOND", "",
+		].join("\n");
+		writeText(paths.files["task_plan.md"], markdown);
+		await h.event("before_agent_start");
+		const summary = h.widget()!.join("\n");
+		assert.doesNotMatch(summary, /GOAL_SECOND|PHASE_SECOND|NEXT_LAST|BLOCKER_SECOND/);
+		const savedState = fs.readFileSync(paths.goalState, "utf8");
+		await h.command("planning-goal");
+		const dialog = h.dialog()!;
+		assert.ok(dialog.handleInput);
+		let pages = "";
+		for (let page = 0; page < 20; page++) {
+			pages += dialog.render(120).join("\n") + "\n";
+			dialog.handleInput("\x1b[6~");
+		}
+		if (status === "none") assert.match(pages, /GOAL_SECOND/);
+		if (status === "complete") {
+			assert.match(pages, /phase: Complete/);
+			assert.match(pages, /next: None \(goal complete\)\./);
+			assert.doesNotMatch(pages, /PHASE_SECOND|NEXT_LAST|BLOCKER_SECOND/);
+		} else {
+			assert.match(pages, /PHASE_SECOND/);
+			if (status === "paused") {
+				assert.match(pages, /PAUSE_SECOND/);
+				assert.match(pages, /RESUME_SECOND/);
+				assert.doesNotMatch(pages, /NEXT_LAST|BLOCKER_SECOND/);
+			} else {
+				assert.match(pages, /NEXT_LAST/);
+				assert.match(pages, /BLOCKER_SECOND/);
+			}
+		}
+		assert.equal(fs.readFileSync(paths.files["task_plan.md"], "utf8"), markdown);
+		assert.equal(fs.readFileSync(paths.goalState, "utf8"), savedState);
+	});
+}
+
+test("RPC refreshes retain the string widget protocol", async () => {
+	const h = harness();
+	(h.ctx as { mode: string }).mode = "rpc";
+	await h.event("session_start", { reason: "new" });
+	assert.ok(h.widget()?.includes("Planning goal"));
+	assert.ok(h.widget()?.includes("state: active"));
+	await h.command("planning-goal");
+	assert.equal(h.dialog(), undefined);
 });

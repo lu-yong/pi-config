@@ -695,8 +695,8 @@ describe("goal lifecycle", () => {
 		const harness = createHarness();
 		const run = createGoalLifecycle(cwd, harness.deps);
 		let widgetLines = buildWidgetLines(getPlanningSnapshot(cwd, false));
-		assert.deepEqual(widgetLines?.filter((line) => /^(goal|phase|next):/.test(line)), [
-			"goal: paused",
+		assert.deepEqual(widgetLines?.filter((line) => /^(state|phase|next):/.test(line)), [
+			"state: paused",
 			"phase: Phase 2/3",
 		]);
 
@@ -712,8 +712,8 @@ describe("goal lifecycle", () => {
 			},
 		);
 		assert.equal(result.error, undefined);
-		assert.deepEqual(widgetLines?.filter((line) => /^(goal|phase|next):/.test(line)), [
-			"goal: paused",
+		assert.deepEqual(widgetLines?.filter((line) => /^(state|phase|next):/.test(line)), [
+			"state: paused",
 			"phase: Phase 4",
 		]);
 	});
@@ -1022,6 +1022,88 @@ describe("token budget", () => {
 		return run;
 	}
 
+	test("goal usage accumulates from drafting through interrupted resumes and completion, and reset clears it", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		let run = prepareDraft(cwd, harness);
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "aborted", usageTokens: 20 }, harness.context());
+		assert.equal(run.getState().status, "drafting");
+		assert.equal(readGoalState(cwd).impl.tokensUsed, 120);
+
+		run = createGoalLifecycle(cwd, harness.deps);
+		run.handle({ type: "restore" }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 30 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 150);
+		run.handle({ type: "agent-settled" }, harness.context());
+		run.handle({ type: "agent-start" }, harness.context());
+		// A later conversation before implementation belongs to no goal turn.
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 40 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 150);
+
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 150);
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 200 }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "aborted", usageTokens: 50 }, harness.context());
+		assert.equal(run.getState().status, "paused");
+		assert.equal(readGoalState(cwd).impl.tokensUsed, 400);
+
+		run = createGoalLifecycle(cwd, harness.deps);
+		run.handle({ type: "restore" }, harness.context());
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 400);
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 200 }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "pause", params: { reason: "Manual pause" } }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 25 }, harness.context());
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 625);
+
+		run.handle({ type: "turn-start" }, harness.context());
+		await complete(run, { summary: "done" }, harness);
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
+		assert.equal(run.getState().status, "complete");
+		assert.equal(readGoalState(cwd).impl.tokensUsed, 725);
+		assert.ok(buildWidgetLines(getPlanningSnapshot(cwd, false))!.includes("tokens: 725"));
+		run.handle({ type: "agent-settled" }, harness.context());
+		run.handle({ type: "agent-start" }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 999 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 725);
+
+		run.handle({ type: "reset" }, harness.context());
+		assert.equal(readGoalState(cwd).impl.tokensUsed, 0);
+		run.handle({ type: "start-drafting", input: "New goal" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 12 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 12);
+	});
+
+	for (const boundary of ["agent-start", "agent-settled", "restore", "reset"] as const) {
+		test(`${boundary} clears closing accounting even when the state file is corrupt`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareDraft(cwd, harness);
+			run.handle({ type: "commit", params: contractParams }, harness.context());
+			run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 30 }, harness.context());
+			const saved = readGoalState(cwd);
+			writeText(getPaths(cwd).goalState, "{invalid json");
+			const result = run.handle({ type: boundary }, harness.context());
+			assert.equal(Boolean(result.error), boundary !== "reset");
+			// Repair the file without another cleanup event: no old accounting flag may remain.
+			writeGoalState(cwd, saved);
+			run.handle({ type: "turn-start" }, harness.context());
+			run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 40 }, harness.context());
+			assert.equal(run.getState().impl.tokensUsed, 30);
+		});
+	}
+
 	test("commit persists a valid tokenBudget and rejects invalid ones", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
@@ -1038,7 +1120,7 @@ describe("token budget", () => {
 		}
 	});
 
-	test("counts turn usage while active, regardless of budget, and ignores it otherwise", () => {
+	test("counts implementation and closing pause turns, then excludes unrelated settled conversations", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareActive(cwd, harness); // no tokenBudget in contractParams
@@ -1048,16 +1130,20 @@ describe("token budget", () => {
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 25 }, harness.context());
 		assert.equal(run.getState().impl.tokensUsed, 425);
 
-		// The closing response of the pause tool call still counts: the stop
-		// gate identifies its turn even though the status already changed.
+		// Both the tool-calling response and its automatic follow-up belong to the goal.
 		run.handle({ type: "pause", params: { reason: "checking" } }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
 		assert.equal(run.getState().impl.tokensUsed, 525);
 
-		// An unrelated later turn while paused does not count (turn-start clears the gate).
+		// A new turn alone is still the automatic response to the pause tool.
 		run.handle({ type: "turn-start" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 50 }, harness.context());
-		assert.equal(run.getState().impl.tokensUsed, 525);
+		assert.equal(run.getState().impl.tokensUsed, 575);
+		run.handle({ type: "agent-settled" }, harness.context());
+		run.handle({ type: "agent-start" }, harness.context());
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 80 }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 575);
 	});
 
 	test("the closing response of a completed goal counts its usage", async () => {
@@ -1072,7 +1158,7 @@ describe("token budget", () => {
 		assert.equal(run.getState().impl.tokensUsed, 420);
 	});
 
-	test("pauses instead of continuing once the budget is exhausted, and resume opens a fresh window", () => {
+	test("pauses instead of continuing once the budget is exhausted, and resume preserves lifetime usage", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareBudgetedActive(cwd, harness);
@@ -1095,7 +1181,23 @@ describe("token budget", () => {
 
 		run.handle({ type: "implementation-request" }, harness.context());
 		assert.equal(run.getState().status, "active");
-		assert.equal(run.getState().impl.tokensUsed, 0); // fresh budget window
+		assert.equal(run.getState().impl.tokensUsed, 1050);
+		assert.match(harness.sent.at(-1)!.message.content, /105%/);
+		run.handle({ type: "turn-start" }, harness.context());
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 50 }, harness.context());
+		assert.equal(decideContinuation(run, harness), undefined);
+		assert.equal(run.getState().status, "paused");
+		assert.equal(run.getState().impl.tokensUsed, 1100);
+
+		// Revising the same goal's cap must retain all spending, even though a new implementation run starts.
+		run.handle({ type: "start-drafting", input: "Increase the authorized goal budget" }, harness.context());
+		run.handle({ type: "commit", params: { ...budgetParams, tokenBudget: 2000 } }, harness.context());
+		run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(run.getState().impl.tokensUsed, 1100);
+		run.handle({ type: "progress-tool-called" }, harness.context());
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
+		assert.match(decideContinuation(run, harness)!.content, /60%/);
 	});
 
 	test("an exhausted budget does not pause a run that went quiet without progress", () => {
