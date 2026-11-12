@@ -166,11 +166,13 @@
 | `researcher` | 包内 | 代码调查和来源核实 |
 | `reviewer` | 包内 | 聚焦可证明的正确性与安全缺陷 |
 | `tasker` / `writer` | 包内 | 简短任务 / 文本撰写 |
-| `code-reviewer` | `agent/subagent-manager/agents/code-reviewer.md` | 使用 `code-review` skill，审查需求、规范/设计、安全/可靠性 |
+| `code-reviewer` | `agent/subagent-manager/agents/code-reviewer.md` | 使用 `code-review` skill 审查已有代码：实现与需求的一致性、编码规范/设计、安全/可靠性 |
 
 自定义定义的优先级为项目 `.pi/agent/subagent-manager/agents/` > 全局 `agent/subagent-manager/agents/` > 包内。Markdown 同名定义完整替换下层定义；YAML 文件仅覆盖设置。旧的 `agent/agents/` 目录不再使用。
 
 `code-reviewer` 的 thinking 固定为 `high`，模型继承父级；允许 `read`、`bash`、`grep`、`find`、`ls`、`agent_update`、`agent_pause`，自行获取 Git 差异，也支持不依赖 diff 的指定范围审计。三个审查维度在同一线程顺序执行，不继续委派。
+
+`code-reviewer` 的 Spec 轴检查“已有实现是否满足需求”，审查对象始终是代码。仅评审 proposal 的动机、design 的决策与权衡、spec 场景的可验证性或 tasks 的完整性与顺序时，应选择 `architect`；尚无实现的 OpenSpec change 属于此类方案文档评审。
 
 使用者需保证可用 skill 元数据中包含 `code-review`；该角色按元数据加载，缺失或读取失败直接报告失败并退出，不猜测安装路径。`/goal-review` 会将父会话可用的相关元数据传给子线程。
 
