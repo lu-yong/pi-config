@@ -29,6 +29,10 @@ agent/projects-memory
 
 .DS_Store
 agent/extensions/herdr-agent-state.ts
+agent/extensions/magpie.ts
+
+# 本地包源码（不入库）
+agent/pi-web-access/
 
 agent/crashes.json
 agent/subagent-manager/*
