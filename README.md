@@ -17,7 +17,7 @@
 |---|---|---|
 | `pi-web-access` | 网络搜索与网页内容抓取 | `pi install npm:pi-web-access` |
 | `pi-files-widget-overlay` | 浮动文件浏览器、查看器与 Git diff overlay，入口 `/readfiles`，是 tmustier files-widget 的 overlay 化分支 | `pi install npm:pi-files-widget-overlay` |
-| `@narumitw/pi-statusline` | Powerline 风格 TUI 状态栏，替代 pi-footer；配置入口 `/statusline` | `pi install npm:@narumitw/pi-statusline` |
+| `pi-footer` | 可配置的多行 TUI 状态栏（fork 版）；配置入口 `/footer` | `pi install git:github.com/lu-yong/pi-footer` |
 | `pi-subagent-manager` | 在 Pi 内管理可恢复的子 agent 线程，支持并行委派、跟进和结果回传 | `pi install npm:pi-subagent-manager` |
 | `pi-hashline-edit-pro` | 使用 4 字符锚点安全编辑文件，提供 `read`、`replace`、`replace_match`、`insert`、`copy`、`move`、`anchor_grep`、`undo_last_change`，禁用内置 `edit` | `pi install npm:pi-hashline-edit-pro` |
 | `pi-blackhole` | 算法化压缩接管 `/compact` 与自动压缩，配合观察/反思/丢弃三个后台 worker 保存跨压缩的工作记忆 | `pi install npm:pi-blackhole` |
@@ -220,14 +220,14 @@
 
 ## TUI 配置
 
-### @narumitw/pi-statusline（`agent/pi-statusline.json`）
+### pi-footer（`agent/extensions/pi-footer.json`）
 
-- **状态与入口**：已启用，替代原 pi-footer；`/statusline` 打开配置菜单（外观 / 信息密度 / Advanced / Status / Help），`/statusline settings` 编辑 JSON，`/statusline status` 查看生效配置与诊断。
-- **配置纳管**：`agent/pi-statusline.json` 纳入本仓库；该包仅读取单一设置文件 `~/.pi/agent/pi-statusline.json`，无项目级或环境变量覆盖。
-- **外观**：`palettePreset: "tokyo-night"` 配色、`density: "compact"` 紧凑间距、`separator: "none"` 无分隔符；终端不支持真彩时自动降级为 ANSI-256 色。
-- **布局**：`segments` 依次为 model、thinking、cwd、branch、tools、context、cache、time；`tools` 空闲时不占位，`cache` 无缓存读写时隐藏。
-- **segmentText**：各段 emoji 前缀（🤖 model、🧠 thinking、📁 cwd、🌿 branch、🪟 ctx、📦 cache、🕒 time）；model 段保留 36 个字素后从头部截断（`truncationDirection: "start"`）。
-- **extensionStatusIcons**：为带状态输出的扩展（accounts、goal、lsp、usage 等）指定状态图标。
+- **状态与入口**：已启用（fork 版 `git:github.com/lu-yong/pi-footer`）；`/footer` 打开配置界面，`/footer on`、`/footer off` 控制开关。界面修改需显式保存才写入配置文件。
+- **配置纳管**：`agent/extensions/pi-footer.json` 纳入本仓库；默认从 `~/.pi/agent/extensions/pi-footer.json` 读取，可通过 `PI_FOOTER_CONFIG` 指定其他路径。
+- **布局**：基于 `default` preset 自定义两行，均使用 `flex-separator` 将后续组件右对齐。
+  - 第一行：当前目录（`cwd`）、Git 分支（`git-branch`）、紧凑 diff（`git-diff`）；右侧显示输入/输出 Token（`tokens`）、会话缓存命中率（`cache-hit-rate`）和会话总耗时（`total-time`）。
+  - 第二行：模型（`model`，不显示 provider）和思考级别（`thinking-level`）；右侧显示上下文进度条（`context-bar`，`medium` 模式，关闭条件着色）。
+- **显示**：点分隔符（`separator: "dot"`）、Nerd Font 图标（`iconMode: "nerd"`，终端需配套字体）、全宽（`widthMode: "full"`）、256 色（`colorLevel: "ansi256"`）；未启用 minimalist 模式。
 
 ## 键位配置（`agent/keybindings.json`）
 

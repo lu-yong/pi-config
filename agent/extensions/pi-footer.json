@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "enabled": true,
+  "preset": "default",
+  "lines": [
+    [
+      {
+        "id": "cwd-mvg37hkd-y2q2p3",
+        "type": "cwd",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "icon": "",
+          "fg": "blue",
+          "bg": "default",
+          "bold": false,
+          "cwdDisplayStyle": "default",
+          "segments": 2
+        }
+      },
+      {
+        "id": "git-branch-mvg33yao-547t1t",
+        "type": "git-branch",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "hideWhenEmpty": false,
+          "icon": "",
+          "text": "",
+          "fg": "magenta",
+          "bg": "default",
+          "bold": false,
+          "gitBranchDisplayStyle": "default",
+          "surroundLeft": "",
+          "surroundRight": ""
+        }
+      },
+      {
+        "id": "git-diff-mvg33yao-21zeaz",
+        "type": "git-diff",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "hideWhenEmpty": false,
+          "icon": "",
+          "text": "",
+          "fg": "yellow",
+          "bg": "default",
+          "bold": false,
+          "gitDiffMode": "compact"
+        }
+      },
+      {
+        "id": "flex-separator-mvg3njpv-3wr2ey",
+        "type": "flex-separator",
+        "enabled": true,
+        "options": {
+          "fg": "default",
+          "bg": "default",
+          "bold": false,
+          "hideWhenEmpty": true
+        }
+      },
+      {
+        "id": "tokens-mvg3otm2-obcdn1",
+        "type": "tokens",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "icon": "",
+          "fg": "cyan",
+          "bg": "default",
+          "bold": false,
+          "tokenFormatStyle": "default"
+        }
+      },
+      {
+        "id": "cache-hit-rate-mvg418jh-vzotfb",
+        "type": "cache-hit-rate",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "hideWhenZero": false,
+          "icon": "",
+          "fg": "cyan",
+          "bg": "default",
+          "bold": false,
+          "cacheHitSource": "session",
+          "style": "default"
+        }
+      },
+      {
+        "id": "total-time-mvg33yao-8hqzac",
+        "type": "total-time",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "icon": "",
+          "fg": "yellow",
+          "bg": "default",
+          "bold": false
+        }
+      }
+    ],
+    [
+      {
+        "id": "model-mvg38m4z-x7oase",
+        "type": "model",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "icon": "",
+          "fg": "cyan",
+          "bg": "default",
+          "bold": false,
+          "showProvider": false
+        }
+      },
+      {
+        "id": "thinking-level-mvg35gyh-h940s0",
+        "type": "thinking-level",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "hideWhenEmpty": false,
+          "icon": "",
+          "text": "",
+          "fg": "magenta",
+          "bg": "default",
+          "bold": false
+        }
+      },
+      {
+        "id": "flex-separator-mvg39da5-8gdqks",
+        "type": "flex-separator",
+        "enabled": true,
+        "options": {
+          "fg": "default",
+          "bg": "default",
+          "bold": false,
+          "hideWhenEmpty": true
+        }
+      },
+      {
+        "id": "context-bar-mvg39j6o-z11w1w",
+        "type": "context-bar",
+        "enabled": true,
+        "options": {
+          "raw": false,
+          "hideWhenEmpty": false,
+          "icon": "",
+          "text": "",
+          "fg": "blue",
+          "bg": "default",
+          "bold": false,
+          "tokenFormatStyle": "default",
+          "contextBarMode": "medium",
+          "contextConditionalColors": false,
+          "contextWarningPercent": 70,
+          "contextDangerPercent": 90,
+          "warningFg": "yellow",
+          "warningBg": "default",
+          "dangerFg": "red",
+          "dangerBg": "default"
+        }
+      }
+    ]
+  ],
+  "separator": "dot",
+  "separatorFg": "default",
+  "separatorBg": "default",
+  "iconMode": "nerd",
+  "minimalist": false,
+  "terminal": {
+    "widthMode": "full",
+    "colorLevel": "ansi256"
+  },
+  "extensionStatusRow": {
+    "hiddenKeys": [],
+    "knownKeys": []
+  }
+}
