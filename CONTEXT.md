@@ -16,10 +16,10 @@ _避免_：goal service、run controller
 **Continuation**：Goal implementation run 在一次 agent run 落定前（Pi 的 `agent_before_settle` 边界）、仍满足继续条件时产出的后续实施步骤；由 Pi 核心调度下一次模型请求，扩展只返回决策数据。
 _避免_：自动重试、后台任务
 
-**Read-only command policy（只读命令策略）**：判定一条 bash 命令是否可以在不改动工作区的前提下执行的唯一策略模块（`agent/extensions/command-policy`）。复合命令逐段判定，解析失败一律 fail-closed。profile 为减法限制：`standard` 为完整只读命令面（readonly-mode 使用），`drafting` 在其上额外禁止网络命令（Drafting guard 使用），网络命令清单由 `NETWORK_COMMANDS` 导出供话术同源引用。
-_避免_：命令白名单、bash 校验器
+**Read-only command policy（只读命令策略）**：判定一次工具调用是否可以在不改动工作区的前提下执行的唯一策略模块（`agent/extensions/command-policy`，接口为 `classifyToolCall`）。它持有两份知识：文件变更工具清单（`FILE_MUTATION_TOOLS`，全仓库唯一一份；能从入参读出写入目标时一并给出，读不出——无 path 的锚点工具、`copy`/`move`——报「未知」，调用方须 fail-closed），以及 bash 命令的只读判定（复合命令逐段判定，解析失败一律 fail-closed）。profile 为减法限制：`standard` 为完整只读命令面（readonly-mode 使用），`drafting` 在其上额外禁止网络命令（Drafting guard 使用）。`FILE_MUTATION_TOOLS` 与 `NETWORK_COMMANDS` 导出供话术同源引用。它不知道 `.pi/planning/` 的存在——目录豁免属于调用方。
+_避免_：命令白名单、bash 校验器、工具黑名单
 
-**Drafting guard（草拟守卫）**：goal drafting 阶段裁决 write/edit/bash 工具调用的唯一守卫模块（`agent/extensions/planning-files-runtime/guards.ts` 的 `gateDraftingToolCall`）——drafting 状态判断、planning 目录判定、bash 委托 Read-only command policy 的 drafting profile，以及全部拒绝话术都在其后。Pi 适配层只转发它的判决。
+**Drafting guard（草拟守卫）**：goal drafting 阶段裁决工具调用的唯一守卫模块（`agent/extensions/planning-files-runtime/guards.ts` 的 `gateDraftingToolCall`）——drafting 状态判断、planning 目录豁免（文件变更只有在入参指明目标且目标位于 `.pi/planning/` 内时放行，目标未知一律拦截）、bash 委托 Read-only command policy 的 drafting profile，以及全部拒绝话术都在其后。哪些工具算文件变更由 Read-only command policy 回答，本模块不持有工具清单。Pi 适配层只转发它的判决。
 _避免_：工具拦截器、hook 校验
 
 **Planning workspace（规划工作区）**：持有 planning 文件格式全部知识（模板、标题名、解析、追加、完结、归档）的唯一深模块（`agent/extensions/planning-files-runtime/workspace.ts`）。调用方只见语义操作，不见 markdown 格式；Goal lifecycle 的效果执行委托它落盘。

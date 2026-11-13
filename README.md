@@ -60,7 +60,7 @@
 
 - **文件**：`agent/extensions/readonly-mode/`
 - **使用方式**：`pi --readonly`、`/readonly`、`Ctrl+Alt+R`（切换仅限 agent 空闲时——指令 section 按 run 贡献，运行中切换会造成提示与工具权限脱节，扩展会拒绝并提示等待空闲）
-- **拦截**：启用时拦截具名文件变更工具 `edit`、`write`、`replace`、`replace_match`、`insert`、`copy`、`move`、`undo_last_change` 和旧版 `undo_last_replace`，直接调用和嵌套调用（如通过 codemode）均受限制；`bash` 另按只读命令策略检查。
+- **拦截**：启用时拦截文件变更工具 `edit`、`write`、`replace`、`replace_match`、`insert`、`copy`、`move`、`undo_last_change`（清单由 command-policy 的 `FILE_MUTATION_TOOLS` 统一维护），直接调用和嵌套调用（如通过 codemode）均受限制；`bash` 另按只读命令策略检查。
 - **范围**：MCP、技能和其他自定义工具不在此模式的执行限制范围内；它不是全局无副作用沙箱。
 - **提示注入**：启用时把只读指令作为 system prompt 的 `readonly-mode` section 贡献（`before_agent_start` 改 `systemPromptOptions.sections`，Pi 按 transcript diff 只落一份 patch；禁用后以 null patch 移除），不再每 run 追加 custom message，也无需 context 过滤清理。
 - **测试**：`node --test agent/extensions/readonly-mode/*.test.ts`
@@ -68,7 +68,7 @@
 ### command-policy
 
 - **文件**：`agent/extensions/command-policy/`
-- **功能**：共享的只读命令策略（Read-only command policy）——判定一条 bash 命令是否可以在不改动工作区的前提下执行，复合命令逐段判定，解析失败一律 fail-closed。profile 为减法限制：`standard` 为完整只读命令面，`drafting` 在其上额外禁止网络命令（`curl`、`wget`、`ping`、`nslookup`、`traceroute`、`whois`、`host`）。
+- **功能**：共享的只读命令策略（Read-only command policy）——`classifyToolCall` 判定一次工具调用是否可以在不改动工作区的前提下执行：文件变更工具清单（`FILE_MUTATION_TOOLS`，唯一一份，新增/改名工具只改这里）以及 bash 命令的只读判定，复合命令逐段判定，解析失败一律 fail-closed。profile 为减法限制：`standard` 为完整只读命令面，`drafting` 在其上额外禁止网络命令（`curl`、`wget`、`ping`、`nslookup`、`traceroute`、`whois`、`host`）。
 - **说明**：非独立扩展（无 `index.ts`，不会被 Pi 自动加载），由 readonly-mode 与 planning-files-runtime 以相对路径导入。
 - **测试**：`node --test agent/extensions/command-policy/*.test.ts`
 

@@ -108,7 +108,7 @@ test('Pi adapter applies toggle effects in order', async () => {
     ['persist', 'readonly-mode', { readonlyMode: true }],
     [
       'notify',
-      'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change/undo_last_replace blocked, bash restricted to approved commands',
+      'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change blocked, bash restricted to approved commands',
       'info',
     ],
     ['send-user-message', 'review this'],
@@ -150,7 +150,6 @@ const mutationInputs: Record<string, Record<string, unknown>> = {
   copy: { source_from: 'abcd', source_to: 'abcd', insert_after: 'efgh' },
   move: { source_from: 'abcd', source_to: 'abcd', insert_after: 'efgh' },
   undo_last_change: { path: 'example.txt' },
-  undo_last_replace: { path: 'example.txt' },
 };
 
 for (const parentToolCallId of [undefined, 'codemode-call']) {

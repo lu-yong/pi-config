@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { getPaths } from "./utils.ts";
-import { gateDraftingToolCall, isLivePlanningMutation, isMeaningfulProgressToolCall } from "./guards.ts";
+import { gateDraftingToolCall, isLivePlanningMutation, isMeaningfulProgressToolCall, redirectPlanningPath } from "./guards.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
 function makeCwd(): string {
@@ -38,6 +38,45 @@ test("drafting gate blocks write/edit outside the planning dir, including siblin
 	assert.equal(gateDraftingToolCall("drafting", "write", {}, cwd)?.block, true);
 });
 
+test("drafting gate blocks anchor edits that do not name a target inside the planning dir", () => {
+	const cwd = makeCwd();
+	const planningFile = path.join(getPaths(cwd).root, "goal-design.md");
+	// Default pi-hashline-edit-pro setup: anchor calls carry no path.
+	for (const toolName of ["replace", "replace_match", "insert", "copy", "move", "undo_last_change"]) {
+		const pathless = gateDraftingToolCall("drafting", toolName, { anchor: "abcd", text: "x" }, cwd);
+		assert.equal(pathless?.block, true, toolName);
+		assert.match(pathless!.reason, new RegExp(`blocked ${toolName}: .*does not name a target file`));
+	}
+	for (const toolName of ["replace", "replace_match", "insert", "undo_last_change"]) {
+		const outside = gateDraftingToolCall("drafting", toolName, { path: "src/app.ts" }, cwd);
+		assert.equal(outside?.block, true, toolName);
+		assert.match(outside!.reason, /targets a file outside it/);
+		assert.equal(gateDraftingToolCall("drafting", toolName, { path: planningFile }, cwd), undefined, toolName);
+	}
+	// copy/move take a source-or-destination path: never provably inside.
+	for (const toolName of ["copy", "move"]) {
+		assert.equal(gateDraftingToolCall("drafting", toolName, { path: planningFile }, cwd)?.block, true, toolName);
+	}
+	assert.equal(gateDraftingToolCall("active", "replace", {}, cwd), undefined);
+	assert.equal(gateDraftingToolCall("drafting", "read", { path: "src/app.ts" }, cwd), undefined);
+	assert.equal(gateDraftingToolCall("drafting", "custom_deploy", {}, cwd), undefined);
+});
+
+test("planning file names are redirected for every pathed file-mutation tool", () => {
+	const cwd = makeCwd();
+	const target = path.join(getPaths(cwd).root, "task_plan.md");
+	for (const toolName of ["read", "write", "edit", "replace", "insert", "undo_last_change"]) {
+		const event = { toolName, input: { path: "task_plan.md" } as Record<string, unknown> };
+		assert.equal(redirectPlanningPath(event, cwd), true, toolName);
+		assert.equal(event.input.path, target, toolName);
+		assert.equal(gateDraftingToolCall("drafting", toolName, event.input, cwd), undefined, toolName);
+	}
+	const pathless = { toolName: "replace", input: { anchor: "abcd" } as Record<string, unknown> };
+	assert.equal(redirectPlanningPath(pathless, cwd), false);
+	const other = { toolName: "grep", input: { path: "task_plan.md" } as Record<string, unknown> };
+	assert.equal(redirectPlanningPath(other, cwd), false);
+});
+
 test("drafting gate delegates bash to the command-policy drafting profile", () => {
 	const cwd = makeCwd();
 	assert.equal(gateDraftingToolCall("drafting", "bash", { command: "pwd && git status --short" }, cwd), undefined);
@@ -66,6 +105,10 @@ test("planning mutation predicate refreshes goal and hashline mutations only", (
 	assert.equal(isLivePlanningMutation("insert", {}, cwd), true);
 	assert.equal(isLivePlanningMutation("undo_last_change", {}, cwd), true);
 	assert.equal(isLivePlanningMutation("write", { path: "src/app.ts" }, cwd), false);
+	// A pathed anchor edit is as precise as write: outside the planning dir it does not refresh.
+	assert.equal(isLivePlanningMutation("replace", { path: "src/app.ts" }, cwd), false);
+	assert.equal(isLivePlanningMutation("replace", { path: planningFile }, cwd), true);
+	assert.equal(isLivePlanningMutation("copy", { path: "src/app.ts" }, cwd), true);
 	assert.equal(isLivePlanningMutation("read", { path: planningFile }, cwd), false);
 	assert.equal(isLivePlanningMutation("bash", { command: "pwd" }, cwd), false);
 });
@@ -74,7 +117,6 @@ test("hashline anchor tools count as meaningful progress", () => {
 	assert.equal(isMeaningfulProgressToolCall("replace", {}), true);
 	assert.equal(isMeaningfulProgressToolCall("insert", {}), true);
 	assert.equal(isMeaningfulProgressToolCall("undo_last_change", {}), true);
-	assert.equal(isMeaningfulProgressToolCall("undo_last_replace", {}), true);
 	assert.equal(isMeaningfulProgressToolCall("read", { path: "src/app.ts" }), false);
 	assert.equal(isMeaningfulProgressToolCall("bash", { command: "echo hi" }), false);
 });

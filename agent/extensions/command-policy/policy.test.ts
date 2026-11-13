@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { explainUnsafeCommand, isSafeShellCommand, NETWORK_COMMANDS } from './policy.ts';
+import {
+  classifyToolCall,
+  explainUnsafeCommand,
+  FILE_MUTATION_TOOLS,
+  isFileMutationTool,
+  isSafeShellCommand,
+  NETWORK_COMMANDS,
+} from './policy.ts';
 
 describe('read-only command policy', () => {
   test('allows read-only shell commands and validates every compound segment', () => {
@@ -167,6 +174,64 @@ describe('read-only command policy', () => {
 
     for (const command of ['', 'echo $(touch marker)', 'rg TODO > result.txt', "cat 'unbalanced"]) {
       assert.deepEqual(explainUnsafeCommand(command), { kind: 'unparsable' }, command);
+    }
+  });
+});
+
+describe('tool call classification', () => {
+  test('names every file-mutation tool exactly once', () => {
+    assert.deepEqual(
+      [...FILE_MUTATION_TOOLS],
+      ['edit', 'write', 'replace', 'replace_match', 'insert', 'copy', 'move', 'undo_last_change'],
+    );
+    for (const toolName of FILE_MUTATION_TOOLS) assert.equal(isFileMutationTool(toolName), true, toolName);
+    for (const toolName of ['read', 'grep', 'find', 'ls', 'bash', 'undo_last_replace', 'custom_deploy']) {
+      assert.equal(isFileMutationTool(toolName), false, toolName);
+    }
+  });
+
+  test('reports the written file when the input identifies it', () => {
+    for (const toolName of ['edit', 'write', 'replace', 'replace_match', 'insert', 'undo_last_change']) {
+      assert.deepEqual(
+        classifyToolCall(toolName, { path: 'src/app.ts' }),
+        { kind: 'file-mutation', path: 'src/app.ts' },
+        toolName,
+      );
+    }
+  });
+
+  test('reports an unknown target for pathless calls and for copy/move even with a path', () => {
+    for (const input of [{}, { path: '' }, { path: '   ' }, { path: 7 }, null, 'src/app.ts']) {
+      assert.deepEqual(classifyToolCall('replace', input), { kind: 'file-mutation', path: undefined });
+    }
+    for (const toolName of ['copy', 'move']) {
+      assert.deepEqual(
+        classifyToolCall(toolName, { path: 'src/app.ts' }),
+        { kind: 'file-mutation', path: undefined },
+        toolName,
+      );
+    }
+  });
+
+  test('routes bash through the command profiles and fails closed on a missing command', () => {
+    assert.deepEqual(classifyToolCall('bash', { command: 'git status && pwd' }), { kind: 'read-only' });
+    assert.deepEqual(classifyToolCall('bash', { command: 'git status && rm -rf tmp' }), {
+      kind: 'unsafe-command',
+      reason: { kind: 'segment', segment: 'rm -rf tmp' },
+      command: 'git status && rm -rf tmp',
+    });
+    assert.deepEqual(classifyToolCall('bash', { command: 'curl https://example.com' }), { kind: 'read-only' });
+    assert.equal(classifyToolCall('bash', { command: 'curl https://example.com' }, 'drafting').kind, 'unsafe-command');
+    assert.deepEqual(classifyToolCall('bash', {}), {
+      kind: 'unsafe-command',
+      reason: { kind: 'unparsable' },
+      command: undefined,
+    });
+  });
+
+  test('leaves read tools and custom tools outside the policy', () => {
+    for (const toolName of ['read', 'grep', 'find', 'ls', 'custom_deploy', 'undo_last_replace']) {
+      assert.deepEqual(classifyToolCall(toolName, { path: 'src/app.ts' }), { kind: 'read-only' }, toolName);
     }
   });
 });

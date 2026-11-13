@@ -20,9 +20,8 @@ export const GOAL_TOOL_NAMES = [
 export const BUDGET_WARN_THRESHOLD = 0.7;
 /** Fraction of the token budget at which the next continuation prompt demands wrap-up. */
 export const BUDGET_CRITICAL_THRESHOLD = 0.9;
-/** Hashline anchor tools: they mutate files without a path in their input. */
-export const ANCHOR_MUTATION_TOOLS = ["replace", "replace_match", "insert", "copy", "move", "undo_last_change", "undo_last_replace"] as const;
-export const MEANINGFUL_PROGRESS_TOOLS = new Set(["bash", "edit", "write", "grep", "find", ...ANCHOR_MUTATION_TOOLS]);
+/** Non-mutating tools that still count as progress for an active goal run; every file-mutation tool counts too. */
+export const PROGRESS_QUERY_TOOLS: ReadonlySet<string> = new Set(["bash", "grep", "find"]);
 
 // ---- types ----
 

@@ -33,10 +33,10 @@ Goal overlay state:
 
 ## Runtime behavior
 
-- Redirects `task_plan.md`, `findings.md`, `progress.md`, `goal-design.md` into `.pi/planning/`
+- Redirects `task_plan.md`, `findings.md`, `progress.md`, `goal-design.md` into `.pi/planning/` for `read` and every file-mutation tool that carries a path
 - Injects planning context + Task index before agent starts
 - Drafting stages auto-advance; agent asks user only when key info missing
-- Drafting: `write` blocked outside `.pi/planning/`; `edit` allowed inside; `bash` read-only
+- Drafting: file changes are allowed only inside `.pi/planning/` — `write`/`edit` by path; anchor edit tools (`replace`, `replace_match`, `insert`, `undo_last_change`) pass only when the call carries a path inside it (pi-hashline-edit-pro `requirePath`; pathless calls are blocked), `copy`/`move` are always blocked; `bash` read-only
 - `commit_plan_goal` validates `goal-design.md` exists and non-empty
 - `/plan-archive` rejects while the agent is running; once idle, it archives all managed files and goal state without reinitializing at any goal status; `/plan-new` archives them and creates a fresh workspace
 - Execution follows Task hard/soft deps + TDD (red → green → refactor, 1 commit per Task)

@@ -1,4 +1,4 @@
-import { isSafeShellCommand } from '../command-policy/policy.ts';
+import { classifyToolCall, FILE_MUTATION_TOOLS } from '../command-policy/policy.ts';
 
 export interface StateEntry {
   type: string;
@@ -29,21 +29,9 @@ export interface ReadonlyEnforcement {
 
 const STATE_ENTRY = 'readonly-mode';
 
-// File-mutating tools blocked in read-only mode. 'edit' and 'write' are pi built-ins;
-// the anchor editing and undo tools are registered by pi-hashline-edit-pro, which also
-// disables the built-in 'edit' tool. 'undo_last_replace' is kept for older pi builds.
-// tool_call covers both direct and nested calls (e.g. through codemode).
-const FILE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
-  'edit',
-  'write',
-  'replace',
-  'replace_match',
-  'insert',
-  'copy',
-  'move',
-  'undo_last_change',
-  'undo_last_replace',
-]);
+// Which tools mutate files is the Read-only command policy's knowledge; this
+// module only words the block. tool_call covers both direct and nested calls
+// (e.g. through codemode).
 const FILE_MUTATION_REASON =
   'Read-only mode: file modifications are not allowed. Use /readonly to exit read-only mode first.';
 
@@ -51,7 +39,7 @@ const READONLY_INSTRUCTIONS = `[READ-ONLY MODE ACTIVE]
 You are in local read-only mode for exploration, planning, code review, and architecture analysis.
 
 Enforced core-tool restrictions:
-- File-mutating tools are blocked, including nested calls: pi's built-in edit and write, plus the pi-hashline-edit-pro replace, replace_match, insert, copy, move, and undo_last_change tools, and legacy undo_last_replace.
+- File-mutating tools are blocked, including nested calls: ${FILE_MUTATION_TOOLS.join(', ')} (pi's built-in edit and write, plus the pi-hashline-edit-pro anchor tools).
 - Bash commands are fail-closed. Approved read commands, tests, and static checks are allowed; installs, builds, publishing, arbitrary scripts, all redirection except stderr to /dev/null (2>/dev/null), background execution, and command substitution are blocked.
 - Every segment of a pipeline or compound command is checked independently.
 - Pi's built-in read, grep, find, and ls tools remain available.
@@ -111,7 +99,7 @@ class Enforcement implements ReadonlyEnforcement {
         ? {
             type: 'notify',
             level: 'info',
-            message: 'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change/undo_last_replace blocked, bash restricted to approved commands',
+            message: `Read-only mode ON - ${FILE_MUTATION_TOOLS.join('/')} blocked, bash restricted to approved commands`,
           }
         : {
             type: 'notify',
@@ -130,16 +118,13 @@ class Enforcement implements ReadonlyEnforcement {
   private handleToolCall(toolName: string, input: unknown): ReadonlyEffect[] {
     if (!this.enabled) return [];
 
-    if (FILE_MUTATION_TOOLS.has(toolName)) {
+    const verdict = classifyToolCall(toolName, input);
+    if (verdict.kind === 'read-only') return [];
+    if (verdict.kind === 'file-mutation') {
       return [{ type: 'block-tool', reason: FILE_MUTATION_REASON }];
     }
 
-    if (toolName !== 'bash') return [];
-
-    const command = readCommand(input);
-    if (command !== undefined && isSafeShellCommand(command)) return [];
-
-    const shownCommand = command ?? '<invalid bash input>';
+    const shownCommand = verdict.command ?? '<invalid bash input>';
     return [
       {
         type: 'block-tool',
@@ -176,12 +161,6 @@ class Enforcement implements ReadonlyEnforcement {
 
 export function createReadonlyEnforcement(): ReadonlyEnforcement {
   return new Enforcement();
-}
-
-function readCommand(input: unknown): string | undefined {
-  if (typeof input !== 'object' || input === null || !('command' in input)) return undefined;
-  const command = (input as { command?: unknown }).command;
-  return typeof command === 'string' ? command : undefined;
 }
 
 function findSavedState(entries: StateEntry[]): boolean | undefined {

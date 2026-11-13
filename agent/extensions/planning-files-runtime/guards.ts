@@ -1,8 +1,8 @@
 import path from "node:path";
-import { ANCHOR_MUTATION_TOOLS, GOAL_TOOL_NAMES, MEANINGFUL_PROGRESS_TOOLS, PLANNING_FILE_NAMES } from "./types.ts";
+import { GOAL_TOOL_NAMES, PLANNING_FILE_NAMES, PROGRESS_QUERY_TOOLS } from "./types.ts";
 import type { GoalOverlayStatus } from "./types.ts";
 import { ensureDir, getPaths } from "./utils.ts";
-import { explainUnsafeCommand, NETWORK_COMMANDS, type UnsafeCommandReason } from "../command-policy/policy.ts";
+import { classifyToolCall, isFileMutationTool, NETWORK_COMMANDS, type UnsafeCommandReason } from "../command-policy/policy.ts";
 
 /**
  * Resolve a user-facing path to the planning directory equivalent.
@@ -21,14 +21,14 @@ export function getRedirectPath(inputPath: string, cwd: string): string | undefi
 }
 
 /**
- * Redirect read/write/edit tool calls for planning file names into .pi/planning/.
- * Returns true when a redirect was applied.
+ * Redirect read calls and file-mutation calls that carry a path for a planning
+ * file name into .pi/planning/. Returns true when a redirect was applied.
  */
 export function redirectPlanningPath(
 	event: { toolName: string; input: Record<string, unknown> },
 	cwd: string,
 ): boolean {
-	if (!["read", "write", "edit"].includes(event.toolName)) return false;
+	if (event.toolName !== "read" && !isFileMutationTool(event.toolName)) return false;
 	const rawPath = event.input.path;
 	if (typeof rawPath !== "string") return false;
 	const redirected = getRedirectPath(rawPath, cwd);
@@ -49,29 +49,28 @@ function isInPlanningDir(filePath: string, cwd: string): boolean {
 	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-const PATHED_PLANNING_MUTATION_TOOLS = new Set(["write", "edit"]);
-const ANCHOR_PLANNING_MUTATION_TOOLS = new Set<string>(ANCHOR_MUTATION_TOOLS);
-
 /**
  * Determine whether a completed tool may have changed live planning state.
  *
- * Anchor tools deliberately refresh without a path: their target file is resolved
- * from an opaque anchor, so path-based detection would miss real mutations.
+ * A file mutation whose target the input does not identify (anchor tools
+ * without a path, copy/move) refreshes unconditionally: path-based detection
+ * would miss real mutations.
  */
 export function isLivePlanningMutation(toolName: string, input: Record<string, unknown>, cwd: string): boolean {
 	if ((GOAL_TOOL_NAMES as readonly string[]).includes(toolName)) return true;
-	if (ANCHOR_PLANNING_MUTATION_TOOLS.has(toolName)) return true;
-	if (!PATHED_PLANNING_MUTATION_TOOLS.has(toolName)) return false;
-	const filePath = typeof input.path === "string" ? input.path : "";
-	return Boolean(filePath) && isInPlanningDir(filePath, cwd);
+	const verdict = classifyToolCall(toolName, input);
+	if (verdict.kind !== "file-mutation") return false;
+	return verdict.path === undefined || isInPlanningDir(verdict.path, cwd);
 }
 
 /**
  * Determine whether a tool call represents meaningful progress
- * (eligible to trigger continuation of an active goal run).
+ * (eligible to trigger continuation of an active goal run): any file
+ * mutation, plus the query tools — except a bare echo.
  */
 export function isMeaningfulProgressToolCall(toolName: string, input: Record<string, unknown>): boolean {
-	if (!MEANINGFUL_PROGRESS_TOOLS.has(toolName)) return false;
+	if (isFileMutationTool(toolName)) return true;
+	if (!PROGRESS_QUERY_TOOLS.has(toolName)) return false;
 	if (toolName === "bash") {
 		const command = typeof input.command === "string" ? input.command.trim() : "";
 		if (!command || /^echo\b/.test(command)) return false;
@@ -99,10 +98,14 @@ function draftingBashRejection(reason: UnsafeCommandReason): string {
 
 /**
  * The single adjudication point for tool calls while a goal is being drafted:
- * write/edit are confined to .pi/planning/, and bash must pass the
- * command-policy 'drafting' profile. Absorbs the status check — outside
- * drafting every call passes. Returns Pi's block shape (a plain object, no Pi
- * type dependency) so the adapter can forward the result unchanged.
+ * a file mutation passes only when its input names a target inside
+ * .pi/planning/ (a call whose target cannot be read off the input — anchor
+ * tools without a path, copy/move always — is blocked, fail-closed), and bash
+ * must pass the command-policy 'drafting' profile. Which tools mutate files
+ * is the Read-only command policy's knowledge, not this module's. Absorbs the
+ * status check — outside drafting every call passes. Returns Pi's block shape
+ * (a plain object, no Pi type dependency) so the adapter can forward the
+ * result unchanged.
  */
 export function gateDraftingToolCall(
 	status: GoalOverlayStatus,
@@ -111,20 +114,20 @@ export function gateDraftingToolCall(
 	cwd: string,
 ): { block: true; reason: string } | undefined {
 	if (status !== "drafting") return undefined;
-	if (toolName === "write" || toolName === "edit") {
-		const filePath = typeof input.path === "string" ? input.path : "";
-		if (isInPlanningDir(filePath, cwd)) return undefined;
-		return {
-			block: true,
-			reason: toolName === "write"
-				? "Goal drafting does not allow creating files outside .pi/planning/. Use save_plan_goal_draft / commit_plan_goal."
-				: "Goal drafting only allows editing files within .pi/planning/.",
-		};
+	const verdict = classifyToolCall(toolName, input, "drafting");
+	if (verdict.kind === "read-only") return undefined;
+	if (verdict.kind === "unsafe-command") return { block: true, reason: draftingBashRejection(verdict.reason) };
+	if (verdict.path !== undefined && isInPlanningDir(verdict.path, cwd)) return undefined;
+	return { block: true, reason: draftingMutationRejection(toolName, verdict.path) };
+}
+
+function draftingMutationRejection(toolName: string, targetPath: string | undefined): string {
+	if (toolName === "write") {
+		return "Goal drafting does not allow creating files outside .pi/planning/. Use save_plan_goal_draft / commit_plan_goal.";
 	}
-	if (toolName === "bash") {
-		const command = typeof input.command === "string" ? input.command : "";
-		const unsafe = explainUnsafeCommand(command, "drafting");
-		if (unsafe) return { block: true, reason: draftingBashRejection(unsafe) };
-	}
-	return undefined;
+	if (toolName === "edit") return "Goal drafting only allows editing files within .pi/planning/.";
+	const why = targetPath === undefined
+		? "this call does not name a target file the drafting guard can verify"
+		: "this call targets a file outside it";
+	return `Goal drafting blocked ${toolName}: file changes are only allowed inside .pi/planning/, and ${why}. Use write for files in .pi/planning/; anchor edit tools pass only when they carry a path inside .pi/planning/ (pi-hashline-edit-pro requirePath), and copy/move are always blocked while drafting.`;
 }

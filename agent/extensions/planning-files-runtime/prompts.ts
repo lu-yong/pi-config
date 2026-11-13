@@ -1,7 +1,10 @@
 import type { GoalDraft, GoalOverlayState, PlanningSnapshot } from "./types.ts";
 import { BUDGET_CRITICAL_THRESHOLD, BUDGET_WARN_THRESHOLD } from "./types.ts";
 import { formatTokenCount, readText, tailLines, truncate } from "./utils.ts";
-import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
+import { FILE_MUTATION_TOOLS, NETWORK_COMMANDS } from "../command-policy/policy.ts";
+
+/** Anchor edit tools as the drafting prompt names them: every file-mutation tool except the built-ins and the always-blocked transfers. */
+const ANCHOR_EDIT_TOOLS = FILE_MUTATION_TOOLS.filter((tool) => !["edit", "write", "copy", "move"].includes(tool));
 
 // ---- draft summary ----
 
@@ -69,6 +72,10 @@ export function buildGoalSetPrompt(goalState: GoalOverlayState, supplementalInpu
 		`  - Network commands are blocked during drafting: ${[...NETWORK_COMMANDS].join(", ")}.`,
 		"  - Prefer the read tool for file contents; do not assume helpers such as sed are whitelisted.",
 		"  - Example allowed: `pwd && git status --short`. Example rejected: `rg --files | sed -n '1,240p'` (sed not whitelisted).",
+		"",
+		"File changes during goal drafting:",
+		"  - Only files inside .pi/planning/ may change. Use write for goal-design.md and tasks/task-NN.md.",
+		`  - ${ANCHOR_EDIT_TOOLS.join(", ")} are blocked unless the call carries a path inside .pi/planning/; copy and move are always blocked.`,
 		"",
 		"All done + contract complete -> commit_plan_goal.",
 		"Optional: pass tokenBudget (positive integer) to commit_plan_goal only when the user asked for a spend cap.",

@@ -1,6 +1,8 @@
 /**
- * Read-only command policy: the single classifier deciding whether a bash
- * command may run without mutating the local workspace.
+ * Read-only command policy: the single classifier deciding whether a tool
+ * call may run without mutating the local workspace — which tools change
+ * files (and which file, when the input says), and whether a bash command is
+ * read-only.
  *
  * Shared by readonly-mode enforcement and the planning-files-runtime goal
  * drafting guard. Profiles are subtractive: 'standard' is the full read-only
@@ -34,6 +36,72 @@ export const NETWORK_COMMANDS: ReadonlySet<string> = Object.freeze(new Set([
   'wget',
   'whois',
 ]));
+
+/**
+ * Every tool that changes local files: pi's built-in edit and write, plus the
+ * pi-hashline-edit-pro anchor tools. The single copy of this list — callers
+ * that enforce, describe, or react to file mutations derive from it.
+ */
+export const FILE_MUTATION_TOOLS: readonly string[] = Object.freeze([
+  'edit',
+  'write',
+  'replace',
+  'replace_match',
+  'insert',
+  'copy',
+  'move',
+  'undo_last_change',
+]);
+
+const FILE_MUTATION_TOOL_SET: ReadonlySet<string> = new Set(FILE_MUTATION_TOOLS);
+
+/**
+ * Transfer tools take a path that may name the source or the destination, so
+ * the file they write cannot be read off the input.
+ */
+const UNLOCATABLE_TARGET_TOOLS: ReadonlySet<string> = new Set(['copy', 'move']);
+
+export function isFileMutationTool(toolName: string): boolean {
+  return FILE_MUTATION_TOOL_SET.has(toolName);
+}
+
+/**
+ * What one tool call does to the local workspace.
+ * - 'read-only': not a file-mutation tool and not an unsafe bash command.
+ *   Custom tools, MCP and skills land here; they are outside this policy.
+ * - 'file-mutation': `path` is the file the call writes, exactly as given in
+ *   the input, or undefined when the input does not identify it (anchor tools
+ *   without a path, and copy/move always). Callers must fail closed on undefined.
+ * - 'unsafe-command': a bash call the profile rejects; `command` is undefined
+ *   when the input carried no command string.
+ */
+export type ToolCallVerdict =
+  | { kind: 'read-only' }
+  | { kind: 'file-mutation'; path: string | undefined }
+  | { kind: 'unsafe-command'; reason: UnsafeCommandReason; command: string | undefined };
+
+/** Classify one tool call. The only question callers need to ask this module. */
+export function classifyToolCall(
+  toolName: string,
+  input: unknown,
+  profile: CommandProfile = 'standard',
+): ToolCallVerdict {
+  if (FILE_MUTATION_TOOL_SET.has(toolName)) {
+    const path = UNLOCATABLE_TARGET_TOOLS.has(toolName) ? undefined : stringField(input, 'path');
+    return { kind: 'file-mutation', path: path?.trim() ? path : undefined };
+  }
+  if (toolName !== 'bash') return { kind: 'read-only' };
+  const command = stringField(input, 'command');
+  if (command === undefined) return { kind: 'unsafe-command', reason: { kind: 'unparsable' }, command };
+  const reason = explainUnsafeCommand(command, profile);
+  return reason ? { kind: 'unsafe-command', reason, command } : { kind: 'read-only' };
+}
+
+function stringField(input: unknown, field: string): string | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const value = (input as Record<string, unknown>)[field];
+  return typeof value === 'string' ? value : undefined;
+}
 
 const SAFE_COMMANDS = new Set([
   'apropos',

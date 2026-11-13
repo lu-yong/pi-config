@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { FILE_MUTATION_TOOLS } from '../command-policy/policy.ts';
 import { createReadonlyEnforcement } from './enforcement.ts';
 
 const savedState = (readonlyMode: boolean) => ({
@@ -29,7 +30,7 @@ describe('read-only enforcement', () => {
       {
         type: 'notify',
         level: 'info',
-        message: 'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change/undo_last_replace blocked, bash restricted to approved commands',
+        message: 'Read-only mode ON - edit/write/replace/replace_match/insert/copy/move/undo_last_change blocked, bash restricted to approved commands',
       },
       { type: 'send-user-message', content: 'review this' },
     ]);
@@ -45,11 +46,12 @@ describe('read-only enforcement', () => {
     ]);
   });
 
-  test('blocks file mutation tools including hashline-pro edit tools but leaves custom tools outside its scope', () => {
+  test('blocks whatever the command policy classifies as a file mutation but leaves custom tools outside its scope', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });
 
-    for (const toolName of ['edit', 'write', 'replace', 'replace_match', 'insert', 'copy', 'move', 'undo_last_change', 'undo_last_replace']) {
+    // The full tool table is pinned in command-policy/policy.test.ts.
+    for (const toolName of FILE_MUTATION_TOOLS) {
       assert.deepEqual(
         enforcement.handle({ type: 'tool-call', toolName, input: {} }),
         [
@@ -141,7 +143,7 @@ describe('read-only enforcement', () => {
     const instructions = injection[0]?.type === 'set-section' ? (injection[0].content ?? '') : '';
     assert.match(instructions, /Tests and static checks are allowed/);
     assert.match(instructions, /custom tools are outside this mode's enforcement scope/);
-    for (const toolName of ['replace_match', 'copy', 'move', 'undo_last_replace']) {
+    for (const toolName of ['replace_match', 'copy', 'move', 'undo_last_change']) {
       assert.match(instructions, new RegExp(`\\b${toolName}\\b`));
     }
     assert.match(instructions, /including nested calls/);
