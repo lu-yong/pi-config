@@ -7,7 +7,7 @@ import { afterEach, mock, test } from "node:test";
 import {
 	archivePlanningWorkspace,
 	finalizeGoalWorkspace,
-	getPlanningSnapshot,
+	readPlanningSections,
 	initializePlanningWorkspace,
 } from "./workspace.ts";
 import { getPaths, readText, writeText } from "./utils.ts";
@@ -61,7 +61,7 @@ test("initializes a workspace whose written files read back through the snapshot
 	};
 	initializePlanningWorkspace(cwd, goal, 4);
 
-	const snapshot = getPlanningSnapshot(cwd, false);
+	const snapshot = readPlanningSections(cwd);
 	assert.equal(snapshot.exists, true);
 	assert.equal(snapshot.goalFromPlan, goal.objective);
 	assert.equal(snapshot.currentPhase, "Phase 1");
@@ -77,7 +77,7 @@ test("initializes an empty workspace without a goal contract", () => {
 	const cwd = makeCwd();
 	initializePlanningWorkspace(cwd);
 
-	const snapshot = getPlanningSnapshot(cwd, false);
+	const snapshot = readPlanningSections(cwd);
 	assert.equal(snapshot.goalFromPlan, "[One sentence describing the end state]");
 	assert.equal(snapshot.currentPhase, "Phase 1");
 	assert.match(readText(getPaths(cwd).files["progress.md"]), /Planning workspace initialized/);

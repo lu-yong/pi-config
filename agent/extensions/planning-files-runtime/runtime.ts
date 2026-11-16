@@ -10,28 +10,39 @@ import type {
 	CommitGoalParams,
 	CompleteGoalParams,
 	PauseGoalParams,
+	PlanningSnapshot,
 	SaveGoalDraftParams,
 } from "./types.ts";
 import { normalizeString, normalizeStringArray, sumUsageTokens } from "./utils.ts";
 import { parseAuditModelRef, resolveAuditModel, type AuditModelResult } from "./audit.ts";
-import { archivePlanningWorkspace, getPlanningSnapshot, getPlanningDetails, initializePlanningWorkspace } from "./workspace.ts";
+import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
 import { runPlanArchiveCommand } from "./archive-command.ts";
 import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines, PlanningGoalDialog } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
-import { createGoalLifecycle, type GoalLifecycle, type GoalLifecycleContext, type GoalLifecycleResult } from "./goal-lifecycle.ts";
+import {
+	createGoalLifecycle,
+	type GoalLifecycle,
+	type GoalLifecycleContext,
+	type GoalLifecycleEvent,
+	type GoalLifecycleResult,
+	type GoalLifecycleView,
+} from "./goal-lifecycle.ts";
 
 /**
  * Pi is an adapter around the Goal lifecycle. goal-lifecycle.ts owns
  * state transitions, effect execution, the completion audit's
- * adjudication, and continuation policy; this module only translates Pi
- * events, supplies the audit's model transport, and reads the operation
- * result projection.
+ * adjudication, continuation policy, and every read of goal state; this
+ * module only translates Pi events, supplies the audit's model transport,
+ * and displays the projection each lifecycle result carries.
  */
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
-	let state = getPlanningSnapshot(process.cwd(), false);
 	const lifecycles = new Map<string, GoalLifecycle>();
+	// The projection the widget renders: whatever a lifecycle handed back last.
+	let shown: PlanningSnapshot | undefined;
+	// Every event hands back a projection; only a changed one is worth a redraw.
+	let drawn: string | undefined;
 	let widget: { requestRender(): void } | undefined;
 
 	function lifecycleFor(cwd: string): GoalLifecycle {
@@ -45,33 +56,36 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		return lifecycle;
 	}
 
-	function contextFor(ctx: ExtensionContext, resumedFromPreviousSession = false): GoalLifecycleContext {
-		return {
-			resumedFromPreviousSession,
-			notify: (message, level) => ctx.ui.notify(message, level),
-			refresh: () => refresh(ctx, resumedFromPreviousSession, false),
-		};
+	function contextFor(ctx: ExtensionContext): GoalLifecycleContext {
+		return { notify: (message, level) => ctx.ui.notify(message, level) };
 	}
-	function refresh(ctx: ExtensionContext, resumedFromPreviousSession = state.resumedFromPreviousSession, syncGoal = true): void {
-		// Widget projection is best-effort; a failure here must be visible
-		// instead of silently leaving a stale widget in place.
-		try {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			// Lifecycle effects already own an in-flight transaction; do not re-enter it.
-			if (syncGoal) {
-				const result = lifecycle.handle({ type: "sync" }, contextFor(ctx, resumedFromPreviousSession));
-				if (result.error) throw new Error(result.error.reason);
-			}
-			state = getPlanningSnapshot(ctx.cwd, resumedFromPreviousSession);
-			state.goalState = lifecycle.getState();
-		} catch (error) {
-			reportRefreshFailure(ctx, "读取 planning 快照失败", error);
-			return;
-		}
+
+	/** Run one lifecycle event and display the projection it returns; the caller decides how to surface `error`. */
+	function dispatch(ctx: ExtensionContext, event: GoalLifecycleEvent): GoalLifecycleResult {
+		const result = lifecycleFor(ctx.cwd).handle(event, contextFor(ctx));
+		show(ctx, result.projection);
+		return result;
+	}
+
+	/** Look without an event — files may have changed under us — and display what is there now. */
+	function look(ctx: ExtensionContext): GoalLifecycleView {
+		const view = lifecycleFor(ctx.cwd).view();
+		notifyRejection(ctx, view);
+		show(ctx, view.projection);
+		return view;
+	}
+
+	function show(ctx: ExtensionContext, projection: PlanningSnapshot): void {
+		shown = projection;
 		if (!ctx.hasUI) return;
+		const next = JSON.stringify(projection);
+		const mounted = ctx.mode === "rpc" ? drawn !== undefined : widget !== undefined;
+		if (mounted && next === drawn) return;
+		// The widget is best-effort; a failure here must be visible instead of
+		// silently leaving a stale widget in place.
 		try {
 			if (ctx.mode === "rpc") {
-				ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(state, 80, ctx.ui.theme), { placement: "aboveEditor" });
+				ctx.ui.setWidget(WIDGET_KEY, buildWidgetLines(projection, 80, ctx.ui.theme), { placement: "aboveEditor" });
 			} else if (widget) {
 				widget.requestRender();
 			} else {
@@ -81,13 +95,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 					const mounted = { requestRender: () => tui.requestRender() };
 					widget = mounted;
 					return {
-						render: (width) => (buildWidgetLines(state, Math.max(0, width - 2), theme) ?? [])
+						render: (width) => ((shown && buildWidgetLines(shown, Math.max(0, width - 2), theme)) ?? [])
 							.map((line) => width > 1 ? ` ${line}` : line),
 						invalidate: () => {},
 						dispose: () => { if (widget === mounted) widget = undefined; },
 					};
 				}, { placement: "aboveEditor" });
 			}
+			drawn = next;
 		} catch (error) {
 			reportRefreshFailure(ctx, "更新 planning widget 失败", error);
 		}
@@ -105,12 +120,12 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		}
 		console.error(`[planning-files-runtime] ${message}`);
 	}
-	function notifyRejection(ctx: ExtensionContext, result: GoalLifecycleResult): void {
+	function notifyRejection(ctx: ExtensionContext, result: Pick<GoalLifecycleView, "error">): void {
 		const message = result.error?.reason;
 		if (message) ctx.ui.notify(message, "warning");
 	}
 
-	function toolError(result: GoalLifecycleResult): { content: Array<{ type: "text"; text: string }>; isError: true; details: undefined } | undefined {
+	function toolError(result: Pick<GoalLifecycleView, "error">): { content: Array<{ type: "text"; text: string }>; isError: true; details: undefined } | undefined {
 		const message = result.error?.reason;
 		if (!message) return undefined;
 		return { content: [{ type: "text", text: message }], isError: true, details: undefined };
@@ -137,11 +152,10 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			draftingStage: Type.Optional(Type.String({ description: "Current drafting stage: as-is, design, story, or task" })),
 		}),
 		async execute(_toolCallId, params: SaveGoalDraftParams, _signal, _onUpdate, ctx) {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			const result = lifecycle.handle({ type: "save-draft", params }, contextFor(ctx));
+			const result = dispatch(ctx, { type: "save-draft", params });
 			const error = toolError(result);
 			if (error) return error;
-			const next = lifecycle.getState();
+			const next = result.projection.goalState;
 			return {
 				content: [{ type: "text", text: `Saved goal draft with ${next.draft.openQuestions.length} open question(s).` }],
 				details: { status: next.status, openQuestions: next.draft.openQuestions },
@@ -164,14 +178,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			tokenBudget: Type.Optional(Type.Integer({ minimum: 1, description: "Optional token spend cap for this goal; set only when the user asked for one" })),
 		}),
 		async execute(_toolCallId, params: CommitGoalParams, _signal, _onUpdate, ctx) {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			const result = lifecycle.handle({ type: "commit", params }, contextFor(ctx));
+			const result = dispatch(ctx, { type: "commit", params });
 			const error = toolError(result);
 			if (error) return error;
-			const goal = lifecycle.getState().goal;
+			const { goal, status } = result.projection.goalState;
 			return {
 				content: [{ type: "text", text: `Committed plan goal: ${goal?.objective ?? params.objective}` }],
-				details: { status: lifecycle.getState().status, goal },
+				details: { status, goal },
 			};
 		},
 	});
@@ -187,13 +200,12 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			suggestedAction: Type.Optional(Type.String({ description: "Suggested next user action" })),
 		}),
 		async execute(_toolCallId, params: PauseGoalParams, _signal, _onUpdate, ctx) {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			const result = lifecycle.handle({ type: "pause", params }, contextFor(ctx));
+			const result = dispatch(ctx, { type: "pause", params });
 			const error = toolError(result);
 			if (error) return error;
 			return {
 				content: [{ type: "text", text: `Paused plan goal: ${normalizeString(params.reason)}` }],
-				details: { status: lifecycle.getState().status, reason: normalizeString(params.reason), suggestedAction: normalizeString(params.suggestedAction) },
+				details: { status: result.projection.goalState.status, reason: normalizeString(params.reason), suggestedAction: normalizeString(params.suggestedAction) },
 			};
 		},
 	});
@@ -208,19 +220,19 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			evidence: Type.Optional(Type.Array(Type.String(), { description: "Concrete evidence that the goal is complete" })),
 		}),
 		async execute(_toolCallId, params: CompleteGoalParams, signal, _onUpdate, ctx) {
-			const lifecycle = lifecycleFor(ctx.cwd);
 			// Completion intent + model transport only: the audit, its adjudication,
 			// and the completion transition live behind the lifecycle interface.
-			const result = await lifecycle.complete(
+			const result = await lifecycleFor(ctx.cwd).complete(
 				params,
 				contextFor(ctx),
 				{ modelCall: (system, user, auditSignal) => callAuditor(ctx, system, user, auditSignal), ...(signal ? { signal } : {}) },
 			);
+			show(ctx, result.projection);
 			const error = toolError(result);
 			if (error) return { ...error, ...(result.audit?.usage ? { usage: result.audit.usage as Usage } : {}) };
 			return {
 				content: [{ type: "text", text: `Completed plan goal: ${normalizeString(params.summary)}${result.audit?.note ?? ""}` }],
-				details: { status: lifecycle.getState().status, summary: normalizeString(params.summary), evidence: normalizeStringArray(params.evidence) },
+				details: { status: result.projection.goalState.status, summary: normalizeString(params.summary), evidence: normalizeStringArray(params.evidence) },
 				// The lifecycle types audit usage as a structural subset; the
 				// production transport supplies the provider's full Usage object, so
 				// re-widen it here for session accounting.
@@ -272,8 +284,9 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				return;
 			}
 			try {
-				const snapshot = getPlanningDetails(ctx.cwd, state.resumedFromPreviousSession);
-				await ctx.ui.custom<void>((tui, theme, keys, done) => new PlanningGoalDialog(snapshot, tui, theme, keys, done), {
+				const view = lifecycleFor(ctx.cwd).view("full");
+				notifyRejection(ctx, view);
+				await ctx.ui.custom<void>((tui, theme, keys, done) => new PlanningGoalDialog(view.projection, tui, theme, keys, done), {
 					overlay: true,
 					overlayOptions: { width: "90%", anchor: "center" },
 				});
@@ -295,7 +308,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 				{
 					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-archive" }),
 					dropLifecycle: (cwd) => lifecycles.delete(cwd),
-					refresh: () => refresh(ctx, false),
+					refresh: () => { look(ctx); },
 				},
 			);
 		},
@@ -314,8 +327,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-reset" }),
 					initialize: (cwd) => initializePlanningWorkspace(cwd),
 					reset: () => {
-						const lifecycle = lifecycleFor(ctx.cwd);
-						const result = lifecycle.handle({ type: "reset" }, contextFor(ctx));
+						const result = dispatch(ctx, { type: "reset" });
 						notifyRejection(ctx, result);
 						return !result.error;
 					},
@@ -327,26 +339,22 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.registerCommand("plan-goal-set", {
 		description: "Create or continue clarifying a goal overlay without resetting current planning files.",
 		handler: async (args, ctx) => {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			notifyRejection(ctx, lifecycle.handle({ type: "start-drafting", input: args }, contextFor(ctx)));
+			notifyRejection(ctx, dispatch(ctx, { type: "start-drafting", input: args }));
 		},
 	});
 
 	pi.registerCommand("plan-goal-impl", {
 		description: "Start or resume implementing the committed goal using planning files as the execution tracker.",
 		handler: async (args, ctx) => {
-			const lifecycle = lifecycleFor(ctx.cwd);
-			notifyRejection(ctx, lifecycle.handle({ type: "implementation-request", supplementalInput: args }, contextFor(ctx)));
+			notifyRejection(ctx, dispatch(ctx, { type: "implementation-request", supplementalInput: args }));
 		},
 	});
 
 	pi.registerCommand("plan-update", {
 		description: "Check whether current progress and findings stay aligned with the planning files. If aligned, have the agent update the planning files; if not, ask the user whether to reset and rewrite, or pause first.",
 		handler: async (_args, ctx) => {
-			const snapshot = getPlanningSnapshot(ctx.cwd, state.resumedFromPreviousSession);
-			state = snapshot;
-
-			if (!snapshot.exists) {
+			const { projection } = look(ctx);
+			if (!projection.exists) {
 				ctx.ui.notify("没有 planning files，无需更新。", "info");
 				return;
 			}
@@ -354,7 +362,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 			pi.sendMessage(
 				{
 					customType: MESSAGE_TYPE_PLAN_UPDATE,
-					content: buildPlanUpdatePrompt(snapshot),
+					content: buildPlanUpdatePrompt(projection),
 					display: false,
 				},
 				{ triggerTurn: true },
@@ -365,53 +373,49 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	// ---- events ----
 	pi.on("session_start", async (event, ctx) => {
 		const resumed = event.reason === "resume" || event.reason === "fork";
-		const lifecycle = lifecycleFor(ctx.cwd);
-		const result = lifecycle.handle({ type: "restore" }, contextFor(ctx, resumed));
+		// A new session starts with no widget on the host side.
+		drawn = undefined;
+		const result = dispatch(ctx, { type: "restore" });
 		notifyRejection(ctx, result);
-		refresh(ctx, resumed);
-		if (!state.exists && lifecycle.getState().status === "none") return;
-		const label = resumed ? "Planning runtime resumed." : `Planning runtime attached to ${state.planningRoot}`;
+		const { projection } = result;
+		if (!projection.exists && projection.goalState.status === "none") return;
+		const label = resumed ? "Planning runtime resumed." : `Planning runtime attached to ${projection.planningRoot}`;
 		ctx.ui.notify(label, "info");
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
-		refresh(ctx, state.resumedFromPreviousSession);
+		look(ctx);
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
-		const result = lifecycle.handle({ type: "agent-start" }, contextFor(ctx, state.resumedFromPreviousSession));
-		notifyRejection(ctx, result);
+		notifyRejection(ctx, dispatch(ctx, { type: "agent-start" }));
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
-		lifecycle.handle({ type: "turn-start" }, contextFor(ctx));
+		dispatch(ctx, { type: "turn-start" });
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
-		const turnStoppedFor = lifecycle.turnStoppedBy();
+		const turnStoppedFor = lifecycleFor(ctx.cwd).turnStoppedBy();
 		if (turnStoppedFor) {
 			return { block: true, reason: `${turnStoppedFor} already completed in this turn. Stop and summarize instead of calling more tools.` };
 		}
 		redirectPlanningPath(event as { toolName: string; input: Record<string, unknown> }, ctx.cwd);
-		// Keep drafting decisions current too; a failed read leaves the last-known gate
-		// in place while file tools remain available to repair the state file.
-		notifyRejection(ctx, lifecycle.handle({ type: "sync" }, contextFor(ctx)));
-		const blocked = gateDraftingToolCall(lifecycle.getState().status, event.toolName, event.input as Record<string, unknown>, ctx.cwd);
+		// Gate on the current status; a failed read leaves the last-known gate in
+		// place while file tools remain available to repair the state file.
+		const { status } = look(ctx).projection.goalState;
+		const blocked = gateDraftingToolCall(status, event.toolName, event.input as Record<string, unknown>, ctx.cwd);
 		if (blocked) return blocked;
 		if (isMeaningfulProgressToolCall(event.toolName, event.input as Record<string, unknown>)) {
-			lifecycle.handle({ type: "progress-tool-called" }, contextFor(ctx));
+			dispatch(ctx, { type: "progress-tool-called" });
 		}
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (isLivePlanningMutation(event.toolName, event.input as Record<string, unknown>, ctx.cwd)) refresh(ctx, false);
+		if (isLivePlanningMutation(event.toolName, event.input as Record<string, unknown>, ctx.cwd)) look(ctx);
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
 		const message = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined;
 		// Nested model calls (the completion audit) report their usage on tool
 		// results; count them toward the budget alongside the assistant message.
@@ -421,24 +425,19 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 		);
 		const messageUsage = message?.role === "assistant" && message.usage ? sumUsageTokens(message.usage) : 0;
 		const usageTokens = messageUsage + toolUsage > 0 ? messageUsage + toolUsage : undefined;
-		const result = lifecycle.handle(
-			{ type: "turn-end", stopReason: message?.stopReason, errorMessage: message?.errorMessage, usageTokens },
-			contextFor(ctx, state.resumedFromPreviousSession),
-		);
+		const result = dispatch(ctx, { type: "turn-end", stopReason: message?.stopReason, errorMessage: message?.errorMessage, usageTokens });
 		notifyRejection(ctx, result);
 	});
 
 	pi.on("agent_settled", async (event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
-		notifyRejection(ctx, lifecycle.handle({ type: "agent-settled", aborted: event.aborted }, contextFor(ctx, state.resumedFromPreviousSession)));
+		notifyRejection(ctx, dispatch(ctx, { type: "agent-settled", aborted: event.aborted }));
 	});
 
 	// The automatic Continuation rides Pi's native boundary: return the
 	// rebuilt continuation prompt as a custom_message entry and let Pi
 	// schedule the next model request. No idle-window race with compaction.
 	pi.on("agent_before_settle", async (event, ctx) => {
-		const lifecycle = lifecycleFor(ctx.cwd);
-		const result = lifecycle.handle({ type: "before-settle", outcome: event.outcome }, contextFor(ctx, state.resumedFromPreviousSession));
+		const result = dispatch(ctx, { type: "before-settle", outcome: event.outcome });
 		notifyRejection(ctx, result);
 		const message = result.continuation?.message;
 		if (!message) return undefined;

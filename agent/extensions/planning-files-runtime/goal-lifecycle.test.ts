@@ -10,6 +10,7 @@ import {
 	type GoalLifecycle,
 	type GoalLifecycleContext,
 	type GoalLifecycleEvent,
+	type GoalLifecycleResult,
 	type OutgoingGoalMessage,
 	type OutgoingGoalMessageOptions,
 } from "./goal-lifecycle.ts";
@@ -17,7 +18,7 @@ import type { AuditModelResult } from "./audit.ts";
 import { MESSAGE_TYPE_CONTINUATION, type CompleteGoalParams } from "./types.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
 import { defaultGoalState, hasActiveGoal, readGoalState, writeGoalState } from "./state.ts";
-import { getPlanningSnapshot, initializePlanningWorkspace } from "./workspace.ts";
+import { initializePlanningWorkspace, readPlanningSections } from "./workspace.ts";
 import { buildWidgetLines } from "./ui.ts";
 
 const tempDirectories: string[] = [];
@@ -44,21 +45,15 @@ const contractParams = {
 
 type SentMessage = { message: OutgoingGoalMessage; options: OutgoingGoalMessageOptions };
 
-function createHarness(options: { failSends?: boolean; failNotify?: boolean; failRefresh?: boolean } = {}) {
+function createHarness(options: { failSends?: boolean; failNotify?: boolean } = {}) {
 	const sent: SentMessage[] = [];
 	const log: string[] = [];
 	let failSends = options.failSends ?? false;
 	let failNotify = options.failNotify ?? false;
-	let failRefresh = options.failRefresh ?? false;
 	const context = (): GoalLifecycleContext => ({
-		resumedFromPreviousSession: false,
 		notify: (message, level) => {
 			if (failNotify) throw new Error("notify exploded");
 			log.push(`notify:${level}:${message}`);
-		},
-		refresh: () => {
-			if (failRefresh) throw new Error("refresh exploded");
-			log.push("refresh");
 		},
 	});
 	return {
@@ -75,7 +70,6 @@ function createHarness(options: { failSends?: boolean; failNotify?: boolean; fai
 		clearSent: () => sent.splice(0),
 		setFailSends: (next: boolean) => (failSends = next),
 		setFailNotify: (next: boolean) => (failNotify = next),
-		setFailRefresh: (next: boolean) => (failRefresh = next),
 	};
 }
 
@@ -99,6 +93,13 @@ function decideContinuation(run: GoalLifecycle, harness: Harness, outcome: "comp
 	const result = run.handle({ type: "before-settle", outcome }, harness.context());
 	assert.equal(result.error, undefined);
 	return result.continuation?.message;
+}
+
+/** An accepted operation that asks nothing more of the host: no error, continuation, or audit — only the projection. */
+function assertAcceptedQuietly(result: GoalLifecycleResult): void {
+	const { projection, ...outcome } = result;
+	assert.deepEqual(outcome, { error: undefined });
+	assert.ok(projection);
 }
 
 function prepareDraft(cwd: string, harness: Harness): GoalLifecycle {
@@ -315,7 +316,7 @@ describe("goal lifecycle", () => {
 		assert.equal(run.getState().impl.runId, 1);
 		assert.equal(readGoalState(cwd).impl.planningResetRequired, false);
 		assert.ok(run.getState().impl.initializedAt);
-		assert.equal(getPlanningSnapshot(cwd, false).goalFromPlan, contractParams.objective);
+		assert.equal(readPlanningSections(cwd).goalFromPlan, contractParams.objective);
 		const archives = fs.readdirSync(paths.archiveRoot);
 		assert.equal(archives.length, 1);
 		assert.equal(readText(path.join(paths.archiveRoot, archives[0]!, "task_plan.md")), oldPlan);
@@ -406,24 +407,6 @@ describe("goal lifecycle", () => {
 		const retry = await complete(run, { summary: "cannot persist" }, harness);
 		assert.equal(retry.error, undefined);
 		assert.equal(run.getState().status, "complete");
-	});
-
-	test("a failed reset effect reports the error and keeps the reset state", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareDraft(cwd, harness);
-		assert.equal(run.getState().status, "drafting");
-
-		// A throwing UI refresh makes the reset effect fail; the run must
-		// surface it as an error result (the adapter can then suppress the
-		// unconditional "reset succeeded" notification).
-		const result = run.handle(
-			{ type: "reset" },
-			{ ...harness.context(), refresh: () => { throw new Error("ui exploded"); } },
-		);
-		assert.match(result.error?.reason ?? "", /Goal operation failed: ui exploded/);
-		assert.equal(run.getState().status, "none"); // the reset itself was persisted and kept
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "none");
 	});
 
 	test("a failed atomic goal-state write leaves the prior file intact", () => {
@@ -534,25 +517,6 @@ describe("goal lifecycle", () => {
 		assert.equal(before.match(/Goal implementation paused: The goal run was interrupted by the user\./g)?.length, 1);
 		run.handle({ type: "agent-settled", aborted: true }, harness.context());
 		assert.equal(readText(progressPath), before);
-	});
-
-	test("a failed refresh during the aborted-settlement pause still pauses the run and blocks continuation", () => {
-		const cwd = makeCwd();
-		const harness = createHarness();
-		const run = prepareActive(cwd, harness);
-		harness.clearSent();
-		harness.setFailRefresh(true);
-		const result = run.handle({ type: "agent-settled", aborted: true }, harness.context());
-		assert.match(result.error?.reason ?? "", /Goal operation failed: refresh exploded/);
-		// The pause itself was persisted and kept.
-		assert.equal(run.getState().status, "paused");
-		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "paused");
-		harness.setFailRefresh(false);
-		// A paused run does not continue at the boundary, so the interrupted
-		// run cannot silently resume.
-		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
-		assert.equal(decideContinuation(run, harness), undefined);
-		assert.equal(harness.sent.length, 0);
 	});
 
 	test("an aborted turn pauses immediately", () => {
@@ -686,7 +650,7 @@ describe("goal lifecycle", () => {
 		assert.equal(readText(paths.files["task_plan.md"]), originalPlan);
 	});
 
-	test("agent settlement refreshes a paused widget without restoring task-plan next actions", () => {
+	test("agent settlement hands back a fresh paused projection without restoring task-plan next actions", () => {
 		const cwd = makeCwd();
 		initializePlanningWorkspace(cwd);
 		writeGoalState(cwd, { ...defaultGoalState(), status: "paused" });
@@ -694,7 +658,7 @@ describe("goal lifecycle", () => {
 		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 2/3\n\n## Next Concrete Action\nTask 03\n");
 		const harness = createHarness();
 		const run = createGoalLifecycle(cwd, harness.deps);
-		let widgetLines = buildWidgetLines(getPlanningSnapshot(cwd, false));
+		let widgetLines = buildWidgetLines(run.view().projection);
 		assert.deepEqual(widgetLines?.filter((line) => /^(state|phase|next):/.test(line)), [
 			"state: paused",
 			"phase: Phase 2/3",
@@ -702,20 +666,83 @@ describe("goal lifecycle", () => {
 
 		// Represents a bash, Python, or custom-tool write with no write/edit tool result.
 		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 4\n\n## Next Concrete Action\nTask 05\n");
-		const result = run.handle(
-			{ type: "agent-settled" },
-			{
-				...harness.context(),
-				refresh: () => {
-					widgetLines = buildWidgetLines(getPlanningSnapshot(cwd, false));
-				},
-			},
-		);
+		const result = run.handle({ type: "agent-settled" }, harness.context());
 		assert.equal(result.error, undefined);
+		widgetLines = buildWidgetLines(result.projection);
 		assert.deepEqual(widgetLines?.filter((line) => /^(state|phase|next):/.test(line)), [
 			"state: paused",
 			"phase: Phase 4",
 		]);
+	});
+
+	test("every result projects the goal it just decided on beside planning sections fresh from disk", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 2\n\n## Blocker\nWaiting on review\nsecond line\n");
+		const result = run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
+		assert.equal(result.error, undefined);
+		assert.equal(result.projection.goalState.status, "paused");
+		assert.equal(result.projection.goalState.impl.pausedReason, "quota");
+		assert.equal(result.projection.currentPhase, "Phase 2");
+		assert.equal(result.projection.blocker, "Waiting on review");
+		assert.equal(result.projection.exists, true);
+		assert.equal(result.projection.planningRoot, paths.root);
+		// A rejected operation still hands back what there is to display.
+		const rejected = run.handle({ type: "pause", params: { reason: "again" } }, harness.context());
+		assert.equal(rejected.error?.operation, "pause_plan_goal");
+		assert.equal(rejected.projection.goalState.impl.pausedReason, "quota");
+		// The inspector asks for whole section bodies through the same reader.
+		assert.equal(run.view("full").projection.blocker, "Waiting on review\nsecond line");
+		assert.equal(run.view().projection.blocker, "Waiting on review");
+	});
+
+	test("an unreadable state file projects the last-known goal, never an empty one, while sections stay fresh", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const before = run.getState();
+		writeText(paths.goalState, "{");
+		writeText(paths.files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 3\n");
+		const view = run.view();
+		assert.equal(view.error?.operation, "state-sync");
+		assert.match(view.error?.reason ?? "", /cannot read current goal state/);
+		assert.deepEqual(view.projection.goalState, before);
+		assert.equal(view.projection.currentPhase, "Phase 3");
+		assert.equal(readText(paths.goalState), "{"); // looking never writes
+		// Once repaired, the next look is clean again.
+		writeGoalState(cwd, { ...before, status: "paused" });
+		const repaired = run.view();
+		assert.equal(repaired.error, undefined);
+		assert.equal(repaired.projection.goalState.status, "paused");
+	});
+
+	test("a projection is a detached copy: editing it cannot change the lifecycle", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const { projection } = run.view();
+		projection.goalState.status = "complete";
+		projection.goalState.goal!.constraints.push("smuggled");
+		assert.equal(run.getState().status, "active");
+		assert.deepEqual(run.view().projection.goalState.goal!.constraints, contractParams.constraints);
+	});
+
+	test("the prompt sent to the model describes the same goal the result projects", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
+		const external = run.getState();
+		external.goal!.objective = "Objective revised on disk";
+		writeGoalState(cwd, external);
+		harness.clearSent();
+		const result = run.handle({ type: "implementation-request" }, harness.context());
+		assert.equal(result.projection.goalState.goal!.objective, "Objective revised on disk");
+		assert.match(harness.sent[0].message.content, /Objective: Objective revised on disk/);
+		assert.match(harness.sent[0].message.content, new RegExp(`runId=${result.projection.goalState.impl.runId}\\]`));
 	});
 
 	test("resume uses externally updated goal and draft without overwriting them", () => {
@@ -731,7 +758,7 @@ describe("goal lifecycle", () => {
 		const result = run.handle({ type: "implementation-request" }, harness.context());
 		assert.equal(result.error, undefined);
 		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
-		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.draft.constraints, external.draft.constraints);
+		assert.deepEqual(result.projection.goalState.draft.constraints, external.draft.constraints);
 		assert.match(harness.sent[0].message.content, /Updated delegation policy/);
 		assert.equal(run.getState().impl.runId, external.impl.runId);
 	});
@@ -751,7 +778,7 @@ describe("goal lifecycle", () => {
 		assert.match(continuation.content, /Use the new policy/);
 	});
 
-	test("sync imports external state without resetting the turn-stop gate", () => {
+	test("a view imports external state without resetting the turn-stop gate", () => {
 		const cwd = makeCwd();
 		const harness = createHarness();
 		const run = prepareDraft(cwd, harness);
@@ -759,8 +786,9 @@ describe("goal lifecycle", () => {
 		const external = run.getState();
 		external.goal!.constraints = ["Latest constraint"];
 		writeGoalState(cwd, external);
-		const result = run.handle({ type: "sync" }, harness.context());
-		assert.equal(result.error, undefined);
+		const view = run.view();
+		assert.equal(view.error, undefined);
+		assert.deepEqual(view.projection.goalState.goal!.constraints, external.goal!.constraints);
 		assert.deepEqual(run.getState().goal!.constraints, external.goal!.constraints);
 		assert.equal(run.turnStoppedBy(), "commit_plan_goal");
 	});
@@ -774,14 +802,14 @@ describe("goal lifecycle", () => {
 		const external = run.getState();
 		external.impl.runId++;
 		writeGoalState(cwd, external);
-		run.handle({ type: "sync" }, harness.context());
+		run.view();
 		run.handle({ type: "turn-end", stopReason: "stop" }, harness.context());
 		assert.equal(decideContinuation(run, harness), undefined);
 		assert.equal(harness.sent.length, 0);
 	});
 
 	for (const badState of ["{", "null", "{}", "[]"]) {
-		test(`invalid state ${badState} is not overwritten by sync, resume or the boundary decision`, () => {
+		test(`invalid state ${badState} is not overwritten by a view, resume or the boundary decision`, () => {
 			const cwd = makeCwd();
 			const harness = createHarness();
 			const run = prepareActive(cwd, harness);
@@ -789,10 +817,13 @@ describe("goal lifecycle", () => {
 			settleWithProgress(run, harness);
 			const before = run.getState();
 			writeText(getPaths(cwd).goalState, badState);
-			for (const type of ["sync", "implementation-request", "before-settle"] as const) {
+			assert.equal(run.view().error?.operation, "state-sync");
+			for (const type of ["implementation-request", "before-settle"] as const) {
 				const result = run.handle(type === "before-settle" ? { type, outcome: "completed" } : { type }, harness.context());
 				assert.equal(result.error?.operation, "state-sync");
 				assert.equal(result.continuation, undefined);
+				// The failed read still hands back something to display: the last-known goal, never an empty one.
+				assert.deepEqual(result.projection.goalState, before);
 			}
 			assert.equal(readText(getPaths(cwd).goalState), badState);
 			assert.deepEqual(run.getState(), before);
@@ -827,7 +858,7 @@ describe("goal lifecycle", () => {
 		const result = run.handle({ type: "implementation-request" }, harness.context());
 		assert.match(result.error?.reason ?? "", /send exploded/);
 		assert.equal(run.getState().status, "active");
-		assert.deepEqual(getPlanningSnapshot(cwd, false).goalState.goal!.constraints, external.goal!.constraints);
+		assert.deepEqual(result.projection.goalState.goal!.constraints, external.goal!.constraints);
 	});
 
 	test("a failed boundary sync keeps an explicit recovery path after repair", () => {
@@ -855,7 +886,7 @@ describe("goal lifecycle", () => {
 		const run = prepareActive(cwd, harness);
 		run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
 		writeText(getPaths(cwd).goalState, "{");
-		run.handle({ type: "sync" }, harness.context());
+		run.view();
 		assert.equal(run.turnStoppedBy(), "pause_plan_goal"); // same turn remains stopped
 		const result = run.handle({ type: "turn-start" }, harness.context());
 		assert.equal(result.error?.operation, "state-sync");
@@ -876,7 +907,7 @@ describe("goal lifecycle", () => {
 			harness.clearSent();
 			const input = "我使用重置卡，额度已恢复\n  请核验后继续。";
 			const result = run.handle({ type: "implementation-request", supplementalInput: ` \n${input}\n ` }, harness.context());
-			assert.deepEqual(result, { error: undefined });
+			assertAcceptedQuietly(result);
 			assert.equal(run.getState().status, "active");
 			assert.equal(run.getState().impl.runId, 1);
 			assert.equal(harness.sent.length, 1);
@@ -934,7 +965,7 @@ describe("goal lifecycle", () => {
 				// The failed input was never cached: after pausing, a retry sends only what it supplies.
 				run.handle({ type: "pause", params: { reason: "重发实现请求" } }, harness.context());
 				const retry = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
-				assert.deepEqual(retry, { error: undefined });
+				assertAcceptedQuietly(retry);
 				assert.equal(harness.sent.length, 1);
 				assert.doesNotMatch(harness.sent[0].message.content, /失败请求的补充/);
 				if (retryInput) assert.ok(harness.sent[0].message.content.includes(retryInput));
@@ -958,7 +989,7 @@ describe("goal lifecycle", () => {
 		assert.equal(rejected.error?.operation, "plan-goal-impl");
 		assert.match(rejected.error?.reason ?? "", /not accepted.*normal message.*pause.*plan-goal-impl/);
 		const blank = run.handle({ type: "implementation-request", supplementalInput: " \t\n　" }, harness.context());
-		assert.deepEqual(blank, { error: undefined });
+		assertAcceptedQuietly(blank);
 		assert.deepEqual(run.getState(), before);
 		assert.equal(readText(getPaths(cwd).goalState), diskBefore);
 		assert.deepEqual(harness.log, logBefore);
@@ -990,7 +1021,7 @@ describe("goal lifecycle", () => {
 			}
 			harness.setFailSends(false);
 			const result = run.handle({ type: "implementation-request", supplementalInput: retryInput }, harness.context());
-			assert.deepEqual(result, { error: undefined });
+			assertAcceptedQuietly(result);
 			assert.deepEqual(run.getState(), repaired);
 			assert.deepEqual(createGoalLifecycle(cwd, harness.deps).getState(), repaired);
 			assert.equal(harness.sent.length, 1);
@@ -1071,7 +1102,7 @@ describe("token budget", () => {
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 100 }, harness.context());
 		assert.equal(run.getState().status, "complete");
 		assert.equal(readGoalState(cwd).impl.tokensUsed, 725);
-		assert.ok(buildWidgetLines(getPlanningSnapshot(cwd, false))!.includes("tokens: 725"));
+		assert.ok(buildWidgetLines(run.view().projection)!.includes("tokens: 725"));
 		run.handle({ type: "agent-settled" }, harness.context());
 		run.handle({ type: "agent-start" }, harness.context());
 		run.handle({ type: "turn-start" }, harness.context());

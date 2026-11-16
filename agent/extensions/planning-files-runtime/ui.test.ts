@@ -11,15 +11,11 @@ function snapshot(status: GoalOverlayStatus): PlanningSnapshot {
 	return {
 		planningRoot: "/project/.pi/planning",
 		files: { "task_plan.md": "/project/.pi/planning/task_plan.md", "findings.md": "/project/.pi/planning/findings.md", "progress.md": "/project/.pi/planning/progress.md" },
-		goalDesignPath: "/project/.pi/planning/goal-design.md",
-		tasksDir: "/project/.pi/planning/tasks",
-		goalStatePath: "/project/.pi/planning/.goal-state.json",
 		exists: true,
 		currentPhase: "Phase 5",
 		nextAction: "complete_plan_goal: stale action",
 		blocker: "stale blocker",
 		goalState: { ...defaultGoalState(), status },
-		resumedFromPreviousSession: false,
 	};
 }
 

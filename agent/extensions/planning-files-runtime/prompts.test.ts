@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { budgetPromptLines, buildGoalImplPrompt, buildGoalSetPrompt, buildPlanUpdatePrompt } from "./prompts.ts";
-import { getPlanningSnapshot } from "./workspace.ts";
+import { readPlanningSections } from "./workspace.ts";
+import type { PlanningSnapshot } from "./types.ts";
 import { defaultGoalState } from "./state.ts";
 import { NETWORK_COMMANDS } from "../command-policy/policy.ts";
 
@@ -23,7 +24,7 @@ test("goal drafting prompt explains the fail-closed bash policy", () => {
 test("plan update prompt pins exact planning file paths and the continuity check", () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "planning-prompts-test-"));
 	try {
-		const snapshot = getPlanningSnapshot(cwd, false);
+		const snapshot: PlanningSnapshot = { ...readPlanningSections(cwd), goalState: defaultGoalState() };
 		const prompt = buildPlanUpdatePrompt(snapshot);
 
 		assert.ok(prompt.includes("[PLAN UPDATE]"));
@@ -40,7 +41,7 @@ for (const mode of ["start", "resume", "continue"] as const) {
 	test(`implementation prompt reconciles current user facts without overriding the contract (${mode})`, (t) => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "planning-impl-prompt-"));
 		t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-		const snapshot = getPlanningSnapshot(cwd, false);
+		const snapshot: PlanningSnapshot = { ...readPlanningSections(cwd), goalState: defaultGoalState() };
 		snapshot.goalState.goal = {
 			objective: "完成实现", successCriteria: ["测试通过"], constraints: ["不能部署"],
 			outOfScope: ["修改依赖"], blockerRule: "遇到真实阻塞先暂停",

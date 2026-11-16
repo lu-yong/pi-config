@@ -683,3 +683,50 @@ test("RPC refreshes retain the string widget protocol", async () => {
 	await h.command("planning-goal");
 	assert.equal(h.dialog(), undefined);
 });
+
+test("RPC sends the widget only when the projection changed, and again for a new session", async () => {
+	const h = harness();
+	(h.ctx as { mode: string }).mode = "rpc";
+	await h.event("session_start", { reason: "new" });
+	assert.equal(h.registrations(), 1);
+	// Every event hands back a projection; unchanged ones must not chatter over RPC.
+	await h.event("agent_start");
+	await h.event("turn_start");
+	await h.event("tool_call", { toolName: "bash", input: { command: "ls" } });
+	await h.event("tool_result", { toolName: "replace_match", input: {} });
+	assert.equal(h.registrations(), 1);
+	writeText(getPaths(h.cwd).files["task_plan.md"], "# Task Plan\n\n## Blocker\nNew blocker\n");
+	await h.event("tool_result", { toolName: "replace_match", input: {} });
+	assert.equal(h.registrations(), 2);
+	assert.ok(h.widget()?.includes("blocker: New blocker"));
+	await h.event("turn_end", { message: { role: "assistant", stopReason: "stop", usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0 } } });
+	assert.equal(h.registrations(), 3);
+	assert.ok(h.widget()?.includes("tokens: 10"));
+	// The host drops widgets with the old session; an unchanged projection is still sent.
+	await h.event("session_start", { reason: "resume" });
+	assert.equal(h.registrations(), 4);
+});
+
+test("a widget that cannot be drawn warns without failing the goal operation", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	(h.ctx.ui as { setWidget: unknown }).setWidget = () => { throw new Error("ui exploded"); };
+	h.disposeWidget();
+	const result = (await h.tool("pause_plan_goal", { reason: "quota" })) as { isError?: boolean };
+	assert.equal(result.isError, undefined);
+	assert.equal(readGoalState(h.cwd).status, "paused");
+	assert.ok(h.warnings.some((message) => /更新 planning widget 失败: ui exploded/.test(message)));
+});
+
+test("/plan-update reads the workspace through the lifecycle and sends the planning-file paths", async () => {
+	const h = harness("paused");
+	await h.event("session_start", { reason: "new" });
+	writeText(getPaths(h.cwd).files["task_plan.md"], "# Task Plan\n\n## Current Phase\nPhase 7\n");
+	await h.command("plan-update");
+	assert.equal(h.messages.length, 1);
+	assert.match(h.messages[0].content, /\[PLAN UPDATE\]/);
+	assert.match(h.messages[0].content, /Phase: Phase 7/);
+	assert.ok(h.messages[0].content.includes(getPaths(h.cwd).files["progress.md"]));
+	assert.ok(h.widget()?.includes("phase: Phase 7"));
+	assert.equal(readGoalState(h.cwd).status, "paused");
+});

@@ -80,20 +80,23 @@ export type GoalOverlayState = {
 	impl: GoalImplState;
 };
 
-export type PlanningSnapshot = {
+/** What the Planning workspace reads off disk: where the files live and the task_plan.md section values. */
+export type PlanningSections = {
 	planningRoot: string;
 	files: Record<PlanningFileName, string>;
-	goalDesignPath: string;
-	tasksDir: string;
-	goalStatePath: string;
 	exists: boolean;
 	currentPhase?: string;
 	goalFromPlan?: string;
 	nextAction?: string;
 	blocker?: string;
-	goalState: GoalOverlayState;
-	resumedFromPreviousSession: boolean;
 };
+
+/**
+ * Read-only projection of one planning workspace: its sections joined with
+ * the goal state. Only the Goal lifecycle produces one, so every consumer
+ * (widget, inspector, prompts) sees the goal the lifecycle is deciding on.
+ */
+export type PlanningSnapshot = PlanningSections & { goalState: GoalOverlayState };
 
 export type PathBundle = {
 	root: string;

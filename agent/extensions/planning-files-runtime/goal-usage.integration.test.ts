@@ -58,7 +58,7 @@ for (const operation of ["commit", "pause", "complete"] as const) {
 			const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "planning-usage-loop-"));
 			try {
 				const run = createGoalLifecycle(cwd, { sendMessage() {} });
-				const context: GoalLifecycleContext = { notify() {}, refresh() {} };
+				const context: GoalLifecycleContext = { notify() {} };
 				assert.equal(run.handle({ type: "start-drafting", input: "Account for a goal" }, context).error, undefined);
 				if (operation !== "commit") {
 					assert.equal(run.handle({ type: "commit", params: contract }, context).error, undefined);

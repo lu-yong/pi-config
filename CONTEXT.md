@@ -10,8 +10,11 @@ _避免_：goal service、task tracker
 **Goal implementation run**：Goal overlay 从 ready 进入 active 后，对同一目标进行的一次连续实施过程；runId 用于区分不同运行。
 _避免_：每次命令调用、独立任务
 
-**Goal lifecycle**：承载 Goal overlay 完整生命周期策略的模块（`agent/extensions/planning-files-runtime/goal-lifecycle.ts`）——状态转换、完成声明的独立审计与完成裁决、效果执行、Continuation 决策与运行结果投影。Pi 适配层只表达生命周期事件，不接触内部效果词汇。
+**Goal lifecycle**：承载 Goal overlay 完整生命周期策略的模块（`agent/extensions/planning-files-runtime/goal-lifecycle.ts`）——状态转换、完成声明的独立审计与完成裁决、效果执行、Continuation 决策与运行结果投影。它是 goal 状态的唯一读取方：每个事件开始前自行导入磁盘变化，每次操作结果都带回一份 Planning projection。Pi 适配层只表达生命周期事件并展示带回的投影——不重读磁盘、不告诉它何时同步、不接触内部效果词汇。
 _避免_：goal service、run controller
+
+**Planning projection（规划投影）**：Goal lifecycle 交给调用方展示的只读快照（类型 `PlanningSnapshot`）——Planning workspace 当下的小节内容，加上 Goal lifecycle 正在据以决策的那份 goal 状态。每次操作结果（`handle` / `complete`）都带一份；不发事件、只想看一眼时用 `view()`。`.goal-state.json` 读不出来时，投影仍然给出：goal 部分是最后一次读到的状态（绝不是空 goal），小节照常取自磁盘，旁边附带错误。widget、`/planning-goal`、`/plan-update` 和实施提示词用的是同一份投影。
+_避免_：refresh 回调、sync 事件、宽松读取
 
 **Continuation**：Goal implementation run 在一次 agent run 落定前（Pi 的 `agent_before_settle` 边界）、仍满足继续条件时产出的后续实施步骤；由 Pi 核心调度下一次模型请求，扩展只返回决策数据。
 _避免_：自动重试、后台任务
@@ -22,5 +25,5 @@ _避免_：命令白名单、bash 校验器、工具黑名单
 **Drafting guard（草拟守卫）**：goal drafting 阶段裁决工具调用的唯一守卫模块（`agent/extensions/planning-files-runtime/guards.ts` 的 `gateDraftingToolCall`）——drafting 状态判断、planning 目录豁免（文件变更只有在入参指明目标且目标位于 `.pi/planning/` 内时放行，目标未知一律拦截）、bash 委托 Read-only command policy 的 drafting profile，以及全部拒绝话术都在其后。哪些工具算文件变更由 Read-only command policy 回答，本模块不持有工具清单。Pi 适配层只转发它的判决。
 _避免_：工具拦截器、hook 校验
 
-**Planning workspace（规划工作区）**：持有 planning 文件格式全部知识（模板、标题名、解析、追加、完结、归档）的唯一深模块（`agent/extensions/planning-files-runtime/workspace.ts`）。调用方只见语义操作，不见 markdown 格式；Goal lifecycle 的效果执行委托它落盘。
+**Planning workspace（规划工作区）**：持有 planning 文件格式全部知识（模板、标题名、解析、追加、完结、归档）的唯一深模块（`agent/extensions/planning-files-runtime/workspace.ts`）。调用方只见语义操作，不见 markdown 格式；Goal lifecycle 的效果执行委托它落盘。它不读 goal 状态——`readPlanningSections` 只交出小节内容，由 Goal lifecycle 拼成 Planning projection。
 _避免_：markdown 工具集、文件助手

@@ -5,6 +5,7 @@ import type {
 	GoalContract,
 	GoalOverlayState,
 	PauseGoalParams,
+	PlanningSnapshot,
 	SaveGoalDraftParams,
 } from "./types.ts";
 import {
@@ -23,9 +24,10 @@ import {
 	archivePlanningWorkspace,
 	createGoalDesignSkeleton,
 	finalizeGoalWorkspace,
-	getPlanningSnapshot,
 	hasPlanningFiles,
 	initializePlanningWorkspace,
+	readPlanningSections,
+	type PlanningDetail,
 } from "./workspace.ts";
 import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
 
@@ -37,8 +39,10 @@ import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
  * the run active), and the Continuation decision for the active
  * implementation run.
  *
- * Pi hooks only express GoalLifecycleEvent values and read the
- * GoalLifecycleResult projection (error/continuation). They never
+ * Pi hooks only express GoalLifecycleEvent values and read what comes back:
+ * the error/continuation outcome plus a fresh read-only projection of the
+ * planning workspace to display. The lifecycle is the only reader of goal
+ * state — hooks never re-read the disk, never tell it when to sync, and never
  * see the internal effect vocabulary. The automatic
  * Continuation is decided at Pi's agent_before_settle boundary and returned
  * as data — Pi schedules the next model request itself, so nothing here races
@@ -68,10 +72,22 @@ export type OutgoingGoalMessageOptions = {
  */
 export type CompletionAuditCall = (system: string, user: string, signal?: AbortSignal) => Promise<AuditModelResult>;
 
-/** Run result projection: what the caller needs to know after an operation. */
-export type GoalLifecycleResult = {
+/**
+ * What the host displays: the workspace as it stands now, plus why the last
+ * read or operation failed. The projection is always present and always
+ * usable — an unreadable .goal-state.json yields the last-known goal state
+ * (never an empty goal) next to an `error`, with planning sections fresh from
+ * disk.
+ */
+export type GoalLifecycleView = {
 	/** Single error channel: the rejected or failed operation, and why. */
 	error?: { operation: string; reason: string };
+	/** Read-only projection taken after the operation ran; safe to keep and render. */
+	projection: PlanningSnapshot;
+};
+
+/** Operation result: the view after the operation, plus what the caller must act on. */
+export type GoalLifecycleResult = GoalLifecycleView & {
 	/** Settled-run Continuation for Pi's agent_before_settle boundary, when the run should continue. */
 	continuation?: { message: OutgoingGoalMessage };
 	/** Completion-audit projection: note for the host's success message, plus the auditor's usage for session accounting. Present whenever a completion audit was attempted. */
@@ -80,9 +96,7 @@ export type GoalLifecycleResult = {
 
 /** Pi-side capabilities injected per operation; the module stays UI-agnostic. */
 export interface GoalLifecycleContext {
-	resumedFromPreviousSession?: boolean;
 	notify(message: string, level: "warning"): void;
-	refresh(): void;
 }
 
 export interface GoalLifecycleDeps {
@@ -91,7 +105,6 @@ export interface GoalLifecycleDeps {
 
 export type GoalLifecycleEvent =
 	| { type: "restore" }
-	| { type: "sync" }
 	| { type: "reset" }
 	| { type: "start-drafting"; input?: string }
 	| { type: "save-draft"; params: SaveGoalDraftParams }
@@ -113,6 +126,13 @@ export interface GoalLifecycle {
 		context: GoalLifecycleContext,
 		audit: { modelCall: CompletionAuditCall; signal?: AbortSignal },
 	): Promise<GoalLifecycleResult>;
+	/**
+	 * The current view outside any event — for the moments the host only needs
+	 * to look (a tool call to gate, planning files changed by a tool, an
+	 * inspector to open). Imports disk state like every event does and changes
+	 * nothing else. "full" returns whole section bodies instead of first lines.
+	 */
+	view(detail?: PlanningDetail): GoalLifecycleView;
 	getState(): GoalOverlayState;
 	/** Operation that stopped the current turn (commit/pause/complete), if any. */
 	turnStoppedBy(): string | null;
@@ -127,7 +147,6 @@ type GoalLifecycleEffect =
 	| { type: "ensure-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "append-progress"; heading: ProgressHeading; message: string }
 	| { type: "finalize-goal-workspace"; completion: GoalCompletion }
-	| { type: "refresh" }
 	| { type: "send-goal-set"; supplementalInput?: string }
 	| { type: "send-goal-impl"; mode: "start" | "resume"; supplementalInput?: string }
 	| { type: "emit-continuation" }
@@ -138,6 +157,9 @@ type GoalLifecycleEffect =
 function cloneState(state: GoalOverlayState): GoalOverlayState {
 	return JSON.parse(JSON.stringify(state)) as GoalOverlayState;
 }
+
+/** An operation's outcome before the lifecycle attaches the projection every result carries. */
+type GoalLifecycleOutcome = Omit<GoalLifecycleResult, "projection">;
 
 /** Internal events: the public `complete` intent reaches the same transition machinery after its audit. */
 type InternalGoalLifecycleEvent = GoalLifecycleEvent | { type: "complete"; params: CompleteGoalParams };
@@ -188,7 +210,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	// /plan-goal-impl re-sends the same run's continuation once storage works.
 	let recoveryPending = false;
 
-	/** Import disk changes at event boundaries, not just into the widget projection. */
+	/** Import disk changes at event boundaries, so decisions and the projection share one read. */
 	const syncState = (): void => {
 		const next = readGoalStateForUpdate(cwd);
 		if (!next) {
@@ -219,9 +241,37 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	};
 
 	/**
+	 * Guarded disk import shared by every event and by `view`: a state file
+	 * that cannot be read leaves the last-known state in place and is reported,
+	 * never thrown.
+	 */
+	const importDiskState = (): GoalLifecycleView["error"] => {
+		try {
+			syncState();
+			return undefined;
+		} catch (error) {
+			// Keep an explicit retry route once the file has been repaired.
+			if (state.status === "active") recoveryPending = true;
+			const detail = error instanceof Error ? error.message : String(error);
+			return { operation: "state-sync", reason: `Goal run failed: cannot read current goal state; no state was written. ${detail}` };
+		}
+	};
+
+	/**
+	 * The one place a planning projection is assembled: planning sections fresh
+	 * from disk, goal state from this lifecycle (the strict read, or the
+	 * last-known state when the file is unreadable). Prompts and the host's
+	 * widget see the same goal.
+	 */
+	const project = (detail: PlanningDetail = "summary"): PlanningSnapshot => ({
+		...readPlanningSections(cwd, detail),
+		goalState: cloneState(state),
+	});
+
+	/**
 	 * Pause the active run for a system-detected reason (user interruption,
 	 * provider failure, exhausted budget): persist the paused state, then
-	 * report through progress, clear any pending continuation, and refresh.
+	 * report through progress and clear any pending continuation.
 	 * All three pause paths share this one policy.
 	 */
 	const pauseForSystem = (reason: string, options: { suggestedAction?: string; notify?: string } = {}): GoalLifecycleEffect[] => {
@@ -235,7 +285,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: reason },
 			{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
 			...(options.notify ? [{ type: "notify", level: "warning", message: options.notify }] as GoalLifecycleEffect[] : []),
-			{ type: "refresh" },
 		];
 	};
 	/** Recovery guidance follows the saved status and the operation that failed. */
@@ -265,9 +314,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 	const transition = (event: InternalGoalLifecycleEvent): GoalLifecycleEffect[] => {
 		switch (event.type) {
-			case "sync":
-				return [];
-
 			case "restore":
 				state = readGoalStateForUpdate(cwd) ?? defaultGoalState();
 				progressSeenThisRun = false;
@@ -275,7 +321,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalErrorMessage = "";
 				turnStopped = null;
 				recoveryPending = false;
-				return [{ type: "refresh" }];
+				return [];
 
 			case "reset":
 				persist(defaultGoalState());
@@ -283,7 +329,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				terminalStopReason = undefined;
 				terminalErrorMessage = "";
 				recoveryPending = false;
-				return [{ type: "refresh" }];
+				return [];
 
 			case "start-drafting": {
 				const input = normalizeString(event.input);
@@ -333,7 +379,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 
 				return [
 					{ type: "ensure-goal-design" },
-					{ type: "refresh" },
 					{ type: "send-goal-set", ...(input ? { supplementalInput: input } : {}) },
 				];
 			}
@@ -343,7 +388,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					return reject("save_plan_goal_draft", "save_plan_goal_draft rejected: goal drafting is not in progress.");
 				}
 				mutate((current) => ({ ...current, status: "drafting", draft: mergeDraft(current.draft, event.params) }));
-				return [{ type: "refresh" }];
+				return [];
 
 			case "commit": {
 				if (state.status !== "drafting") {
@@ -378,9 +423,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				}));
 				turnStopped = "commit_plan_goal";
 				countClosingRun = true;
-				return [
-					{ type: "refresh" },
-				];
+				return [];
 			}
 
 			case "implementation-request": {
@@ -421,7 +464,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						{ type: "archive-implementation-workspace", label: `before-goal-run-${runId}` },
 						{ type: "initialize-implementation-workspace", goal: state.goal, runId },
 						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation started (run ${runId})` },
-						{ type: "refresh" },
 						{ type: "send-goal-impl", mode: "start", supplementalInput },
 					];
 				}
@@ -435,7 +477,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				return [
 					{ type: "ensure-implementation-workspace", goal: state.goal, runId },
 					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation resumed (run ${runId})` },
-					{ type: "refresh" },
 					{ type: "send-goal-impl", mode: "resume", supplementalInput },
 				];
 			}
@@ -458,7 +499,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				return [
 					{ type: "append-progress", heading: PROGRESS_HEADINGS.blockers, message: `Goal paused: ${reason}${suggestedAction ? ` | suggested action: ${suggestedAction}` : ""}` },
 					{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation paused: ${reason}` },
-					{ type: "refresh" },
 				];
 			}
 
@@ -504,8 +544,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				if (state.status === "active" && event.stopReason === "aborted") {
 					return pauseForSystem("The goal run was interrupted by the user.");
 				}
-				if (state.status !== "active" || event.stopReason === "error") return [];
-				return [{ type: "refresh" }];
+				return [];
 			}
 
 			case "before-settle": {
@@ -514,7 +553,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				// a completed run continues.
 				if (state.status !== "active" || state.impl.planningResetRequired) {
 					progressSeenThisRun = false;
-					return [{ type: "refresh" }];
+					return [];
 				}
 				if (terminalStopReason === "error") {
 					const detail = terminalErrorMessage || "unknown provider error";
@@ -522,9 +561,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						notify: "Goal implementation paused because the LLM request failed and Pi will not retry automatically. Switch models or retry /plan-goal-impl later.",
 					});
 				}
-				if (!progressSeenThisRun) {
-					return [{ type: "refresh" }];
-				}
+				if (!progressSeenThisRun) return [];
 				progressSeenThisRun = false;
 				// Budget applies only on the continuation path: a run that already
 				// went quiet without progress stays under its existing semantics.
@@ -538,7 +575,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						},
 					);
 				}
-				return [{ type: "refresh" }, { type: "emit-continuation" }];
+				return [{ type: "emit-continuation" }];
 			}
 
 			case "agent-settled":
@@ -548,18 +585,18 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				// run-level signal is the first reliable place to pause.
 				if (state.status !== "active") {
 					progressSeenThisRun = false;
-					return [{ type: "refresh" }];
+					return [];
 				}
 				if (event.aborted) return pauseForSystem("The goal run was interrupted by the user.");
-				return [{ type: "refresh" }];
+				return [];
 		}
 	};
 
 	// ---- effect execution ----
 
-	const execute = (effects: GoalLifecycleEffect[], context: GoalLifecycleContext): GoalLifecycleResult => {
-		let error: GoalLifecycleResult["error"];
-		let continuation: GoalLifecycleResult["continuation"];
+	const execute = (effects: GoalLifecycleEffect[], context: GoalLifecycleContext): GoalLifecycleOutcome => {
+		let error: GoalLifecycleOutcome["error"];
+		let continuation: GoalLifecycleOutcome["continuation"];
 		let executingEffect: GoalLifecycleEffect | undefined;
 		try {
 			for (const effect of effects) {
@@ -601,33 +638,26 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						countClosingRun = true;
 						recoveryPending = false;
 						break;
-					case "refresh":
-						context.refresh();
-						break;
-					case "send-goal-set": {
-						const snapshot = getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false);
+					case "send-goal-set":
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_GOAL_SET,
-								content: buildGoalSetPrompt(snapshot.goalState, effect.supplementalInput),
+								content: buildGoalSetPrompt(state, effect.supplementalInput),
 								display: false,
 							},
 							{ triggerTurn: true },
 						);
 						break;
-					}
-					case "send-goal-impl": {
-						const snapshot = getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false);
+					case "send-goal-impl":
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_GOAL_IMPL,
-								content: buildGoalImplPrompt(snapshot, effect.mode, effect.supplementalInput),
+								content: buildGoalImplPrompt(project(), effect.mode, effect.supplementalInput),
 								display: false,
 							},
 							{ triggerTurn: true },
 						);
 						break;
-					}
 					case "emit-continuation": {
 						// The prompt is rebuilt from the planning files on disk at decision
 						// time, so the continuation never depends on prior conversation
@@ -635,7 +665,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						continuation = {
 							message: {
 								customType: MESSAGE_TYPE_CONTINUATION,
-								content: buildGoalImplPrompt(getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false), "continue"),
+								content: buildGoalImplPrompt(project(), "continue"),
 								display: false,
 							},
 						};
@@ -645,7 +675,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_CONTINUATION,
-								content: buildGoalImplPrompt(getPlanningSnapshot(cwd, context.resumedFromPreviousSession ?? false), "continue", effect.supplementalInput),
+								content: buildGoalImplPrompt(project(), "continue", effect.supplementalInput),
 								display: false,
 							},
 							{ triggerTurn: true, deliverAs: "followUp" },
@@ -678,7 +708,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	 * effects, and turn transition-time failures (e.g. goal-state writes)
 	 * into a result instead of an uncaught throw.
 	 */
-	const runInternal = (event: InternalGoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => {
+	const runInternal = (event: InternalGoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleOutcome => {
 		// The turn boundary is independent of disk health: a new turn must be able
 		// to repair a bad state file instead of inheriting the previous stop gate.
 		if (event.type === "turn-start") turnStopped = null;
@@ -688,14 +718,8 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			countClosingRun = false;
 		}
 		if (event.type !== "restore" && event.type !== "reset") {
-			try {
-				syncState();
-			} catch (error) {
-				// Keep an explicit retry route once the file has been repaired.
-				if (state.status === "active") recoveryPending = true;
-				const detail = error instanceof Error ? error.message : String(error);
-				return { error: { operation: "state-sync", reason: `Goal run failed: cannot read current goal state; no state was written. ${detail}` } };
-			}
+			const error = importDiskState();
+			if (error) return { error };
 		}
 		try {
 			return execute(transition(event), context);
@@ -708,7 +732,15 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		}
 	};
 
-	const handle = (event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => runInternal(event, context);
+	const handle = (event: GoalLifecycleEvent, context: GoalLifecycleContext): GoalLifecycleResult => ({
+		...runInternal(event, context),
+		projection: project(),
+	});
+
+	const view = (detail: PlanningDetail = "summary"): GoalLifecycleView => {
+		const error = importDiskState();
+		return { ...(error ? { error } : {}), projection: project(detail) };
+	};
 
 	/**
 	 * Completion is one operation here: read the recorded evidence, audit the
@@ -723,11 +755,11 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	 * in flight is never completed on the old verdict. Auditor usage rides on
 	 * the result so the host can account for it exactly once.
 	 */
-	const complete = async (
+	const audited = async (
 		params: CompleteGoalParams,
 		context: GoalLifecycleContext,
 		audit: { modelCall: CompletionAuditCall; signal?: AbortSignal },
-	): Promise<GoalLifecycleResult> => {
+	): Promise<GoalLifecycleOutcome> => {
 		// Import disk state first so the audited identity and the transition see
 		// the same fresh view; a broken state file is reported by the transition.
 		try {
@@ -752,7 +784,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				(system, user) => audit.modelCall(system, user, audit.signal),
 			);
 			const usage = "usage" in outcome && outcome.usage ? outcome.usage : undefined;
-			const auditResult = (reason: string): GoalLifecycleResult => ({
+			const auditResult = (reason: string): GoalLifecycleOutcome => ({
 				error: { operation: "complete_plan_goal", reason },
 				...(usage ? { audit: { note: "", usage } } : {}),
 			});
@@ -787,9 +819,15 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		return auditProjection ? { ...result, audit: auditProjection } : result;
 	};
 
+	const complete: GoalLifecycle["complete"] = async (params, context, audit) => ({
+		...(await audited(params, context, audit)),
+		projection: project(),
+	});
+
 	return {
 		handle,
 		complete,
+		view,
 		getState: () => cloneState(state),
 		turnStoppedBy: () => turnStopped,
 	};

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PLANNING_FILES } from "./types.ts";
-import type { GoalCompletion, GoalContract, PlanningSnapshot } from "./types.ts";
+import type { GoalCompletion, GoalContract, PlanningSections } from "./types.ts";
 import { archiveStamp, ensureDir, fileExists, getPaths, nowIso, readText, trimEmptyLines, writeText } from "./utils.ts";
 import {
 	HEADINGS,
@@ -12,7 +12,6 @@ import {
 	finalizeTaskPlanMarkdown,
 	firstMeaningfulLine,
 } from "./markdown.ts";
-import { readGoalState } from "./state.ts";
 
 // ---- file detection ----
 
@@ -21,38 +20,30 @@ export function hasPlanningFiles(cwd: string): boolean {
 	return PLANNING_FILES.some((name) => fileExists(paths.files[name]));
 }
 
-// ---- snapshot ----
+// ---- sections ----
 
-/** Read the compact live planning state used by summaries and prompts. */
-export function getPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
-	return readPlanningSnapshot(cwd, resumedFromPreviousSession, false);
-}
+/** "summary" reads the first meaningful line of each section; "full" reads every line (the inspector). */
+export type PlanningDetail = "summary" | "full";
 
-/** Read complete planning section bodies for the inspector, including every line. */
-export function getPlanningDetails(cwd: string, resumedFromPreviousSession: boolean): PlanningSnapshot {
-	return readPlanningSnapshot(cwd, resumedFromPreviousSession, true);
-}
-
-function readPlanningSnapshot(cwd: string, resumedFromPreviousSession: boolean, fullValues: boolean): PlanningSnapshot {
+/**
+ * Read the live planning sections of task_plan.md. Goal state is not this
+ * module's knowledge: the Goal lifecycle joins it on to form a snapshot.
+ */
+export function readPlanningSections(cwd: string, detail: PlanningDetail = "summary"): PlanningSections {
 	const paths = getPaths(cwd);
 	const taskPlan = readText(paths.files["task_plan.md"]);
 	const sectionValue = (heading: string) => {
 		const body = extractSection(taskPlan, heading);
-		return fullValues ? body : firstMeaningfulLine(body);
+		return detail === "full" ? body : firstMeaningfulLine(body);
 	};
 	return {
 		planningRoot: paths.root,
 		files: paths.files,
-		goalDesignPath: paths.goalDesign,
-		tasksDir: paths.tasksDir,
-		goalStatePath: paths.goalState,
 		exists: hasPlanningFiles(cwd),
 		currentPhase: sectionValue(HEADINGS.currentPhase),
 		goalFromPlan: sectionValue(HEADINGS.goal),
 		nextAction: sectionValue(HEADINGS.nextAction),
 		blocker: sectionValue(HEADINGS.blocker),
-		goalState: readGoalState(cwd),
-		resumedFromPreviousSession,
 	};
 }
 
