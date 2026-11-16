@@ -106,7 +106,7 @@ for (const operation of ["commit", "pause", "complete"] as const) {
 				assert.deepEqual(order, ["agent_start", "turn_start", "turn_end", "turn_start", "turn_end", "agent_end"]);
 				const expected = 70 + (operation === "complete" ? 17 : 0);
 				assert.equal(readGoalState(cwd).impl.tokensUsed, expected);
-				assert.equal(run.getState().status, operation === "commit" ? "ready" : operation === "pause" ? "paused" : "complete");
+				assert.equal(run.view().projection.goalState.status, operation === "commit" ? "ready" : operation === "pause" ? "paused" : "complete");
 				// The session layer emits settlement after the core loop finishes.
 				assert.equal(run.handle({ type: "before-settle", outcome: closingStop === "stop" ? "completed" : closingStop }, context).continuation, undefined);
 				assert.equal(run.handle({ type: "agent-settled", aborted: closingStop === "aborted" }, context).error, undefined);

@@ -138,7 +138,6 @@ export interface GoalLifecycle {
 	 * nothing else. "full" returns whole section bodies instead of first lines.
 	 */
 	view(detail?: PlanningDetail): GoalLifecycleView;
-	getState(): GoalOverlayState;
 	/** Operation that stopped the current turn (commit/pause/complete), if any. */
 	turnStoppedBy(): string | null;
 }
@@ -884,7 +883,6 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		handle,
 		complete,
 		view,
-		getState: () => cloneState(state),
 		turnStoppedBy: () => turnStopped,
 	};
 }
