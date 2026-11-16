@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-import { askExtractedQuestions, type ExtractedQuestion } from "./interaction.ts";
+import { askExtractedQuestions, type ExtractedQuestion, type QuestionTakingUI } from "./interaction.ts";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -53,7 +53,8 @@ function createDriver() {
 				}
 			}),
 	};
-	return { ui, sessions };
+	// The stub hands the component only the tui/theme members it uses.
+	return { ui: ui as unknown as QuestionTakingUI, sessions };
 }
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));

@@ -143,7 +143,8 @@ test("inspector wraps all values, scrolls to both ends, closes, and fits resized
 	state.goalState.impl.pausedReason = "中文🙂 multiline\n".repeat(80) + "LAST_BLOCKER_MARKER";
 	let closed = false;
 	let renders = 0;
-	const host = { terminal: { rows: 16 }, requestRender: () => { renders++; } } as ConstructorParameters<typeof PlanningGoalDialog>[1];
+	const terminal = { rows: 16 };
+	const host = { terminal, requestRender: () => { renders++; } } as ConstructorParameters<typeof PlanningGoalDialog>[1];
 	const theme = { fg: (_color: string, text: string) => text };
 	const keys = { matches: (data: string, key: string) => data === key };
 	const dialog = new PlanningGoalDialog(state, host, theme, keys, () => { closed = true; });
@@ -159,7 +160,7 @@ test("inspector wraps all values, scrolls to both ends, closes, and fits resized
 	dialog.handleInput("\x1b[H");
 	assert.deepEqual(dialog.render(42), first);
 	for (const width of [1, 3, 12, 80]) {
-		host.terminal.rows = 10;
+		terminal.rows = 10;
 		dialog.invalidate();
 		const lines = dialog.render(width);
 		assert.ok(lines.length <= 8 && lines.every((line) => visibleWidth(line) <= width));

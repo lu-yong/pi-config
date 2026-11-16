@@ -257,9 +257,12 @@ cd agent/extensions && npm run sync-pi
 ```bash
 node --test agent/extensions/*/*.test.ts
 npm --prefix agent/extensions/extmgr test
+npm --prefix agent/extensions run typecheck
 ```
 
 前者覆盖只读命令策略、readonly-mode、planning-files-runtime、qna、共享 question-taking 交互模块和开发依赖版本一致性（`dev-deps/` 包含同步脚本与测试，不是运行时扩展），包括 Q&A 使用原生 `ModelRuntime` 的离线回归，验证 native/virtual provider 调用、请求时鉴权、预检回退和错误/取消处理；后者用 vitest 运行 extmgr 的测试，包括以原生 resolver 为 oracle 的差分回归与三态投影（其用例在 `extmgr/test/` 更深一层，且依赖独立的 node_modules，不被前一条 glob 匹配）。
+
+第三条用 `agent/extensions/tsconfig.json` 对所有扩展目录下的 `.ts`（含测试）做 `tsc --noEmit` 严格类型检查。两个测试运行器都只剥离类型、不检查，类型错误只有这一条能发现。它只检查、不产出文件，也不改变扩展的加载方式；配置开启了 `erasableSyntaxOnly`，与 Node 的类型剥离能接受的语法保持一致。extmgr 的依赖从它自己的 `node_modules` 解析，所以需要先在 `agent/extensions/` 和 `agent/extensions/extmgr/` 各执行一次 `npm install`。`agent/extensions/` 顶层的单文件扩展（本地、未入库）不在检查范围内。
 ## 未入库文件与安全
 
 忽略规则见 [`.gitignore`](.gitignore) 与 [`agent/npm/.gitignore`](agent/npm/.gitignore)。以下内容只保存在本机，不随本仓库提交：

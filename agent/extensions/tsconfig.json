@@ -1,0 +1,26 @@
+{
+	// Type-check only: Pi and `node --test` run these files by stripping types,
+	// so nothing is ever emitted and nothing here changes how the code runs.
+	// Run with `npm run typecheck` (from this directory).
+	"compilerOptions": {
+		"noEmit": true,
+		"target": "esnext",
+		"lib": ["esnext"],
+		"module": "nodenext",
+		"types": ["node"],
+		"strict": true,
+		"skipLibCheck": true,
+		// Match what type stripping accepts: `.ts` import specifiers, no syntax
+		// that needs a transform (enums, parameter properties), and type-only
+		// imports spelled `import type` so they vanish at runtime.
+		"allowImportingTsExtensions": true,
+		"erasableSyntaxOnly": true,
+		"verbatimModuleSyntax": true,
+		// dev-deps/*.test.ts import a plain .mjs helper.
+		"allowJs": true
+	},
+	// Extension directories only: top-level *.ts files here are local,
+	// untracked extensions.
+	"include": ["*/**/*.ts"],
+	"exclude": ["node_modules", "*/node_modules"]
+}

@@ -75,9 +75,9 @@ test("runtime owns request-time native auth, endpoint, headers and env; configur
 		return { auth: authResolutions === 1 ? { apiKey: "discarded-preflight-snapshot" } : auth, env: { QNA_TEST_ENV: "offline" } };
 	};
 	const streamSimple = f.registry.streamSimple.bind(f.registry);
-	t.mock.method(f.registry, "streamSimple", (model, context, options) => {
-		assert.deepEqual(Object.keys(options!).sort(), ["reasoning", "signal"]);
-		return streamSimple(model, context, options);
+	t.mock.method(f.registry, "streamSimple", (...args: Parameters<typeof streamSimple>) => {
+		assert.deepEqual(Object.keys(args[2]!).sort(), ["reasoning", "signal"]);
+		return streamSimple(...args);
 	});
 	f.cheap.setResponses([(context, options, _state, model) => {
 		assert.equal(model.baseUrl, auth.baseUrl);
@@ -88,7 +88,7 @@ test("runtime owns request-time native auth, endpoint, headers and env; configur
 		assert.ok(options?.signal instanceof AbortSignal);
 		assert.equal(context.messages[0].role, "system");
 		assert.equal(getSystemMessageText(context.messages[0]), SYSTEM_PROMPT);
-		assert.equal(context.messages[1].content[0].text, "Which one?");
+		assert.equal((context.messages[1].content as Array<{ text?: string }>)[0].text, "Which one?");
 		return fauxAssistantMessage("[NONE]");
 	}]);
 	await runQna(f.ctx, "Which one?", cheapSettings);
@@ -173,7 +173,7 @@ test("rejected registry result reports provider details rather than cancellation
 
 test("virtual extraction models route through the current runtime and preserve routed reasoning", async (t) => {
 	const f = await fixture(t);
-	f.runtime.registerVirtualModel({ provider: "qna-router", id: "auto", thinkingLevels: ["high"], route(request) {
+	f.runtime.registerVirtualModel({ provider: "qna-router", id: "auto", name: "QnA router", thinkingLevels: ["high"], route(request) {
 		assert.equal(request.reason, "direct");
 		assert.equal(request.thinkingLevel, "high");
 		return { model: f.main.getModel()!, thinkingLevel: "low" };

@@ -16,6 +16,8 @@ const selfEntryPath = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 export type ToggleAction = "enable" | "disable";
 export type ToggleTier = "global" | "project";
+/** The persistence seam the picker session takes, so tests can observe or delay a write. */
+export type ToggleFn = typeof persistToggle;
 
 export type PersistToggleResult =
 	| { ok: true }

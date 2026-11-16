@@ -114,7 +114,11 @@ export default function readonlyMode(pi: ExtensionAPI): void {
       enforcement.handle({ type: 'before-agent-start' }),
     ) as string | null | undefined;
     if (content !== undefined) {
-      event.systemPromptOptions.sections[SECTION_NAME] = content;
+      // Pi declares a section as a string, but removal is expressed with null
+      // (a falsy section is skipped when the prompt is built), so the write
+      // goes through a widened view of the same record.
+      const sections: Record<string, string | null> = event.systemPromptOptions.sections;
+      sections[SECTION_NAME] = content;
     }
     return undefined;
   });
@@ -124,10 +128,11 @@ export default function readonlyMode(pi: ExtensionAPI): void {
   // request while such messages exist; new sessions never enter this path.
   pi.on('context', async (event) => {
     if (enforcement.isEnabled()) return undefined;
-    const messages = event.messages as Array<Record<string, unknown>>;
-    if (!messages.some((m) => m.customType === LEGACY_CONTEXT_ENTRY)) return undefined;
+    const isLegacy = (message: (typeof event.messages)[number]) =>
+      (message as { customType?: unknown }).customType === LEGACY_CONTEXT_ENTRY;
+    if (!event.messages.some(isLegacy)) return undefined;
     return {
-      messages: messages.filter((m) => m.customType !== LEGACY_CONTEXT_ENTRY),
+      messages: event.messages.filter((message) => !isLegacy(message)),
     };
   });
 

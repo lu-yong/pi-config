@@ -61,7 +61,7 @@ function createHarness(options: { failSends?: boolean; failNotify?: boolean } = 
 		log,
 		context,
 		deps: {
-			sendMessage: (message, sendOptions) => {
+			sendMessage: (message: OutgoingGoalMessage, sendOptions: OutgoingGoalMessageOptions) => {
 				if (failSends) throw new Error("send exploded");
 				sent.push({ message, options: sendOptions });
 				log.push(`send:${message.customType}`);

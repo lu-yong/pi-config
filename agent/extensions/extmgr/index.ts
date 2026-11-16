@@ -58,7 +58,7 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 			target: Type.Optional(Type.String({ description: "Package name (substring match), required for enable/disable." })),
 			scope: Type.Optional(Type.Union([Type.Literal("global"), Type.Literal("project")], { description: "Write tier. Default: global." })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<{ rows: LoadedEntry[] | ExtensionEntry[]; result?: ToolMutationResult }>> {
+		async execute(_toolCallId, params: ManageExtensionsParams, _signal, _onUpdate, ctx): Promise<AgentToolResult<{ rows: LoadedEntry[] | ExtensionEntry[]; result?: ToolMutationResult }>> {
 			if (params.action === "list") {
 				// Scope: extmgr manages package extensions only. Standalone
 				// extensions are counted in the note, never listed or toggled.
@@ -134,6 +134,17 @@ export function createManageExtensionsTool(env: ExtmgrEnv, liveSources?: () => S
 		};
 	},
 };
+}
+
+/**
+ * What the `manage_extensions` schema accepts. Spelled out because the tool is
+ * returned as a plain `ToolDefinition`, whose params are not inferred from the
+ * schema.
+ */
+interface ManageExtensionsParams {
+	action: "list" | "enable" | "disable";
+	target?: string;
+	scope?: "global" | "project";
 }
 
 export interface ToolMutationResult {

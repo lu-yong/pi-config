@@ -87,7 +87,7 @@ describe("manage_extensions mutations", () => {
 		let tool = makeTool();
 		let result = await tool.execute("c1", { action: "disable", target: "hashline", scope: "global" }, undefined, undefined, trustedCtx);
 
-		let details = result.details as { result?: { status?: string } };
+		let details = result.details as { result?: { status?: string; candidates?: string[] } };
 		expect(details.result?.status).toBe("error");
 		const text1 = (result.content as Array<{ type: string; text: string }>)[0]!.text;
 		expect(text1).toMatch(/standalone extension\(s\), which extmgr does not manage/);

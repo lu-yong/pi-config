@@ -142,7 +142,7 @@ test("retries a partial finalization without rolling back the task plan or dupli
 	const originals = seed(cwd);
 	const paths = getPaths(cwd);
 	const renameSync = fs.renameSync;
-	const rename = mock.method(fs, "renameSync", (source, destination) => {
+	const rename = mock.method(fs, "renameSync", (source: fs.PathLike, destination: fs.PathLike) => {
 		if (destination === paths.files["progress.md"]) throw new Error("simulated progress replacement failure");
 		renameSync(source, destination);
 	});

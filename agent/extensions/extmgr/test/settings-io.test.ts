@@ -194,7 +194,7 @@ describe("mutateSettings", () => {
 		expect(doc.defaultProvider).toBe("someone-else");
 		expect(doc.theme).toBe("keep");
 		expect(doc.extensions).toHaveLength(3);
-		expect(doc.extensions![0]).toBe("!keep-me.ts");
-		expect(new Set(doc.extensions!.slice(1))).toEqual(new Set(["-extensions/qna.ts", "-extensions/other.ts"]));
+		expect((doc.extensions as string[])[0]).toBe("!keep-me.ts");
+		expect(new Set((doc.extensions as string[]).slice(1))).toEqual(new Set(["-extensions/qna.ts", "-extensions/other.ts"]));
 	});
 });

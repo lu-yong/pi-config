@@ -117,7 +117,7 @@ export function finalizeTaskPlanMarkdown(markdown: string): string {
 		{ heading: HEADINGS.nextAction, body: "- None (goal complete)." },
 		{ heading: HEADINGS.blocker, body: "[empty]" },
 	];
-	const desired = new Map(terminalBodies.map((entry) => [entry.heading, entry] as const));
+	const desired = new Map<string, (typeof terminalBodies)[number]>(terminalBodies.map((entry) => [entry.heading, entry]));
 	const replacements: Array<{ start: number; end: number; text: string }> = [];
 	const found = new Set<string>();
 	for (const section of sections) {

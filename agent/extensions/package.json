@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync-pi": "node dev-deps/sync-pi.mjs"
+    "sync-pi": "node dev-deps/sync-pi.mjs",
+    "typecheck": "tsc -p ."
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
-    "@earendil-works/pi-tui": "1.5.2"
+    "@earendil-works/pi-tui": "1.5.2",
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2"
   },
   "allowScripts": {
     "@google/genai@2.21.0": true,

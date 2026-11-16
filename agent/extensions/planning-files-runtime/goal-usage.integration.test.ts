@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Message, type Model, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { runAgentLoop, type AgentEvent, type AgentLoopConfig, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { createGoalLifecycle, type GoalLifecycleContext } from "./goal-lifecycle.ts";
@@ -93,7 +93,7 @@ for (const operation of ["commit", "pause", "complete"] as const) {
 						assert.equal(run.handle({ type: "turn-end", stopReason: message.stopReason, usageTokens: sumUsageTokens(message.usage) + toolTokens }, context).error, undefined);
 					} else if (event.type === "agent_end") order.push(event.type);
 				};
-				const config: AgentLoopConfig = { model, convertToLlm: (messages) => messages };
+				const config: AgentLoopConfig = { model, convertToLlm: (messages) => messages as Message[] };
 				const messages = await runAgentLoop(
 					[{ role: "user", content: "Finish the goal stage", timestamp: Date.now() }],
 					{ messages: [], tools: [tool] }, config, emit, undefined,

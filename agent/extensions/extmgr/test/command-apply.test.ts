@@ -51,7 +51,7 @@ describe("extmgr /extmgr apply", () => {
 					factory: (
 						tui: { requestRender(): void; terminal: { rows: number } },
 						theme: unknown,
-						keybindings: typeof keybindings,
+						keybindings: { matches(data: string, binding: string): boolean },
 						done: (result: unknown) => void,
 					) => { handleInput(data: string): void; render(width: number): string[] },
 				) => {
