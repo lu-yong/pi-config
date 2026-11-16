@@ -36,8 +36,10 @@ import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
  * policy: state transitions (drafting → ready → active/paused/complete),
  * effect execution, the independent completion audit and its
  * adjudication (rejected blocks, unavailable fails open, cancellation keeps
- * the run active), and the Continuation decision for the active
- * implementation run.
+ * the run active), the Continuation decision for the active
+ * implementation run, and every operation that carries the planning workspace
+ * away (/plan-archive) or replaces it (/plan-new) — together with the idle
+ * guard, the wording, and forgetting the archived goal.
  *
  * Pi hooks only express GoalLifecycleEvent values and read what comes back:
  * the error/continuation outcome plus a fresh read-only projection of the
@@ -96,7 +98,7 @@ export type GoalLifecycleResult = GoalLifecycleView & {
 
 /** Pi-side capabilities injected per operation; the module stays UI-agnostic. */
 export interface GoalLifecycleContext {
-	notify(message: string, level: "warning"): void;
+	notify(message: string, level: "info" | "warning"): void;
 }
 
 export interface GoalLifecycleDeps {
@@ -105,7 +107,10 @@ export interface GoalLifecycleDeps {
 
 export type GoalLifecycleEvent =
 	| { type: "restore" }
-	| { type: "reset" }
+	/** /plan-archive: carry the whole workspace (goal included) into the archive and leave nothing behind. `agentIdle` is the host's fact; the guard is ours. */
+	| { type: "archive-workspace"; agentIdle: boolean }
+	/** /plan-new: archive the whole workspace, then start a blank one with no goal. */
+	| { type: "new-workspace"; agentIdle: boolean }
 	| { type: "start-drafting"; input?: string }
 	| { type: "save-draft"; params: SaveGoalDraftParams }
 	| { type: "commit"; params: CommitGoalParams }
@@ -142,7 +147,10 @@ export interface GoalLifecycle {
 
 type GoalLifecycleEffect =
 	| { type: "ensure-goal-design" }
-	| { type: "archive-implementation-workspace"; label: string }
+	/** "run" keeps the goal (state, design, task cards) for the run about to start; "everything" carries the goal away too and forgets it. */
+	| { type: "archive-workspace"; scope: "run" | "everything"; label: string }
+	| { type: "announce-archive" }
+	| { type: "initialize-blank-workspace" }
 	| { type: "initialize-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "ensure-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "append-progress"; heading: ProgressHeading; message: string }
@@ -151,7 +159,7 @@ type GoalLifecycleEffect =
 	| { type: "send-goal-impl"; mode: "start" | "resume"; supplementalInput?: string }
 	| { type: "emit-continuation" }
 	| { type: "send-continuation"; runId: number; supplementalInput?: string }
-	| { type: "notify"; level: "warning"; message: string }
+	| { type: "notify"; level: "info" | "warning"; message: string }
 	| { type: "reject"; operation: string; reason: string };
 
 function cloneState(state: GoalOverlayState): GoalOverlayState {
@@ -241,6 +249,21 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 	};
 
 	/**
+	 * The one way a goal leaves memory: once its workspace has been archived
+	 * away, no status, gate, or accounting from it may linger. Memory only —
+	 * the state file went into the archive with everything else.
+	 */
+	const forgetGoal = (): void => {
+		state = defaultGoalState();
+		progressSeenThisRun = false;
+		terminalStopReason = undefined;
+		terminalErrorMessage = "";
+		turnStopped = null;
+		countClosingRun = false;
+		recoveryPending = false;
+	};
+
+	/**
 	 * Guarded disk import shared by every event and by `view`: a state file
 	 * that cannot be read leaves the last-known state in place and is reported,
 	 * never thrown.
@@ -287,6 +310,17 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			...(options.notify ? [{ type: "notify", level: "warning", message: options.notify }] as GoalLifecycleEffect[] : []),
 		];
 	};
+	/** What a failed effect tells the user: workspace hand-overs name themselves; goal operations report what was kept and the way back. */
+	const effectFailure = (effect: GoalLifecycleEffect | undefined, detail: string): string => {
+		if (effect?.type === "archive-workspace" && effect.scope === "everything") {
+			return `Planning workspace archive failed: ${detail}`;
+		}
+		if (effect?.type === "initialize-blank-workspace") {
+			return `Planning workspace initialization failed: ${detail}. The previous workspace is already archived; retry /plan-new once the error is fixed.`;
+		}
+		return `Goal operation failed: ${detail} Saved changes are preserved (current status: ${state.status}). ${effectFailureGuidance(effect)}`;
+	};
+
 	/** Recovery guidance follows the saved status and the operation that failed. */
 	const effectFailureGuidance = (effect: GoalLifecycleEffect | undefined): string => {
 		if (effect?.type === "finalize-goal-workspace") {
@@ -323,13 +357,24 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				recoveryPending = false;
 				return [];
 
-			case "reset":
-				persist(defaultGoalState());
-				progressSeenThisRun = false;
-				terminalStopReason = undefined;
-				terminalErrorMessage = "";
-				recoveryPending = false;
-				return [];
+			case "archive-workspace":
+				if (!event.agentIdle) {
+					return reject("plan-archive", "Planning workspace cannot be archived while the agent is running. Wait for it to settle, then retry /plan-archive.");
+				}
+				return [
+					{ type: "archive-workspace", scope: "everything", label: "plan-archive" },
+					{ type: "announce-archive" },
+				];
+
+			case "new-workspace":
+				if (!event.agentIdle) {
+					return reject("plan-new", "Planning workspace cannot be reset while the agent is running. Wait for it to settle, then retry /plan-new.");
+				}
+				return [
+					{ type: "archive-workspace", scope: "everything", label: "plan-reset" },
+					{ type: "initialize-blank-workspace" },
+					{ type: "notify", level: "info", message: "Planning workspace reset. Goal overlay cleared." },
+				];
 
 			case "start-drafting": {
 				const input = normalizeString(event.input);
@@ -461,7 +506,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						},
 					}));
 					return [
-						{ type: "archive-implementation-workspace", label: `before-goal-run-${runId}` },
+						{ type: "archive-workspace", scope: "run", label: `before-goal-run-${runId}` },
 						{ type: "initialize-implementation-workspace", goal: state.goal, runId },
 						{ type: "append-progress", heading: PROGRESS_HEADINGS.timeline, message: `Goal implementation started (run ${runId})` },
 						{ type: "send-goal-impl", mode: "start", supplementalInput },
@@ -598,6 +643,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		let error: GoalLifecycleOutcome["error"];
 		let continuation: GoalLifecycleOutcome["continuation"];
 		let executingEffect: GoalLifecycleEffect | undefined;
+		let archivedTo: string | null = null;
 		try {
 			for (const effect of effects) {
 				executingEffect = effect;
@@ -606,12 +652,23 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						ensureDir(getPaths(cwd).root);
 						createGoalDesignSkeleton(cwd);
 						break;
-					case "archive-implementation-workspace":
-						archivePlanningWorkspace(cwd, {
-							includeGoalState: false,
-							includeGoalDesign: false,
+					case "archive-workspace": {
+						const everything = effect.scope === "everything";
+						archivedTo = archivePlanningWorkspace(cwd, {
+							includeGoalState: everything,
+							includeGoalDesign: everything,
 							label: effect.label,
 						});
+						// The goal went into the archive; from here memory and disk agree on "no goal".
+						if (everything) forgetGoal();
+						break;
+					}
+					case "announce-archive":
+						context.notify(archivedTo ? `Planning workspace archived to ${archivedTo}.` : "No current planning workspace to archive.", "info");
+						break;
+					case "initialize-blank-workspace":
+						initializePlanningWorkspace(cwd);
+						persist(defaultGoalState());
 						break;
 					case "initialize-implementation-workspace":
 						initializePlanningWorkspace(cwd, effect.goal, effect.runId);
@@ -695,10 +752,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 			// Preserve completed writes and offer a retry route for the failed effect.
 			continuation = undefined;
 			const detail = caught instanceof Error ? caught.message : String(caught);
-			error = {
-				operation: "effect-execution",
-				reason: `Goal operation failed: ${detail} Saved changes are preserved (current status: ${state.status}). ${effectFailureGuidance(executingEffect)}`,
-			};
+			error = { operation: "effect-execution", reason: effectFailure(executingEffect, detail) };
 		}
 		return { error, ...(continuation ? { continuation } : {}) };
 	};
@@ -714,10 +768,12 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 		if (event.type === "turn-start") turnStopped = null;
 		// End accounting ownership even if a corrupt state file prevents the
 		// lifecycle transition. A new run must not inherit stale ownership.
-		if (event.type === "agent-start" || event.type === "agent-settled" || event.type === "restore" || event.type === "reset") {
+		if (event.type === "agent-start" || event.type === "agent-settled" || event.type === "restore") {
 			countClosingRun = false;
 		}
-		if (event.type !== "restore" && event.type !== "reset") {
+		// Restore replaces memory outright; the workspace hand-overs must work on
+		// a state file that cannot be read — archiving it away is the repair.
+		if (event.type !== "restore" && event.type !== "archive-workspace" && event.type !== "new-workspace") {
 			const error = importDiskState();
 			if (error) return { error };
 		}

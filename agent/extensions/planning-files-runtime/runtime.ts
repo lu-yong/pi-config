@@ -15,9 +15,6 @@ import type {
 } from "./types.ts";
 import { normalizeString, normalizeStringArray, sumUsageTokens } from "./utils.ts";
 import { parseAuditModelRef, resolveAuditModel, type AuditModelResult } from "./audit.ts";
-import { archivePlanningWorkspace, initializePlanningWorkspace } from "./workspace.ts";
-import { runPlanArchiveCommand } from "./archive-command.ts";
-import { runPlanNewCommand } from "./new-command.ts";
 import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines, PlanningGoalDialog } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
@@ -299,40 +296,14 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	pi.registerCommand("plan-archive", {
 		description: "Archive the current .pi/planning workspace without creating a new one, regardless of goal status.",
 		handler: async (_args, ctx) => {
-			runPlanArchiveCommand(
-				{
-					cwd: ctx.cwd,
-					isIdle: () => ctx.isIdle(),
-					notify: (message, level) => ctx.ui.notify(message, level),
-				},
-				{
-					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-archive" }),
-					dropLifecycle: (cwd) => lifecycles.delete(cwd),
-					refresh: () => { look(ctx); },
-				},
-			);
+			notifyRejection(ctx, dispatch(ctx, { type: "archive-workspace", agentIdle: ctx.isIdle() }));
 		},
 	});
 
 	pi.registerCommand("plan-new", {
 		description: "Initialize or reset .pi/planning and clear any current goal overlay.",
 		handler: async (_args, ctx) => {
-			runPlanNewCommand(
-				{
-					cwd: ctx.cwd,
-					isIdle: () => ctx.isIdle(),
-					notify: (message, level) => ctx.ui.notify(message, level),
-				},
-				{
-					archive: (cwd) => archivePlanningWorkspace(cwd, { includeGoalState: true, includeGoalDesign: true, label: "plan-reset" }),
-					initialize: (cwd) => initializePlanningWorkspace(cwd),
-					reset: () => {
-						const result = dispatch(ctx, { type: "reset" });
-						notifyRejection(ctx, result);
-						return !result.error;
-					},
-				},
-			);
+			notifyRejection(ctx, dispatch(ctx, { type: "new-workspace", agentIdle: ctx.isIdle() }));
 		},
 	});
 

@@ -10,7 +10,7 @@ _避免_：goal service、task tracker
 **Goal implementation run**：Goal overlay 从 ready 进入 active 后，对同一目标进行的一次连续实施过程；runId 用于区分不同运行。
 _避免_：每次命令调用、独立任务
 
-**Goal lifecycle**：承载 Goal overlay 完整生命周期策略的模块（`agent/extensions/planning-files-runtime/goal-lifecycle.ts`）——状态转换、完成声明的独立审计与完成裁决、效果执行、Continuation 决策与运行结果投影。它是 goal 状态的唯一读取方：每个事件开始前自行导入磁盘变化，每次操作结果都带回一份 Planning projection。Pi 适配层只表达生命周期事件并展示带回的投影——不重读磁盘、不告诉它何时同步、不接触内部效果词汇。
+**Goal lifecycle**：承载 Goal overlay 完整生命周期策略的模块（`agent/extensions/planning-files-runtime/goal-lifecycle.ts`）——状态转换、完成声明的独立审计与完成裁决、效果执行、Continuation 决策与运行结果投影，以及一切把 Planning workspace 整体搬走或换新的操作（`/plan-archive` 的 `archive-workspace`、`/plan-new` 的 `new-workspace`：idle 守卫、成败话术、归档后把 goal 从内存里忘掉，都在它后面；适配层只提供「agent 是否空闲」这一事实）。它是 goal 状态的唯一读取方：每个事件开始前自行导入磁盘变化，每次操作结果都带回一份 Planning projection。Pi 适配层只表达生命周期事件并展示带回的投影——不重读磁盘、不告诉它何时同步、不接触内部效果词汇。
 _避免_：goal service、run controller
 
 **Planning projection（规划投影）**：Goal lifecycle 交给调用方展示的只读快照（类型 `PlanningSnapshot`）——Planning workspace 当下的小节内容，加上 Goal lifecycle 正在据以决策的那份 goal 状态。每次操作结果（`handle` / `complete`）都带一份；不发事件、只想看一眼时用 `view()`。`.goal-state.json` 读不出来时，投影仍然给出：goal 部分是最后一次读到的状态（绝不是空 goal），小节照常取自磁盘，旁边附带错误。widget、`/planning-goal`、`/plan-update` 和实施提示词用的是同一份投影。

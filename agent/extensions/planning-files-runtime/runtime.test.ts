@@ -40,6 +40,8 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
 	const messages: Array<OutgoingGoalMessage & { options: OutgoingGoalMessageOptions }> = [];
 	const warnings: string[] = [];
+	const infos: string[] = [];
+	let idle = true;
 	type TestWidget = { render(width: number): string[]; handleInput?(data: string): void; dispose?(): void };
 	let widget: string[] | TestWidget | undefined;
 	let dialog: TestWidget | undefined;
@@ -63,7 +65,7 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 		cwd,
 		hasUI: true,
 		mode: "tui",
-		isIdle: () => true,
+		isIdle: () => idle,
 		ui: {
 			theme,
 			setWidget: (key: string, content: string[] | ((...args: any[]) => TestWidget) | undefined) => {
@@ -77,12 +79,17 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 				dialog = factory(tui, theme, keys, () => {});
 				customOptions = options;
 			},
-			notify: (message: string, level: string) => { if (level === "warning") warnings.push(message); },
+			notify: (message: string, level: string) => {
+				if (level === "warning") warnings.push(message);
+				else if (level === "info") infos.push(message);
+			},
 		},
 	} as unknown as ExtensionContext;
 	planningFilesRuntime(pi);
 	return {
-		cwd, ctx, messages, warnings,
+		cwd, ctx, messages, warnings, infos,
+		/** Whether Pi reports the agent as idle; commands that move the workspace require it. */
+		setIdle: (next: boolean) => { idle = next; },
 		widget: (width = 1000) => Array.isArray(widget) ? widget : widget?.render(width).map((line) => line.trim()),
 		registrations: () => registrations,
 		widgetOrder,
@@ -729,4 +736,48 @@ test("/plan-update reads the workspace through the lifecycle and sends the plann
 	assert.ok(h.messages[0].content.includes(getPaths(h.cwd).files["progress.md"]));
 	assert.ok(h.widget()?.includes("phase: Phase 7"));
 	assert.equal(readGoalState(h.cwd).status, "paused");
+});
+
+for (const [command, pattern] of [["plan-archive", /cannot be archived while the agent is running.*retry \/plan-archive/], ["plan-new", /cannot be reset while the agent is running.*retry \/plan-new/]] as const) {
+	test(`/${command} forwards Pi's busy state and leaves the workspace alone`, async () => {
+		const h = harness();
+		await h.event("session_start", { reason: "new" });
+		const paths = getPaths(h.cwd);
+		const before = { state: fs.readFileSync(paths.goalState, "utf8"), files: fs.readdirSync(paths.root).sort() };
+		h.infos.splice(0);
+		h.setIdle(false);
+		await h.command(command);
+		assert.equal(h.warnings.length, 1);
+		assert.match(h.warnings[0], pattern);
+		assert.deepEqual(h.infos, []);
+		assert.equal(fs.readFileSync(paths.goalState, "utf8"), before.state);
+		assert.deepEqual(fs.readdirSync(paths.root).sort(), before.files);
+		assert.ok(h.widget()?.includes("state: active"));
+	});
+}
+
+test("/plan-archive then /plan-new report through the lifecycle and the widget follows", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	const paths = getPaths(h.cwd);
+	h.infos.splice(0);
+	await h.command("plan-archive");
+	const [archived] = fs.readdirSync(paths.archiveRoot);
+	assert.match(archived!, /-plan-archive$/);
+	assert.deepEqual(h.infos, [`Planning workspace archived to ${path.join(paths.archiveRoot, archived!)}.`]);
+	assert.deepEqual(fs.readdirSync(paths.root), ["archive"]);
+	assert.deepEqual(h.widget(), []);
+	// The archived goal no longer gates or continues anything in this session.
+	await h.event("turn_start");
+	assert.equal(await h.event("tool_call", { toolName: "write", input: { path: "src/app.ts" } }), undefined);
+	await h.event("turn_end", { message: { stopReason: "stop" } });
+	assert.equal(await h.boundary(), undefined);
+	await h.command("plan-archive");
+	assert.equal(h.infos.at(-1), "No current planning workspace to archive.");
+	await h.command("plan-new");
+	assert.equal(h.infos.at(-1), "Planning workspace reset. Goal overlay cleared.");
+	assert.equal(readGoalState(h.cwd).status, "none");
+	assert.ok(h.widget()?.includes("planning: initialized"));
+	assert.ok(h.widget()?.includes("state: none"));
+	assert.deepEqual(h.warnings, []);
 });

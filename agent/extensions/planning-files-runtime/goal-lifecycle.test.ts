@@ -1041,6 +1041,228 @@ describe("goal lifecycle", () => {
 	}
 });
 
+describe("workspace hand-over (/plan-archive, /plan-new)", () => {
+	const archiveWorkspace = (run: GoalLifecycle, harness: Harness, agentIdle = true) =>
+		run.handle({ type: "archive-workspace", agentIdle }, harness.context());
+	const newWorkspace = (run: GoalLifecycle, harness: Harness, agentIdle = true) =>
+		run.handle({ type: "new-workspace", agentIdle }, harness.context());
+	const infoNotices = (harness: Harness) => harness.log.filter((line) => line.startsWith("notify:info:")).map((line) => line.slice("notify:info:".length));
+	/** The single archive directory a hand-over produced, checked for its label. */
+	function onlyArchive(cwd: string, label: string): string {
+		const archives = fs.readdirSync(getPaths(cwd).archiveRoot);
+		assert.equal(archives.length, 1);
+		assert.match(archives[0]!, new RegExp(`-${label}$`));
+		return path.join(getPaths(cwd).archiveRoot, archives[0]!);
+	}
+
+	for (const [name, send, reason] of [
+		["archive-workspace", archiveWorkspace, "Planning workspace cannot be archived while the agent is running. Wait for it to settle, then retry /plan-archive."],
+		["new-workspace", newWorkspace, "Planning workspace cannot be reset while the agent is running. Wait for it to settle, then retry /plan-new."],
+	] as const) {
+		test(`${name} is rejected while the agent is running, before anything is touched`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			const paths = getPaths(cwd);
+			const before = { state: run.getState(), files: fs.readdirSync(paths.root).sort(), plan: readText(paths.files["task_plan.md"]) };
+			const logBefore = [...harness.log];
+			const result = send(run, harness, false);
+			assert.equal(result.error?.reason, reason);
+			assert.deepEqual(run.getState(), before.state);
+			assert.deepEqual(fs.readdirSync(paths.root).sort(), before.files);
+			assert.equal(readText(paths.files["task_plan.md"]), before.plan);
+			assert.equal(result.projection.goalState.status, "active");
+			assert.deepEqual(harness.log, logBefore);
+		});
+	}
+
+	test("archiving carries the whole workspace away, goal included, and forgets the goal", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		writeText(path.join(paths.tasksDir, "task-01.md"), "# Task 01\n");
+		const savedState = readText(paths.goalState);
+		const savedPlan = readText(paths.files["task_plan.md"]);
+
+		const result = archiveWorkspace(run, harness);
+		assert.equal(result.error, undefined);
+		// Nothing is left behind and no replacement is created.
+		assert.deepEqual(fs.readdirSync(paths.root), ["archive"]);
+		const archiveDir = onlyArchive(cwd, "plan-archive");
+		assert.deepEqual(fs.readdirSync(archiveDir).sort(), [".goal-state.json", "findings.md", "goal-design.md", "progress.md", "task_plan.md", "tasks"]);
+		assert.equal(readText(path.join(archiveDir, ".goal-state.json")), savedState); // the goal is archived as it was, still active
+		assert.equal(readText(path.join(archiveDir, "task_plan.md")), savedPlan);
+		assert.equal(readText(path.join(archiveDir, "tasks", "task-01.md")), "# Task 01\n");
+		assert.deepEqual(infoNotices(harness), [`Planning workspace archived to ${archiveDir}.`]);
+		// Memory agrees with the now-empty disk: the result, later looks, and a reload all see no goal.
+		assert.equal(result.projection.exists, false);
+		assert.equal(result.projection.goalState.status, "none");
+		assert.equal(result.projection.goalState.goal, null);
+		assert.equal(run.getState().impl.tokensUsed, 0);
+		assert.equal(run.view().error, undefined);
+		assert.equal(createGoalLifecycle(cwd, harness.deps).getState().status, "none");
+		// The archived run cannot continue, and a new goal can start in the same session.
+		assert.equal(settleWithProgress(run, harness), undefined);
+		assert.equal(run.handle({ type: "start-drafting", input: "next goal" }, harness.context()).error, undefined);
+		assert.equal(run.getState().status, "drafting");
+		assert.equal(run.getState().impl.runId, 0);
+	});
+
+	test("archiving releases the archived goal's turn-stop gate and closing accounting", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		run.handle({ type: "pause", params: { reason: "quota" } }, harness.context());
+		assert.equal(run.turnStoppedBy(), "pause_plan_goal");
+		assert.equal(archiveWorkspace(run, harness).error, undefined);
+		assert.equal(run.turnStoppedBy(), null);
+		// A closing response of the archived goal must not write a state file back.
+		assert.equal(run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 50 }, harness.context()).error, undefined);
+		assert.equal(fileExists(getPaths(cwd).goalState), false);
+		assert.equal(run.getState().impl.tokensUsed, 0);
+	});
+
+	test("archiving an empty directory reports that there is nothing to archive", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+		const result = archiveWorkspace(run, harness);
+		assert.equal(result.error, undefined);
+		assert.deepEqual(infoNotices(harness), ["No current planning workspace to archive."]);
+		assert.equal(fileExists(getPaths(cwd).archiveRoot), false);
+		assert.equal(result.projection.exists, false);
+	});
+
+	for (const [name, send, label] of [["archive-workspace", archiveWorkspace, "plan-archive"], ["new-workspace", newWorkspace, "plan-reset"]] as const) {
+		test(`${name} works on an unreadable state file and archives it byte for byte`, () => {
+			const cwd = makeCwd();
+			const harness = createHarness();
+			const run = prepareActive(cwd, harness);
+			const paths = getPaths(cwd);
+			writeText(paths.goalState, "{broken");
+			assert.equal(run.view().error?.operation, "state-sync"); // every other route is stuck
+			const result = send(run, harness);
+			assert.equal(result.error, undefined);
+			assert.equal(readText(path.join(onlyArchive(cwd, label), ".goal-state.json")), "{broken");
+			assert.equal(run.getState().status, "none");
+			assert.equal(run.view().error, undefined);
+		});
+	}
+
+	test("a failed archive keeps the workspace and the goal, and can be retried", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const before = { state: run.getState(), plan: readText(paths.files["task_plan.md"]), disk: readText(paths.goalState) };
+		fs.rmSync(paths.archiveRoot, { recursive: true, force: true });
+		writeText(paths.archiveRoot, "block archive directory");
+
+		const result = archiveWorkspace(run, harness);
+		assert.match(result.error?.reason ?? "", /^Planning workspace archive failed: .*EEXIST/);
+		assert.doesNotMatch(result.error?.reason ?? "", /Goal operation failed|plan-goal-impl/);
+		assert.deepEqual(run.getState(), before.state);
+		assert.equal(readText(paths.goalState), before.disk);
+		assert.equal(readText(paths.files["task_plan.md"]), before.plan);
+		assert.equal(result.projection.goalState.status, "active");
+		assert.deepEqual(infoNotices(harness), []);
+
+		fs.rmSync(paths.archiveRoot);
+		assert.equal(archiveWorkspace(run, harness).error, undefined);
+		assert.equal(run.getState().status, "none");
+		assert.deepEqual(fs.readdirSync(paths.root), ["archive"]);
+	});
+
+	test("a new workspace archives the old one whole and starts blank with no goal", async () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 300 }, harness.context());
+		await complete(run, { summary: "done" }, harness);
+		const savedState = readText(paths.goalState);
+		const savedPlan = readText(paths.files["task_plan.md"]);
+		assert.match(savedPlan, new RegExp(contractParams.objective));
+
+		const result = newWorkspace(run, harness);
+		assert.equal(result.error, undefined);
+		const archiveDir = onlyArchive(cwd, "plan-reset");
+		assert.deepEqual(fs.readdirSync(archiveDir).sort(), [".goal-state.json", "findings.md", "goal-design.md", "progress.md", "task_plan.md", "tasks"]);
+		assert.equal(readText(path.join(archiveDir, ".goal-state.json")), savedState);
+		assert.equal(readText(path.join(archiveDir, "task_plan.md")), savedPlan);
+		// The live workspace is the blank template: no goal contract, design, or task cards carried over.
+		assert.deepEqual(fs.readdirSync(paths.root).sort(), [".goal-state.json", "archive", "findings.md", "progress.md", "task_plan.md"]);
+		assert.match(readText(paths.files["task_plan.md"]), /# Task Plan: \[Brief Description\]/);
+		assert.doesNotMatch(readText(paths.files["task_plan.md"]), new RegExp(contractParams.objective));
+		const disk = readGoalState(cwd);
+		assert.equal(disk.status, "none");
+		assert.equal(disk.goal, null);
+		assert.equal(disk.impl.tokensUsed, 0);
+		assert.equal(disk.impl.runId, 0);
+		assert.deepEqual(run.getState(), disk);
+		assert.deepEqual(infoNotices(harness), ["Planning workspace reset. Goal overlay cleared."]);
+		assert.equal(result.projection.exists, true);
+		assert.equal(result.projection.goalState.status, "none");
+		assert.equal(result.projection.currentPhase, "Phase 1");
+		assert.equal(run.turnStoppedBy(), null);
+	});
+
+	test("a new workspace in an empty directory creates the templates without an archive", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+		const paths = getPaths(cwd);
+		assert.equal(newWorkspace(run, harness).error, undefined);
+		assert.deepEqual(fs.readdirSync(paths.root).sort(), [".goal-state.json", "findings.md", "progress.md", "task_plan.md"]);
+		assert.equal(readGoalState(cwd).status, "none");
+		assert.deepEqual(infoNotices(harness), ["Planning workspace reset. Goal overlay cleared."]);
+	});
+
+	test("a new workspace whose archive fails initializes nothing and keeps the goal", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const before = { state: run.getState(), plan: readText(paths.files["task_plan.md"]) };
+		fs.rmSync(paths.archiveRoot, { recursive: true, force: true });
+		writeText(paths.archiveRoot, "block archive directory");
+		const result = newWorkspace(run, harness);
+		assert.match(result.error?.reason ?? "", /^Planning workspace archive failed: /);
+		assert.deepEqual(run.getState(), before.state);
+		assert.equal(readText(paths.files["task_plan.md"]), before.plan);
+		assert.deepEqual(infoNotices(harness), []);
+	});
+
+	test("a new workspace whose initialization fails leaves no dangling goal and can be retried", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = prepareActive(cwd, harness);
+		const paths = getPaths(cwd);
+		const savedState = readText(paths.goalState);
+		// A dangling link is invisible to the archive but cannot be written through.
+		fs.rmSync(paths.files["progress.md"]);
+		fs.symlinkSync(path.join(cwd, "missing-directory", "progress.md"), paths.files["progress.md"]);
+
+		const failed = newWorkspace(run, harness);
+		assert.match(failed.error?.reason ?? "", /^Planning workspace initialization failed: .*ENOENT.*already archived; retry \/plan-new/);
+		assert.deepEqual(infoNotices(harness), []);
+		// The old goal is in the archive, not half-alive in memory: no "state file disappeared" trap.
+		assert.equal(readText(path.join(onlyArchive(cwd, "plan-reset"), ".goal-state.json")), savedState);
+		assert.equal(run.getState().status, "none");
+		assert.equal(failed.projection.goalState.status, "none");
+		assert.equal(fileExists(paths.goalState), false);
+		assert.equal(run.view().error, undefined);
+		assert.equal(run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 10 }, harness.context()).error, undefined);
+
+		fs.rmSync(paths.files["progress.md"]);
+		assert.equal(newWorkspace(run, harness).error, undefined);
+		assert.equal(readGoalState(cwd).status, "none");
+		assert.match(readText(paths.files["progress.md"]), /Planning workspace initialized/);
+		assert.deepEqual(infoNotices(harness), ["Planning workspace reset. Goal overlay cleared."]);
+	});
+});
+
 describe("token budget", () => {
 	const budgetParams = { ...contractParams, tokenBudget: 1000 };
 
@@ -1109,14 +1331,14 @@ describe("token budget", () => {
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 999 }, harness.context());
 		assert.equal(run.getState().impl.tokensUsed, 725);
 
-		run.handle({ type: "reset" }, harness.context());
+		run.handle({ type: "new-workspace", agentIdle: true }, harness.context());
 		assert.equal(readGoalState(cwd).impl.tokensUsed, 0);
 		run.handle({ type: "start-drafting", input: "New goal" }, harness.context());
 		run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 12 }, harness.context());
 		assert.equal(run.getState().impl.tokensUsed, 12);
 	});
 
-	for (const boundary of ["agent-start", "agent-settled", "restore", "reset"] as const) {
+	for (const boundary of ["agent-start", "agent-settled", "restore", "new-workspace"] as const) {
 		test(`${boundary} clears closing accounting even when the state file is corrupt`, () => {
 			const cwd = makeCwd();
 			const harness = createHarness();
@@ -1125,8 +1347,8 @@ describe("token budget", () => {
 			run.handle({ type: "turn-end", stopReason: "stop", usageTokens: 30 }, harness.context());
 			const saved = readGoalState(cwd);
 			writeText(getPaths(cwd).goalState, "{invalid json");
-			const result = run.handle({ type: boundary }, harness.context());
-			assert.equal(Boolean(result.error), boundary !== "reset");
+			const result = run.handle(boundary === "new-workspace" ? { type: boundary, agentIdle: true } : { type: boundary }, harness.context());
+			assert.equal(Boolean(result.error), boundary !== "new-workspace");
 			// Repair the file without another cleanup event: no old accounting flag may remain.
 			writeGoalState(cwd, saved);
 			run.handle({ type: "turn-start" }, harness.context());
