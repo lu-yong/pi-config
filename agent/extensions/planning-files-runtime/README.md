@@ -13,6 +13,7 @@ A single Pi extension that owns:
 - `/plan-goal-set` — 4-stage goal drafting (as-is → design → story → task), outputs to goal-design.md
 - `/plan-goal-impl [supplemental input]` — start or resume the committed goal using Task Plan from goal-design.md as blueprint; pass current facts or instructions to this implementation request
 - `/planning-goal` — open a read-only, scrollable TUI overlay with full planning values, goal contract, and drafting context; ↑/↓, PgUp/PgDn, Home/End scroll, Esc or Enter closes
+- `/plan-update` — check whether current progress and findings still align with the planning files; if aligned the agent updates them, otherwise it asks the user whether to reset, append anyway, or abort; no-op without planning files
 
 ## Managed files
 
@@ -34,7 +35,6 @@ Goal overlay state:
 ## Runtime behavior
 
 - Redirects `task_plan.md`, `findings.md`, `progress.md`, `goal-design.md` into `.pi/planning/` for `read` and every file-mutation tool that carries a path
-- Injects planning context + Task index before agent starts
 - Drafting stages auto-advance; agent asks user only when key info missing
 - Drafting: file changes are allowed only inside `.pi/planning/` — `write`/`edit` by path; anchor edit tools (`replace`, `replace_match`, `insert`, `undo_last_change`) pass only when the call carries a path inside it (pi-hashline-edit-pro `requirePath`; pathless calls are blocked), `copy`/`move` are always blocked; `bash` read-only
 - `commit_plan_goal` validates `goal-design.md` exists and non-empty
@@ -79,8 +79,4 @@ The summary, `/planning-goal`, `/plan-update` and the implementation prompts all
 }
 ```
 
-Read on every completion, so edits apply without a restart. No `planning` block means the session model audits at low thinking.
-
-## Dotfiles integration
-
-Version-controlled in `dotfiles`, linked into `~/.pi/agent/extensions/planning-files-runtime` via `just install-pi`.
+Read via Pi's in-memory settings snapshot on every completion; edits to settings.json apply after `/reload` (or a restart), not at completion time. No `planning` block means the session model audits at low thinking.
