@@ -26,22 +26,22 @@
 
 ### 网络搜索配置（`web-search.json`）
 
-`web-search.json` 当前默认使用 Z.ai（GLM）搜索，并在搜索后打开摘要审阅界面；Tavily 凭据来自 `TAVILY_API_KEY` 环境变量，仍可通过显式 `provider: "tavily"` 调用：
+`web-search.json` 当前默认 `provider: "all"` 聚合搜索、`workflow: "none"` 直出结果：每次搜索并行查询所有具备可用凭据的搜索 provider（Z.ai 等 explicit-only provider 除外），各 provider 的回答分节保留，来源 URL 与内容去重合并；不调用摘要模型、不打开摘要审阅界面，直接返回有界原始结果，完整结果仍按 responseId 存入缓存。按次传 `workflow: "summary-review"` 可打开审阅界面，`/curator` 可切换默认 workflow：
 
 ```json
 {
-  "provider": "zai",
+  "provider": "all",
   "zaiApiKey": "$ZAI_CODING_CN_API_KEY",
   "zaiEndpoint": "china",
   "summaryModel": "magpie/auto/glm-5.3-flash:low",
-  "workflow": "summary-review",
+  "workflow": "none",
   "ssrf": {
     "allowRanges": ["198.18.0.0/15"]
   }
 }
 ```
 
-`zaiApiKey` 的 `$ZAI_CODING_CN_API_KEY` 是环境变量引用，搜索时实时读取，明文 key 不写入配置；`zaiEndpoint: "china"` 对应 bigmodel.cn 签发的 GLM Coding Plan key，搜索消耗该计划配额。`zai` 本为 explicit-only provider（不会被 `auto` 选中、不参与 `provider: "all"` 聚合），此处通过把 `provider` 设为 `"zai"` 成为默认；每次搜索都会消耗 Coding Plan 配额，需改回按需调用时把 `provider` 改回 `"tavily"` 即可。`summaryModel` 指定摘要草稿与查询重写模型（`provider/model:thinking` 格式，须在 Pi `enabledModels` 白名单内），当前用 GLM-5.3-Flash、thinking `low`。
+`zaiApiKey` 的 `$ZAI_CODING_CN_API_KEY` 是环境变量引用，显式 `provider: "zai"` 调用时实时读取，明文 key 不写入配置；`zaiEndpoint: "china"` 对应 bigmodel.cn 签发的 GLM Coding Plan key，`zai` 的搜索消耗该计划配额。`zai` 是 explicit-only provider：不会被 `auto` 选中、也不参与 `provider: "all"` 聚合，保留 key 仅供显式调用，默认聚合不消耗 Coding Plan 配额。Tavily 凭据来自 `TAVILY_API_KEY` 环境变量，配置后既参与聚合也可通过显式 `provider: "tavily"` 单独调用。`summaryModel` 指定摘要草稿与查询重写模型（`provider/model:thinking` 格式，须在 Pi `enabledModels` 白名单内），当前用 GLM-5.3-Flash、thinking `low`；`none` workflow 不调用它，仅在按次指定或改回 `summary-review` / `auto-summary` 时生效。
 
 当前 `ssrf.allowRanges` 为 TUN/fake-IP 代理使用的 `198.18.0.0/15` 合成地址段放行。它是本机网络适配，不是通用推荐配置；迁移时应按实际代理需求保留最小范围，不应关闭 SSRF 校验或把 API Key 写入版本控制。
 
