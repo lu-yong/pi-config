@@ -65,3 +65,5 @@ agent/skills/*
 
 agent/subagent-manager/agents/
 !agent/subagent-manager/agents/code-reviewer.md
+
+agent/git
