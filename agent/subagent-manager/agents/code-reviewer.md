@@ -7,8 +7,8 @@ description: Read-only review of implemented code changes or scoped audits of
   For document-only proposal/design/spec/tasks reviews (including unimplemented
   OpenSpec changes), use architect.
 models:
-  - magpie/codex/gpt-6.1-sol
-  - magpie/zcode/GLM-5.3
+  - magpie/group/gpt-sol
+  - magpie/group/glm
 modelSuggestions:
   - glm-5.3
   - gpt-6.1-sol
