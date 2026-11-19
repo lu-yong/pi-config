@@ -907,3 +907,47 @@ test("/plan-archive then /plan-new report through the lifecycle and the widget f
 	assert.ok(h.widget()?.includes("state: none"));
 	assert.deepEqual(h.warnings, []);
 });
+
+test("subagent tool results carry derived usage into the goal total via turn_end", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	await h.event("turn_start");
+	const thread = { path: "/root/research", state: "completed", inputTokens: 1000, outputTokens: 100 };
+	const first = (await h.event("tool_result", { toolName: "agent_wait", input: {}, details: thread })) as
+		| { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number } }
+		| undefined;
+	// First non-spawn sighting only seeds: nothing to inject yet.
+	assert.equal(first, undefined);
+	const grown = { ...thread, inputTokens: 1500, outputTokens: 140 };
+	const second = (await h.event("tool_result", { toolName: "agent_wait", input: {}, details: grown })) as
+		| { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number } }
+		| undefined;
+	assert.equal(second?.usage?.totalTokens, 540);
+	// A repeated observation of the same totals has nothing new to add.
+	assert.equal(await h.event("tool_result", { toolName: "agent_status", input: {}, details: grown }), undefined);
+	// Non-agent tools never yield an injection.
+	assert.equal(await h.event("tool_result", { toolName: "bash", input: {}, details: thread }), undefined);
+	assert.equal(await h.event("tool_result", { toolName: "complete_plan_goal", input: {}, details: thread }), undefined);
+	await h.event("turn_end", {
+		message: { role: "assistant", stopReason: "stop", usage: { input: 30, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		toolResults: [{ usage: second!.usage }],
+	});
+	assert.equal(readGoalState(h.cwd).impl.tokensUsed, 570);
+});
+
+test("a re-spawned subagent path injects its full fresh totals through the tool_result hook", async () => {
+	const h = harness();
+	await h.event("session_start", { reason: "new" });
+	const thread = { path: "/root/research", state: "completed", inputTokens: 1000, outputTokens: 100 };
+	await h.event("tool_result", { toolName: "agent_spawn", input: {}, details: thread });
+	// `/agents reap` retired the thread; the same path spawns again from zero.
+	const respawn = (await h.event("tool_result", { toolName: "agent_spawn", input: {}, details: { ...thread, inputTokens: 500, outputTokens: 50 } })) as
+		| { usage?: { totalTokens: number } }
+		| undefined;
+	assert.equal(respawn?.usage?.totalTokens, 550);
+	// The reset watermark differences the new thread's further growth.
+	const wait = (await h.event("tool_result", { toolName: "agent_wait", input: {}, details: { ...thread, inputTokens: 700, outputTokens: 90 } })) as
+		| { usage?: { totalTokens: number } }
+		| undefined;
+	assert.equal(wait?.usage?.totalTokens, 240);
+});

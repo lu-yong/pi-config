@@ -18,6 +18,7 @@ import { parseAuditModelRef, resolveAuditModel, type AuditModelResult } from "./
 import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines, PlanningGoalDialog } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
+import { createSubagentUsageTracker } from "./subagent-usage.ts";
 import {
 	createGoalLifecycle,
 	type GoalLifecycle,
@@ -36,6 +37,9 @@ import {
  */
 export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	const lifecycles = new Map<string, GoalLifecycle>();
+	// Session-level subagent token watermarks; a per-path watermark resets when
+	// an agent_spawn observation reports that fresh thread's totals.
+	const subagents = createSubagentUsageTracker();
 	// The projection the widget renders: whatever a lifecycle handed back last.
 	let shown: PlanningSnapshot | undefined;
 	// Every event hands back a projection; only a changed one is worth a redraw.
@@ -384,6 +388,13 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (isLivePlanningMutation(event.toolName, event.input as Record<string, unknown>, ctx.cwd)) look(ctx);
+		// Subagent threads report cumulative totals, not per-call usage: inject
+		// the delta since the last observation as the tool result's usage so
+		// turn_end counts it through the same channel as the completion audit.
+		// Every delta is attributed to the goal of the turn that first observes
+		// it. A natively reported usage always wins and passes through.
+		const usage = subagents.observe(event.toolName, event.details, event.usage);
+		if (usage) return { usage };
 	});
 
 	pi.on("turn_end", async (event, ctx) => {

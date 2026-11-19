@@ -22,6 +22,15 @@ export const BUDGET_WARN_THRESHOLD = 0.7;
 export const BUDGET_CRITICAL_THRESHOLD = 0.9;
 /** Non-mutating tools that still count as progress for an active goal run; every file-mutation tool counts too. */
 export const PROGRESS_QUERY_TOOLS: ReadonlySet<string> = new Set(["bash", "grep", "find"]);
+/** pi-subagent-manager tool names all start with this prefix; their result details carry cumulative ThreadView totals. */
+export const SUBAGENT_TOOL_PREFIX = "agent_";
+/**
+ * Spawning always creates a fresh thread whose token counters start at zero
+ * (the manager refuses an existing path), so a spawn observation is counted in
+ * full and resets that path's watermark — also after `/agents reap` retires a
+ * completed thread and the same path is spawned again.
+ */
+export const SUBAGENT_SPAWN_TOOL = "agent_spawn";
 
 // ---- types ----
 
