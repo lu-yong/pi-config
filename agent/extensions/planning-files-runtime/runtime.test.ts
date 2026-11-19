@@ -52,6 +52,7 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 	const tui = { terminal: { rows: 24 }, requestRender: () => {} };
 	const keys = { matches: (data: string, key: string) => data === key };
 	let failSend = false;
+	let settings: unknown;
 	const pi = {
 		on: (name: string, callback: (event: any, ctx: ExtensionContext) => Promise<unknown>) => hooks.set(name, callback),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
@@ -60,6 +61,7 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 			if (failSend) throw new Error("send failed");
 			messages.push({ ...message, options });
 		},
+		getSettings: () => settings,
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		cwd,
@@ -97,6 +99,8 @@ function harness(status: "none" | "drafting" | "ready" | "active" | "paused" | "
 		dialog: () => dialog,
 		customOptions: () => customOptions,
 		failSend: (fail = true) => { failSend = fail; },
+		setSettings: (next: unknown) => { settings = next; },
+		toolDef: (name: string) => tools.get(name),
 		event: (name: string, event: unknown = {}) => hooks.get(name)!(event, ctx),
 		/** Invoke the native before-settle boundary; returns the hook's entries/continue decision. */
 		boundary: (outcome: "completed" | "aborted" | "error" = "completed") => hooks.get("agent_before_settle")!({ outcome }, ctx) as Promise<BoundaryDecision>,
@@ -273,6 +277,63 @@ for (const toolName of ["pause_plan_goal", "complete_plan_goal"]) {
 		assert.deepEqual(h.warnings, []);
 	});
 }
+
+test("save_plan_goal_draft persists the draft and reports its open questions", async () => {
+	const h = harness("drafting");
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("save_plan_goal_draft", {
+		objective: "Draft objective",
+		openQuestions: ["Which storage?", "Which UI?"],
+		nextRecommendedQuestion: "Which storage?",
+		draftingStage: "design",
+	})) as { content: Array<{ type: string; text: string }>; details: { status: string; openQuestions: string[] } };
+	assert.deepEqual(result.content, [{ type: "text", text: "Saved goal draft with 2 open question(s)." }]);
+	assert.deepEqual(result.details, { status: "drafting", openQuestions: ["Which storage?", "Which UI?"] });
+	const state = readGoalState(h.cwd);
+	assert.equal(state.status, "drafting");
+	assert.equal(state.draft.objective, "Draft objective");
+	assert.equal(state.draft.draftingStage, "design");
+	assert.deepEqual(state.draft.openQuestions, ["Which storage?", "Which UI?"]);
+	assert.ok(h.widget()?.includes("state: drafting"));
+});
+
+test("commit_plan_goal commits the contract and echoes it back", async () => {
+	const h = harness("drafting");
+	writeText(getPaths(h.cwd).goalDesign, "# Goal Design\n\n## Design\n- completed 4-stage design\n");
+	await h.event("session_start", { reason: "new" });
+	const params = {
+		objective: "Implement the current policy",
+		successCriteria: ["Tests pass"],
+		constraints: ["Original policy"],
+		outOfScope: ["Unrelated projects"],
+		blockerRule: "Pause when blocked",
+	};
+	const result = (await h.tool("commit_plan_goal", params)) as {
+		content: Array<{ type: string; text: string }>;
+		details: { status: string; goal: typeof params };
+	};
+	assert.deepEqual(result.content, [{ type: "text", text: "Committed plan goal: Implement the current policy" }]);
+	assert.equal(result.details.status, "ready");
+	assert.deepEqual(result.details.goal, params);
+	assert.equal(readGoalState(h.cwd).status, "ready");
+	// The persisted-read normalizer always materializes the optional budget slot.
+	assert.deepEqual(readGoalState(h.cwd).goal, { ...params, tokenBudget: undefined });
+});
+
+test("the goal drafting tools declare their parameter schemas", async () => {
+	const h = harness();
+	const save = h.toolDef("save_plan_goal_draft") as unknown as { parameters: { properties: Record<string, unknown>; required?: string[] } };
+	assert.deepEqual(Object.keys(save.parameters.properties), [
+		"sourceTopic", "clarificationSummary", "objective", "successCriteria", "constraints",
+		"outOfScope", "blockerRule", "openQuestions", "nextRecommendedQuestion", "draftingStage",
+	]);
+	assert.equal(save.parameters.required, undefined);
+	const commit = h.toolDef("commit_plan_goal") as unknown as { parameters: { properties: Record<string, unknown>; required: string[] } };
+	assert.deepEqual(Object.keys(commit.parameters.properties), [
+		"objective", "successCriteria", "constraints", "outOfScope", "blockerRule", "tokenBudget",
+	]);
+	assert.deepEqual(commit.parameters.required, ["objective", "successCriteria", "constraints", "outOfScope", "blockerRule"]);
+});
 
 test("editing goal JSON refreshes paused Blocker and resume preserves the new policy", async () => {
 	const h = harness("paused");
@@ -589,6 +650,60 @@ test("a rejected verdict reports an error through the real transport and keeps t
 	assert.equal(readGoalState(h.cwd).status, "active");
 });
 
+test("a resolvable planning.auditModel audits with its own thinking level and no notice", async () => {
+	const h = harness();
+	const configured = { id: "zhipu/glm-5.3-flash", provider: "magpie" };
+	(h.ctx as { model?: unknown }).model = { id: "main" };
+	const calls: Array<{ model: unknown; reasoning: unknown }> = [];
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = {
+		find: (provider: string, id: string) => (provider === "magpie" && id === "zhipu/glm-5.3-flash" ? configured : undefined),
+		streamSimple: (model: unknown, _context: unknown, options: { reasoning?: unknown }) => {
+			calls.push({ model, reasoning: options.reasoning });
+			return {
+				result: async () => ({
+					stopReason: "stop",
+					content: [{ type: "text", text: "criterion 1: MET\nVERDICT: APPROVE" }],
+					usage: { input: 30, output: 5, cacheRead: 0, cacheWrite: 0 },
+				}),
+			};
+		},
+	};
+	h.setSettings({ planning: { auditModel: { provider: "magpie", id: "zhipu/glm-5.3-flash", thinking: "high" } } });
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("complete_plan_goal", { summary: "Done" })) as { content: Array<{ type: string; text: string }> };
+	assert.match(result.content[0].text, /Completed plan goal: Done \(independent audit: approved\)/);
+	assert.deepEqual(calls, [{ model: configured, reasoning: "high" }]);
+	assert.deepEqual(h.warnings, []);
+	assert.equal(readGoalState(h.cwd).status, "complete");
+});
+
+test("an unresolvable planning.auditModel warns and falls back to the session model at low thinking", async () => {
+	const h = harness();
+	const session = { id: "main" };
+	(h.ctx as { model?: unknown }).model = session;
+	const calls: Array<{ model: unknown; reasoning: unknown }> = [];
+	(h.ctx as { modelRegistry?: unknown }).modelRegistry = {
+		find: () => undefined,
+		streamSimple: (model: unknown, _context: unknown, options: { reasoning?: unknown }) => {
+			calls.push({ model, reasoning: options.reasoning });
+			return {
+				result: async () => ({
+					stopReason: "stop",
+					content: [{ type: "text", text: "criterion 1: MET\nVERDICT: APPROVE" }],
+					usage: { input: 30, output: 5, cacheRead: 0, cacheWrite: 0 },
+				}),
+			};
+		},
+	};
+	h.setSettings({ planning: { auditModel: { provider: "magpie", id: "gone", thinking: "high" } } });
+	await h.event("session_start", { reason: "new" });
+	const result = (await h.tool("complete_plan_goal", { summary: "Done" })) as { content: Array<{ type: string; text: string }> };
+	assert.match(result.content[0].text, /Completed plan goal: Done \(independent audit: approved\)/);
+	assert.deepEqual(calls, [{ model: session, reasoning: "low" }]);
+	assert.deepEqual(h.warnings, ["planning.auditModel magpie/gone is not available; completion audit falls back to the session model."]);
+	assert.equal(readGoalState(h.cwd).status, "complete");
+});
+
 test("planning refreshes keep their slot beside a repeatedly updated Agents widget", async () => {
 	const h = harness();
 	await h.event("session_start", { reason: "new" });
@@ -736,6 +851,17 @@ test("/plan-update reads the workspace through the lifecycle and sends the plann
 	assert.ok(h.messages[0].content.includes(getPaths(h.cwd).files["progress.md"]));
 	assert.ok(h.widget()?.includes("phase: Phase 7"));
 	assert.equal(readGoalState(h.cwd).status, "paused");
+});
+
+test("/plan-update without planning files notifies instead of sending a message", async () => {
+	const h = harness("none");
+	await h.event("session_start", { reason: "new" });
+	for (const file of Object.values(getPaths(h.cwd).files)) fs.rmSync(file);
+	h.infos.splice(0);
+	await h.command("plan-update");
+	assert.deepEqual(h.infos, ["没有 planning files，无需更新。"]);
+	assert.equal(h.messages.length, 0);
+	assert.deepEqual(h.warnings, []);
 });
 
 for (const [command, pattern] of [["plan-archive", /cannot be archived while the agent is running.*retry \/plan-archive/], ["plan-new", /cannot be reset while the agent is running.*retry \/plan-new/]] as const) {

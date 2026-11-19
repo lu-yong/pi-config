@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mutateSettings } from "../settings-io.ts";
+import { mutateSettings, SettingsIoError } from "../settings-io.ts";
 import lockfile from "proper-lockfile";
 import { planToggle, type SettingsMutation } from "../toggle.ts";
 import type { ExtensionEntry } from "../resolve.ts";
@@ -197,4 +197,67 @@ describe("mutateSettings", () => {
 		expect((doc.extensions as string[])[0]).toBe("!keep-me.ts");
 		expect(new Set((doc.extensions as string[]).slice(1))).toEqual(new Set(["-extensions/qna.ts", "-extensions/other.ts"]));
 	});
+
+	for (const raw of ['{ not json', '"just a string"', "[1, 2]"]) {
+		it(`malformed settings (${raw}) refuse the write and preserve the file byte-for-byte`, async () => {
+			// Broken JSON and valid-JSON-but-not-an-object both abort before any
+			// read-modify-write: the user's bytes stay exactly as they were.
+			writeFileSync(globalSettingsPath(), raw, "utf-8");
+
+			const plan = planToggle({
+				env: { agentDir, cwd },
+				entry: standaloneEntry("qna.ts"),
+				action: "disable",
+				scope: "global",
+				trusted: true,
+				isSelf: false,
+			});
+			expect(plan.ok).toBe(true);
+
+			const error: SettingsIoError = await mutateSettings(
+				{ agentDir, cwd },
+				"global",
+				plan.ok ? plan.mutation : undefined!,
+			).catch((e) => e);
+
+			expect(error).toBeInstanceOf(SettingsIoError);
+			expect(error.code).toBe("malformed-settings");
+			expect(error.path).toBe(globalSettingsPath());
+			expect(error.message).toContain(globalSettingsPath());
+			expect(readFileSync(globalSettingsPath(), "utf-8")).toBe(raw);
+		});
+	}
+
+	it("an unacquirable lock times out without touching the file", async () => {
+		writeGlobalSettings({ theme: "keep" });
+
+		// An external holder never releases: mutateSettings exhausts its lock
+		// retries and surfaces lock-timeout instead of writing unlocked.
+		const release = await lockfile.lock(globalSettingsPath(), { realpath: false });
+		try {
+			const plan = planToggle({
+				env: { agentDir, cwd },
+				entry: standaloneEntry("qna.ts"),
+				action: "disable",
+				scope: "global",
+				trusted: true,
+				isSelf: false,
+			});
+			expect(plan.ok).toBe(true);
+
+			const error: SettingsIoError = await mutateSettings(
+				{ agentDir, cwd },
+				"global",
+				plan.ok ? plan.mutation : undefined!,
+			).catch((e) => e);
+
+			expect(error).toBeInstanceOf(SettingsIoError);
+			expect(error.code).toBe("lock-timeout");
+			expect(error.path).toBe(globalSettingsPath());
+			expect(error.message).toMatch(/Could not acquire the settings lock/);
+			expect(readGlobalSettings()).toEqual({ theme: "keep" });
+		} finally {
+			await release();
+		}
+	}, 15000);
 });

@@ -179,3 +179,24 @@ test("invalid token budget fields normalize to defaults", () => {
 	assert.equal(read.goal?.tokenBudget, undefined);
 	assert.equal(read.impl.tokensUsed, 0);
 });
+
+test("an invalid persisted drafting stage falls back to as-is while valid stages survive", () => {
+	const cwd = makeCwd();
+	const base = defaultGoalState();
+	const persist = (draftingStage: unknown) => {
+		writeText(getPaths(cwd).goalState, `${JSON.stringify({
+			...base,
+			status: "drafting",
+			draft: { ...base.draft, draftingStage },
+		})}\n`);
+	};
+	for (const invalid of ["bogus", 7, null, ""]) {
+		persist(invalid);
+		assert.equal(readGoalState(cwd).draft.draftingStage, "as-is", JSON.stringify(invalid));
+		assert.equal(readGoalStateForUpdate(cwd)?.draft.draftingStage, "as-is", JSON.stringify(invalid));
+	}
+	for (const valid of ["as-is", "design", "story", "task"] as const) {
+		persist(valid);
+		assert.equal(readGoalState(cwd).draft.draftingStage, valid);
+	}
+});

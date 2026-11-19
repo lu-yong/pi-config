@@ -6,6 +6,7 @@ import { afterEach, mock, test } from "node:test";
 
 import {
 	archivePlanningWorkspace,
+	createGoalDesignSkeleton,
 	finalizeGoalWorkspace,
 	readPlanningSections,
 	initializePlanningWorkspace,
@@ -101,6 +102,20 @@ test("finalizes task_plan.md and progress.md together, preserving unrelated sect
 	const once = `${taskPlan}|${progress}`;
 	finalizeGoalWorkspace(cwd, completion, { timestamp: "2026-08-12T00:00:00.000Z" });
 	assert.equal(`${readText(paths.files["task_plan.md"])}|${readText(paths.files["progress.md"])}`, once);
+});
+
+test("the goal-design skeleton is created once and never clobbers existing content", () => {
+	const cwd = makeCwd();
+	const paths = getPaths(cwd);
+
+	createGoalDesignSkeleton(cwd);
+	assert.equal(readText(paths.goalDesign), "# Goal Design\n\n## Design\n\n## Story Breakdown\n\n## Task Plan\n");
+	assert.equal(fs.existsSync(paths.tasksDir), true);
+
+	const design = "# Goal Design\n\n## Design\n- agent-written 4-stage design\n\n## Story Breakdown\n- Story 1\n";
+	writeText(paths.goalDesign, design);
+	createGoalDesignSkeleton(cwd);
+	assert.equal(readText(paths.goalDesign), design);
 });
 
 test("missing task_plan.md fails without generating a workspace template", () => {

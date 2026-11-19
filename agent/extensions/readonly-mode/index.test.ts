@@ -77,6 +77,76 @@ test('Pi adapter restores state from the active branch only', async () => {
   assert.deepEqual(statuses, [undefined]);
 });
 
+test('Pi adapter honors --readonly on session_start and persists it once', async () => {
+  const events = new Map<string, (...args: any[]) => unknown>();
+  const statuses: Array<string | undefined> = [];
+  const persisted: Array<[string, unknown]> = [];
+  const state = (readonlyMode: boolean) => ({
+    type: 'custom',
+    customType: 'readonly-mode',
+    data: { readonlyMode },
+  });
+
+  const pi = {
+    on: (name: string, handler: (...args: any[]) => unknown) => events.set(name, handler),
+    registerCommand: () => undefined,
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: (customType: string, data: unknown) => persisted.push([customType, data]),
+    getFlag: () => true,
+    sendUserMessage: () => undefined,
+  };
+  const ctx = {
+    ui: {
+      setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+      notify: () => undefined,
+    },
+    sessionManager: { getBranch: () => [state(false)] },
+  };
+
+  readonlyMode(pi as never);
+  await events.get('session_start')?.({}, ctx);
+
+  assert.deepEqual(statuses, ['🛡️ readonly']);
+  assert.deepEqual(persisted, [['readonly-mode', { readonlyMode: true }]]);
+});
+
+test('Pi adapter restores the switched-to branch state on session_tree', async () => {
+  const events = new Map<string, (...args: any[]) => unknown>();
+  const statuses: Array<string | undefined> = [];
+  const state = (readonlyMode: boolean) => ({
+    type: 'custom',
+    customType: 'readonly-mode',
+    data: { readonlyMode },
+  });
+
+  const pi = {
+    on: (name: string, handler: (...args: any[]) => unknown) => events.set(name, handler),
+    registerCommand: () => undefined,
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  };
+  let branch: unknown[] = [state(true)];
+  const ctx = {
+    ui: {
+      setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+      notify: () => undefined,
+    },
+    sessionManager: { getBranch: () => branch },
+  };
+
+  readonlyMode(pi as never);
+  await events.get('session_tree')?.({}, ctx);
+  assert.deepEqual(statuses, ['🛡️ readonly']);
+
+  branch = [state(false)];
+  await events.get('session_tree')?.({}, ctx);
+  assert.deepEqual(statuses, ['🛡️ readonly', undefined]);
+});
+
 test('Pi adapter applies toggle effects in order', async () => {
   const calls: unknown[] = [];
   let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
@@ -113,6 +183,47 @@ test('Pi adapter applies toggle effects in order', async () => {
     ],
     ['send-user-message', 'review this'],
   ]);
+});
+
+test('Pi adapter contributes the readonly section per run and removes it with a null patch', async () => {
+  const events = new Map<string, (...args: any[]) => unknown>();
+  const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+  const pi = {
+    on: (name: string, handler: (...args: any[]) => unknown) => events.set(name, handler),
+    registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+      commands.set(name, command),
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  };
+  const ctx = {
+    isIdle: () => true,
+    ui: { setStatus: () => undefined, notify: () => undefined },
+  };
+
+  readonlyMode(pi as never);
+  const beforeAgentStart = events.get('before_agent_start')!;
+  const run = async () => {
+    const event = { systemPromptOptions: { sections: {} as Record<string, string | null> } };
+    await beforeAgentStart(event, ctx);
+    return event.systemPromptOptions.sections;
+  };
+
+  // Disabled from the start: the section key is never created.
+  assert.deepEqual(await run(), {});
+
+  // Enabled: the instructions land under the extension's section key.
+  await commands.get('readonly')!.handler('', ctx);
+  assert.match((await run())['readonly-mode'] ?? '', /\[READ-ONLY MODE ACTIVE\]/);
+
+  // Disabled again: the same key is overwritten with null (removal patch).
+  await commands.get('readonly')!.handler('', ctx);
+  assert.deepEqual(await run(), { 'readonly-mode': null });
+
+  // The run after the removal writes nothing.
+  assert.deepEqual(await run(), {});
 });
 
 // Keep policy assertions at Pi's real event-dispatch boundary, not just enforcement.handle().
@@ -258,4 +369,43 @@ test('toggle is refused while the agent is running', async () => {
 
   assert.equal(notices.length, 1);
   assert.match(notices[0]!, /idle/);
+});
+
+test('Ctrl+Alt+R shortcut toggles and is refused while the agent is running', async () => {
+  const shortcuts = new Map<string, { handler: (ctx: unknown) => Promise<void> }>();
+  const statuses: Array<string | undefined> = [];
+  const notices: string[] = [];
+  const pi = {
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerShortcut: (name: string, shortcut: { handler: (ctx: unknown) => Promise<void> }) =>
+      shortcuts.set(name, shortcut),
+    registerFlag: () => undefined,
+    appendEntry: () => undefined,
+    getFlag: () => false,
+    sendUserMessage: () => undefined,
+  };
+  let busy = false;
+  const ctx = {
+    isIdle: () => !busy,
+    ui: {
+      setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+      notify: (message: string) => notices.push(message),
+    },
+  };
+
+  readonlyMode(pi as never);
+
+  // While running: refused with the idle notice, nothing toggles.
+  busy = true;
+  await shortcuts.get('ctrl+alt+r')!.handler(ctx);
+  assert.deepEqual(statuses, []);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0]!, /idle/);
+
+  // Idle: the shortcut toggles read-only on, then back off.
+  busy = false;
+  await shortcuts.get('ctrl+alt+r')!.handler(ctx);
+  await shortcuts.get('ctrl+alt+r')!.handler(ctx);
+  assert.deepEqual(statuses, ['🛡️ readonly', undefined]);
 });

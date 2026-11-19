@@ -425,4 +425,18 @@ describe("picker session (component seam)", () => {
 		expect(text).toContain("pi-hashline-edit-pro");
 		expect(text).not.toContain("filter:");
 	});
+
+	it("falls back to a notify hint when the host has no component support", async () => {
+		// A host without ui.custom (no interactive component support) gets the
+		// degraded-notify path instead of a mounted picker.
+		const notify = vi.fn();
+		const host: PickerHost = { ui: { notify }, reload: vi.fn(), isProjectTrusted: () => true };
+
+		const session = await openPickerSession({ env: { agentDir, cwd }, liveSources: () => [], host });
+
+		await expect(session.open()).resolves.toBe(undefined);
+		expect(notify).toHaveBeenCalledTimes(1);
+		expect(notify).toHaveBeenCalledWith("/extmgr needs an interactive terminal with component support.", "warning");
+		expect(host.reload).not.toHaveBeenCalled();
+	});
 });

@@ -21,6 +21,61 @@ test("goal drafting prompt explains the fail-closed bash policy", () => {
 	assert.ok(prompt.includes("`pwd && git status --short`"));
 });
 
+test("goal drafting prompt renders the draft summary, current stage, and the empty-draft placeholder", () => {
+	const state = defaultGoalState();
+	const empty = buildGoalSetPrompt(state);
+	assert.ok(empty.includes("Current stage: as-is"));
+	assert.ok(empty.includes("Goal overlay status: none"));
+	assert.ok(empty.includes("Current draft state:\n- (empty draft)"));
+	assert.doesNotMatch(empty, /Committed goal|New user input for this drafting step/);
+
+	state.status = "drafting";
+	state.draft = {
+		...state.draft,
+		sourceTopic: "ship the export",
+		objective: "Ship CSV export",
+		successCriteria: ["Tests pass"],
+		constraints: ["No new deps"],
+		outOfScope: ["PDF export"],
+		blockerRule: "Pause and ask",
+		openQuestions: ["Which storage?", "Which UI?"],
+		nextRecommendedQuestion: "Which storage?",
+		draftingStage: "story",
+	};
+	const prompt = buildGoalSetPrompt(state);
+	assert.ok(prompt.includes("Current stage: story"));
+	assert.ok(prompt.includes("- Source topic: ship the export"));
+	assert.ok(prompt.includes("- Objective draft: Ship CSV export"));
+	assert.ok(prompt.includes("- Success criteria: Tests pass"));
+	assert.ok(prompt.includes("- Constraints: No new deps"));
+	assert.ok(prompt.includes("- Out of scope: PDF export"));
+	assert.ok(prompt.includes("- If blocked: Pause and ask"));
+	assert.ok(prompt.includes("- Open questions (2): Which storage?; Which UI?"));
+	assert.ok(prompt.includes("- Recommended next question: Which storage?"));
+	assert.doesNotMatch(prompt, /- \(empty draft\)/);
+});
+
+test("goal drafting prompt echoes the committed goal and the drafting step's new user input", () => {
+	const state = defaultGoalState();
+	state.status = "drafting";
+	state.goal = {
+		objective: "Committed objective",
+		successCriteria: ["criterion one"],
+		constraints: [],
+		outOfScope: [],
+		blockerRule: "Ask the user",
+	};
+	assert.ok(buildGoalSetPrompt(state).includes("Committed goal:\n- Objective: Committed objective"));
+	assert.doesNotMatch(buildGoalSetPrompt(state, ""), /New user input for this drafting step/);
+	const prompt = buildGoalSetPrompt(state, "Use sqlite");
+	assert.ok(prompt.includes("Committed goal:\n- Objective: Committed objective"));
+	assert.ok(prompt.includes("- Success criteria: criterion one"));
+	assert.ok(prompt.includes("New user input for this drafting step:\nUse sqlite"));
+
+	state.goal = { ...state.goal, successCriteria: [] };
+	assert.doesNotMatch(buildGoalSetPrompt(state, "Use sqlite"), /- Success criteria/);
+});
+
 test("plan update prompt pins exact planning file paths and the continuity check", () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "planning-prompts-test-"));
 	try {

@@ -79,6 +79,40 @@ describe("manage_extensions mutations", () => {
 		expect(text).toMatch(/still enabled globally/i);
 	});
 
+	it("global enable restores the plain string entry and reports on states", async () => {
+		// Whole-package disabled at the global tier (object form with empty
+		// extensions): enable must simplify the entry back to a plain string.
+		writeRel("settings.json", JSON.stringify({ packages: [{ source: "npm:pi-hashline-edit-pro", extensions: [] }] }), agentDir);
+		const tool = makeTool();
+
+		const result = await tool.execute(
+			"c1",
+			{ action: "enable", target: "pi-hashline-edit-pro", scope: "global" },
+			undefined,
+			undefined,
+			trustedCtx,
+		);
+
+		const doc = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+		expect(doc.packages).toEqual(["npm:pi-hashline-edit-pro"]);
+
+		// After-states from a fresh resolution: enabled everywhere it is managed.
+		const details = result.details as { result?: { status?: string; entry?: Array<{ states?: unknown }> } };
+		expect(details.result?.status).toBe("ok");
+		const rows = details.result?.entry ?? [];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.states).toEqual({ global: "on", project: "unmanaged", effective: "on" });
+
+		const text = (result.content as Array<{ type: string; text: string }>)
+			.filter((c) => c.type === "text")
+			.map((c) => c.text)
+			.join("\n");
+		expect(text).toContain("Enabled npm:pi-hashline-edit-pro at the global tier.");
+		expect(text).toContain("Run /reload to apply.");
+		expect(text).toMatch(/\| hashline\.ts \| npm:pi-hashline-edit-pro \| global \| on \| unmanaged \| on \|/);
+		expect(text).not.toContain("still enabled globally");
+	});
+
 	it("standalone targets are refused and packages disambiguate", async () => {
 		// Standalone files exist, but extmgr manages packages only: a target
 		// matching just standalone entries is refused with nothing written.

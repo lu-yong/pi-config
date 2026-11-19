@@ -134,6 +134,19 @@ describe('read-only enforcement', () => {
     );
   });
 
+  test('--readonly with a saved enabled state does not persist again', () => {
+    const enforcement = createReadonlyEnforcement();
+
+    assert.deepEqual(
+      enforcement.handle({
+        type: 'restore',
+        readonlyFlag: true,
+        entries: [savedState(true)],
+      }),
+      [{ type: 'set-status', text: '🛡️ readonly' }],
+    );
+  });
+
   test('contributes the policy section while enabled and removes it when disabled', () => {
     const enforcement = createReadonlyEnforcement();
     enforcement.handle({ type: 'toggle' });

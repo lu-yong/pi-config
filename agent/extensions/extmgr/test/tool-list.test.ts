@@ -19,13 +19,14 @@ function writeFile(rel: string, content: string, root: string = agentDir) {
 	writeFileSync(full, content);
 }
 
-function makePi() {
+function makePi(extraApi: Record<string, unknown> = {}) {
 	const tools: ToolDefinition[] = [];
 	return {
 		tools,
 		pi: {
 			registerTool: (tool: ToolDefinition) => tools.push(tool),
 			registerCommand: () => {},
+			...extraApi,
 		} as never,
 	};
 }
@@ -88,5 +89,38 @@ describe("manage_extensions list", () => {
 		expect(text).toContain("a.ts");
 		expect(text).not.toContain("| qna.ts");
 		expect(text).toMatch(/1 standalone extension\(s\) present — not managed/);
+	});
+
+	it("a throwing live-source provider degrades to unannotated rows", async () => {
+		writeFile("settings.json", JSON.stringify({ packages: ["npm:pkg-a"] }));
+		const pkgRoot = join(agentDir, "npm/node_modules/pkg-a");
+		writeFile("package.json", JSON.stringify({ name: "pkg-a", version: "1.0.0", pi: { extensions: ["ext/a.ts"] } }), pkgRoot);
+		writeFile("ext/a.ts", "export default () => {};", pkgRoot);
+		const sourceInfo = { path: join(pkgRoot, "ext/a.ts"), source: "npm:pkg-a", scope: "user", origin: "package" };
+
+		// Healthy provider: the live command registration marks the row loaded.
+		let { pi, tools } = makePi({ getCommands: () => [{ sourceInfo }], getAllTools: () => [] });
+		extmgr(pi, { agentDir, cwd });
+		let tool = tools.find((t) => t.name === "manage_extensions")!;
+		let result = await tool.execute("call-1", { action: "list" }, undefined, undefined, ctxStub);
+		let rows = (result.details as { rows: Array<{ loaded?: boolean }> }).rows;
+		expect(rows[0]?.loaded).toBe(true);
+
+		// pi.getCommands()/getAllTools() themselves throw: the extension's
+		// liveSources wrapper swallows it and the list still renders, unloaded.
+		({ pi, tools } = makePi({
+			getCommands: () => {
+				throw new Error("tui is gone");
+			},
+			getAllTools: () => {
+				throw new Error("tui is gone");
+			},
+		}));
+		extmgr(pi, { agentDir, cwd });
+		tool = tools.find((t) => t.name === "manage_extensions")!;
+		result = await tool.execute("call-2", { action: "list" }, undefined, undefined, ctxStub);
+		rows = (result.details as { rows: Array<{ loaded?: boolean }> }).rows;
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.loaded).toBe(false);
 	});
 });

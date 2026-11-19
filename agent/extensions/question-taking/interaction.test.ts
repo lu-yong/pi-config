@@ -206,6 +206,20 @@ test("选项模式下 Tab/左右键是死键，Up 在首项处钳制不回绕", 
 	assert.deepEqual(await promise, [{ question: "Q?", answer: "A" }]);
 });
 
+test("Down 在末项处钳制不越界，Enter 仍选中末项", async () => {
+	const driver = createDriver();
+	const promise = askExtractedQuestions(driver.ui, [{ question: "Q?", options: ["A", "B", "C"] }]);
+
+	const first = await session(driver, 0);
+	await press(first, [DOWN, DOWN, DOWN, DOWN, DOWN]); // 远超末项下标，末项应保持选中
+
+	assert.ok(first.render(60).some((line) => line.includes("> 3. C")));
+	assert.equal(first.doneCount, 0);
+
+	await press(first, [ENTER]);
+	assert.deepEqual(await promise, [{ question: "Q?", answer: "C" }]);
+});
+
 test("窄终端逐行不超宽，宽度变化后按新宽度重绘", async () => {
 	const driver = createDriver();
 	const promise = askExtractedQuestions(driver.ui, [
@@ -229,6 +243,20 @@ test("窄终端逐行不超宽，宽度变化后按新宽度重绘", async () =>
 	assert.deepEqual(await promise, [
 		{ question: "这是一个相当长的问题文本，用来检查窄终端下的换行行为", answer: "选项一" },
 	]);
+});
+
+test("空选项列表（防御性场景）：Enter 为死键，Esc 仍可取消", async () => {
+	const driver = createDriver();
+	const promise = askExtractedQuestions(driver.ui, [{ question: "Q?", options: [] }]);
+
+	const first = await session(driver, 0);
+	await press(first, [ENTER, DOWN, UP]);
+
+	assert.equal(first.doneCount, 0);
+
+	await press(first, [ESC]);
+	assert.equal(await promise, null);
+	assert.equal(first.doneCount, 1);
 });
 
 test("空问题清单返回空数组而非 null", async () => {

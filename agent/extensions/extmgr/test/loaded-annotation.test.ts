@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { annotateLoaded } from "../index.ts";
+import { safeSources } from "../snapshot.ts";
 import type { ExtensionEntry } from "../resolve.ts";
 
 /** IF seam: index.ts live-annotation merge helper. SourceInfo data is a
@@ -30,5 +31,16 @@ describe("annotateLoaded", () => {
 		expect(annotated.find((e) => e.id.endsWith("other.ts"))?.loaded).toBe(false);
 		// Pure merge: input entries are not mutated.
 		expect(entries[0]).not.toHaveProperty("loaded");
+	});
+});
+
+describe("safeSources", () => {
+	it("a throwing live-source provider yields no sources, not a failure", () => {
+		expect(safeSources(() => {
+			throw new Error("pi api is gone");
+		})).toEqual([]);
+		// The passthrough is untouched: sources flow when the provider works.
+		const sources = [{ path: "/x/qna.ts", source: "auto", scope: "user", origin: "top-level" }];
+		expect(safeSources(() => sources)).toBe(sources);
 	});
 });

@@ -15,7 +15,7 @@ import {
 	type OutgoingGoalMessageOptions,
 } from "./goal-lifecycle.ts";
 import type { AuditModelResult } from "./audit.ts";
-import { MESSAGE_TYPE_CONTINUATION, type CompleteGoalParams } from "./types.ts";
+import { MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_SET, type CompleteGoalParams } from "./types.ts";
 import { fileExists, getPaths, readText, writeText } from "./utils.ts";
 import { defaultGoalState, hasActiveGoal, readGoalState, writeGoalState } from "./state.ts";
 import { initializePlanningWorkspace, readPlanningSections } from "./workspace.ts";
@@ -169,6 +169,82 @@ describe("goal lifecycle", () => {
 		assert.equal(stateOf(run).status, "complete");
 		assert.match(readText(paths.files["task_plan.md"]), /## Current Phase\nComplete/);
 		assert.match(readText(paths.files["progress.md"]), /Lifecycle is complete/);
+	});
+
+	test("start-drafting sends the goal-set message with stage, draft summary, committed goal, and new input", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+
+		run.handle({ type: "start-drafting", input: "goal run" }, harness.context());
+		assert.equal(harness.sent.length, 1);
+		const first = harness.sent[0];
+		assert.equal(first.message.customType, MESSAGE_TYPE_GOAL_SET);
+		assert.equal(first.message.display, false);
+		assert.deepEqual(first.options, { triggerTurn: true });
+		assert.ok(first.message.content.includes("[PLAN GOAL SET]"));
+		assert.ok(first.message.content.includes("Current stage: as-is"));
+		assert.ok(first.message.content.includes("- Source topic: goal run"));
+		assert.ok(first.message.content.includes("New user input for this drafting step:\ngoal run"));
+		assert.doesNotMatch(first.message.content, /Committed goal/);
+
+		run.handle({
+			type: "save-draft",
+			params: { objective: "Draft the goal", openQuestions: ["Which storage?"], nextRecommendedQuestion: "Which storage?", draftingStage: "design" },
+		}, harness.context());
+		run.handle({ type: "start-drafting", input: "Use sqlite" }, harness.context());
+		assert.equal(harness.sent.length, 2);
+		const second = harness.sent[1].message;
+		assert.equal(second.customType, MESSAGE_TYPE_GOAL_SET);
+		assert.ok(second.content.includes("Current stage: design"));
+		assert.ok(second.content.includes("- Objective draft: Draft the goal"));
+		assert.ok(second.content.includes("- Open questions (1): Which storage?"));
+		assert.ok(second.content.includes("- Recommended next question: Which storage?"));
+		assert.ok(second.content.includes("New user input for this drafting step:\nUse sqlite"));
+
+		run.handle({ type: "commit", params: contractParams }, harness.context());
+		harness.clearSent();
+		run.handle({ type: "start-drafting", input: "Revise the goal" }, harness.context());
+		assert.equal(harness.sent.length, 1);
+		const third = harness.sent[0].message;
+		assert.equal(third.customType, MESSAGE_TYPE_GOAL_SET);
+		assert.ok(third.content.includes("Committed goal:"));
+		assert.ok(third.content.includes(`- Objective: ${contractParams.objective}`));
+		assert.ok(third.content.includes(`- Success criteria: ${contractParams.successCriteria.join("; ")}`));
+	});
+
+	test("re-entering drafting preserves an agent-written goal-design.md", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+		const paths = getPaths(cwd);
+
+		run.handle({ type: "start-drafting", input: "goal run" }, harness.context());
+		assert.match(readText(paths.goalDesign), /# Goal Design\n\n## Design\n\n## Story Breakdown\n\n## Task Plan\n/);
+		const design = "# Goal Design\n\n## Design\n- Real 4-stage design written during drafting\n\n## Story Breakdown\n- Story 1\n";
+		writeText(paths.goalDesign, design);
+
+		run.handle({ type: "start-drafting", input: "more context" }, harness.context());
+		assert.equal(readText(paths.goalDesign), design);
+
+		const reloaded = createGoalLifecycle(cwd, harness.deps);
+		reloaded.handle({ type: "start-drafting", input: "fresh session, same design" }, harness.context());
+		assert.equal(readText(paths.goalDesign), design);
+	});
+
+	test("start-drafting keeps only the latest 20 supplemental inputs", () => {
+		const cwd = makeCwd();
+		const harness = createHarness();
+		const run = createGoalLifecycle(cwd, harness.deps);
+
+		for (let i = 1; i <= 21; i++) {
+			run.handle({ type: "start-drafting", input: `input-${i}` }, harness.context());
+		}
+		const inputs = stateOf(run).draft.supplementalInputs;
+		assert.equal(inputs.length, 20);
+		assert.equal(inputs[0], "input-2");
+		assert.equal(inputs.at(-1), "input-21");
+		assert.equal(inputs.includes("input-1"), false);
 	});
 
 	test("rejects every illegal lifecycle operation without mutating state", async () => {

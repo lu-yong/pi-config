@@ -108,6 +108,119 @@ describe('read-only command policy', () => {
     }
   });
 
+  test('gates bun and swift scripts the same way as npm run', () => {
+    // `bun run <script>` executes arbitrary package.json scripts, so it must
+    // stay behind the APPROVED_SCRIPT whitelist like `npm run` above.
+    for (const command of [
+      'bun test',
+      'bun run lint',
+      'bun run test:unit',
+      'swift test',
+      'swift package describe',
+      'swift --version',
+    ]) {
+      assert.equal(isSafeShellCommand(command), true, command);
+    }
+
+    for (const command of [
+      'bun run build',
+      'bun install',
+      'swift build',
+    ]) {
+      assert.equal(isSafeShellCommand(command), false, command);
+    }
+  });
+
+  test('blocks output-file write vectors for uniq, yq, and read-only git subcommands', () => {
+    for (const command of [
+      'uniq input',
+      'yq ".a" config.yaml',
+    ]) {
+      assert.equal(isSafeShellCommand(command), true, command);
+    }
+
+    // uniq with two positional arguments writes the second one; yq -i rewrites
+    // its input in place; --output turns a read-only git subcommand into a write.
+    for (const command of [
+      'uniq input output',
+      'yq -i ".a=1" config.yaml',
+      'yq --in-place ".a=1" config.yaml',
+      'git diff --output=result.txt a b',
+      'git diff --output result.txt a b',
+      'git show --output=result.txt HEAD',
+    ]) {
+      assert.equal(isSafeShellCommand(command), false, command);
+    }
+  });
+
+  test('blocks curl upload and disk-write flags beyond -o and --json', () => {
+    assert.equal(isSafeShellCommand('curl -X HEAD https://example.com'), true);
+
+    for (const command of [
+      'curl -T upload.txt https://example.com',
+      'curl --upload-file upload.txt https://example.com',
+      'curl -O https://example.com',
+      'curl -F name=@file https://example.com',
+      'curl -K cfg https://example.com',
+      'curl --output-dir out https://example.com',
+      'curl --dump-header headers.txt https://example.com',
+    ]) {
+      assert.equal(isSafeShellCommand(command), false, command);
+    }
+  });
+
+  test('applies the policy to commands nested under command, time, and timeout', () => {
+    for (const command of [
+      'command -v rg',
+      'command git status',
+      'time git status',
+      'time -p git status',
+      'timeout 5s git status',
+    ]) {
+      assert.equal(isSafeShellCommand(command), true, command);
+    }
+
+    for (const command of [
+      'command',
+      'command rm -rf tmp',
+      'time rm -rf tmp',
+      'timeout 5 rm -rf tmp',
+    ]) {
+      assert.equal(isSafeShellCommand(command), false, command);
+    }
+  });
+
+  test('allows git global options and read-only subcommand aliases without mutations', () => {
+    for (const command of [
+      'git -C agent status',
+      'git --no-pager log -1',
+      'git --paginate status',
+      'git --version',
+      'git stash list',
+      'git stash show',
+      'git tag',
+      'git tag -l',
+      'git worktree list',
+      'git reflog',
+      'git reflog show',
+      'git submodule status',
+      'git config --get user.name',
+      'git config --list',
+      'git remote get-url origin',
+    ]) {
+      assert.equal(isSafeShellCommand(command), true, command);
+    }
+
+    for (const command of [
+      'git stash pop',
+      'git tag v1.0',
+      'git worktree add ../x main',
+      'git -C agent push',
+    ]) {
+      assert.equal(isSafeShellCommand(command), false, command);
+    }
+  });
+
   test('drafting profile keeps per-segment parsing but forbids network commands', () => {
     for (const command of [
       'git log --oneline -5 | head -3',
