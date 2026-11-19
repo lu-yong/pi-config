@@ -27,17 +27,6 @@ export function settingsPath(env: ExtmgrEnv, scope: Scope): string {
 	return scope === "global" ? join(env.agentDir, "settings.json") : join(env.cwd, ".pi", "settings.json");
 }
 
-/** Lock-free tolerant read for snapshots (IF-4 callers). */
-export function readSettings(env: ExtmgrEnv, scope: Scope): SettingsDoc {
-	const path = settingsPath(env, scope);
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as SettingsDoc) : {};
-	} catch {
-		return {};
-	}
-}
-
 function parseOrThrow(path: string, raw: string | undefined): SettingsDoc {
 	if (raw === undefined) return {};
 	try {
