@@ -5,7 +5,7 @@
  * package replace/delta filters, cross-tier dedupe) was a hand-written
  * replica of Pi's semantics until Pi 1.3.0 exported the resolver; the read
  * path now goes through `native.ts` (DefaultPackageManager.resolve()).
- * The golden fixtures in `test/fixtures/resolution-rules.ts` keep pinning
+ * The inline fixture tables in `test/native-resolution.test.ts` keep pinning
  * Pi's semantics through the native resolver.
  */
 

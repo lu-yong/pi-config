@@ -7,9 +7,8 @@
  * precedence, standalone discovery, package replace/delta filters, cross-tier
  * dedupe) lived in resolve.ts before Pi 1.3.0 exported the resolver; keeping
  * it meant re-verifying on every Pi upgrade (commit 378d2d5 fixed one such
- * drift). The golden fixtures in `test/fixtures/resolution-rules.ts` and the
- * tests in `test/native-*.test.ts` now pin Pi's semantics through the native
- * resolver itself.
+ * drift). The inline fixture tables in `test/native-resolution.test.ts` now
+ * pin Pi's semantics through the native resolver itself.
  *
  * I/O: settings/manifest/package reads happen inside the native resolver.
  * This module never writes and never installs: the `onMissing` hook returns
