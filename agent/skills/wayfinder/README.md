@@ -82,8 +82,7 @@ Work   →  在已有 Map 上前进
 ## 前置条件
 
 1. 本机已安装 **taskmd**（`command -v taskmd`）
-2. 已执行过 `just install-pi`（技能与 prompt 链到本机）
-3. 在**目标仓库**里使用（每个 repo 独立 workspace）
+2. 在**目标仓库**里使用（每个 repo 独立 workspace）
 
 没有 taskmd 时：skill 会停，并要求你自己装或**明确授权** agent 安装。  
 **不会**偷偷换成别的 issue tracker。
