@@ -67,3 +67,6 @@ agent/subagent-manager/agents/
 !agent/subagent-manager/agents/code-reviewer.md
 
 agent/git
+
+agent/mcp-auth.json
+agent/mcp.json
