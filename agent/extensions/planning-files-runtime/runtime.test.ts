@@ -720,7 +720,7 @@ test("planning refreshes keep their slot beside a repeatedly updated Agents widg
 	await h.command("plan-archive");
 	assert.deepEqual(h.widget(), []);
 	await h.command("plan-new");
-	assert.ok(h.widget()?.includes("planning: initialized"));
+	assert.ok(h.widget()?.includes("state: initialized"));
 	assert.equal(h.registrations(), 1);
 	assert.deepEqual([...h.widgetOrder.keys()], ["planning-files-runtime", "pi-subagent"]);
 	// Pi disposes widgets on session replacement; the next session must mount anew.
@@ -777,7 +777,7 @@ for (const status of ["none", "active", "paused", "complete"] as const) {
 		}
 		if (status === "none") assert.match(pages, /GOAL_SECOND/);
 		if (status === "complete") {
-			assert.match(pages, /phase: Complete/);
+			assert.match(pages, /phase: complete/);
 			assert.match(pages, /next: None \(goal complete\)\./);
 			assert.doesNotMatch(pages, /PHASE_SECOND|NEXT_LAST|BLOCKER_SECOND/);
 		} else {
@@ -903,8 +903,7 @@ test("/plan-archive then /plan-new report through the lifecycle and the widget f
 	await h.command("plan-new");
 	assert.equal(h.infos.at(-1), "Planning workspace reset. Goal overlay cleared.");
 	assert.equal(readGoalState(h.cwd).status, "none");
-	assert.ok(h.widget()?.includes("planning: initialized"));
-	assert.ok(h.widget()?.includes("state: none"));
+	assert.ok(h.widget()?.includes("state: initialized"));
 	assert.deepEqual(h.warnings, []);
 });
 

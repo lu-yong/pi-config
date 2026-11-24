@@ -17,7 +17,7 @@ function plainPlanningText(value: string): string {
 /** Project terminal and paused states without changing the snapshot used by prompts. */
 function projectPlan(state: PlanningSnapshot) {
 	if (state.goalState.status === "complete") {
-		return { phase: "Complete", next: "None (goal complete)." };
+		return { phase: state.goalState.status, next: "None (goal complete)." };
 	}
 	if (state.goalState.status === "paused") {
 		return {
@@ -33,10 +33,10 @@ function planningFields(state: PlanningSnapshot): PlanningField[] {
 	const { goalState } = state;
 	const plan = projectPlan(state);
 	const drafting = goalState.status === "drafting";
+	const workspaceStatus = state.exists ? "initialized" : "uninitialized";
 	const fields: PlanningField[] = [
 		["dir", state.planningRoot],
-		["planning", state.exists ? "initialized" : "not initialized"],
-		["state", goalState.status],
+		["state", goalState.status === "none" ? workspaceStatus : goalState.status],
 	];
 	const objective = drafting ? goalState.draft.objective : goalState.goal?.objective;
 	if (objective || state.goalFromPlan) fields.push(["objective", objective || state.goalFromPlan!]);

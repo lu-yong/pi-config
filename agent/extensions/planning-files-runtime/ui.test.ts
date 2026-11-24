@@ -22,7 +22,8 @@ function snapshot(status: GoalOverlayStatus): PlanningSnapshot {
 test("completed Goal widget uses the canonical terminal projection", () => {
 	const lines = buildWidgetLines(snapshot("complete")) ?? [];
 	assert.ok(lines.includes("state: complete"));
-	assert.ok(lines.includes("phase: Complete"));
+	assert.ok(lines.includes("phase: complete"));
+	assert.ok(!lines.some((line) => line.startsWith("planning:")));
 	assert.ok(lines.includes("next: None (goal complete)."));
 	assert.ok(!lines.some((line) => line.startsWith("blocker:")));
 	assert.ok(!lines.some((line) => line.includes("Phase 5")));
@@ -60,7 +61,7 @@ test("summary keeps long fields on one line, fits terminal columns, and uses acc
 	const theme = { fg: (color: string, text: string) => { assert.equal(color, "accent"); styled.push(text); return "\x1b[34m" + text + "\x1b[39m"; } };
 	for (const width of [0, 1, 2, 3, 12, 40, 80]) {
 		const lines = buildWidgetLines(state, width, theme)!;
-		assert.equal(lines.length, 9);
+		assert.equal(lines.length, 8);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/u.test(line)));
 	}
 	const lines = buildWidgetLines(state, 40)!;
@@ -93,7 +94,7 @@ test("empty planning stays hidden while its inspector reports the uninitialized 
 	const state = snapshot("none");
 	state.exists = false;
 	assert.equal(buildWidgetLines(state, 80), undefined);
-	assert.equal(new Map(buildGoalDetailFields(state)).get("planning"), "not initialized");
+	assert.equal(new Map(buildGoalDetailFields(state)).get("state"), "uninitialized");
 });
 
 test("persisted terminal controls cannot escape the summary or inspector, while UI colors and Unicode survive", () => {
