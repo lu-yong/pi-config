@@ -200,3 +200,37 @@ test("an invalid persisted drafting stage falls back to as-is while valid stages
 		assert.equal(readGoalState(cwd).draft.draftingStage, valid);
 	}
 });
+
+test("wayfinderHandoff state round-trips and normalizes malformed values", () => {
+	const cwd = makeCwd();
+	const base = defaultGoalState();
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({
+		...base,
+		status: "drafting",
+		wayfinderHandoff: { mapId: " 001 ", delivered: true, topicHash: " abc123 " },
+	})}\n`);
+	assert.deepEqual(readGoalState(cwd).wayfinderHandoff, {
+		mapId: "001",
+		delivered: true,
+		topicHash: "abc123",
+	});
+
+	writeText(getPaths(cwd).goalState, `${JSON.stringify({
+		...base,
+		status: "drafting",
+		wayfinderHandoff: { mapId: "002", delivered: "yes", topicHash: "   " },
+	})}\n`);
+	assert.deepEqual(readGoalState(cwd).wayfinderHandoff, {
+		mapId: "002",
+		delivered: false,
+	});
+
+	for (const invalid of [null, {}, { mapId: "" }, { mapId: "   ", delivered: true }, { mapId: 123 }]) {
+		writeText(getPaths(cwd).goalState, `${JSON.stringify({
+			...base,
+			status: "drafting",
+			wayfinderHandoff: invalid,
+		})}\n`);
+		assert.equal(readGoalState(cwd).wayfinderHandoff, undefined, JSON.stringify(invalid));
+	}
+});

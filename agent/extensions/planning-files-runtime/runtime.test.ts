@@ -8,6 +8,7 @@ import type { OutgoingGoalMessage, OutgoingGoalMessageOptions } from "./goal-lif
 import planningFilesRuntime from "./runtime.ts";
 import { defaultGoalState, readGoalState, writeGoalState } from "./state.ts";
 import { MESSAGE_TYPE_CONTINUATION, MESSAGE_TYPE_GOAL_IMPL } from "./types.ts";
+import { spawnSync } from "node:child_process";
 import { getPaths, writeText } from "./utils.ts";
 import { initializePlanningWorkspace } from "./workspace.ts";
 
@@ -118,6 +119,203 @@ function continuationEntry(decision: BoundaryDecision): { type: string; customTy
 	return decision.entries[0];
 }
 
+test("Wayfinder handoff checks the entire Map before dispatching goal drafting", {
+	skip: spawnSync("taskmd", ["--version"]).error?.message.includes("ENOENT") && "requires taskmd",
+}, async () => {
+	const h = harness("none");
+	const dir = path.join(h.cwd, ".pi/wayfinder/tickets");
+	const submit = () => h.event("input", { source: "interactive", text: "/wayfinder handoff" });
+	function record(id: string, tag: string, title: string, status: string, body: string, parent = "") {
+		writeText(path.join(dir, `${id}.md`), `---\nid: "${id}"\ntitle: "${title}"\ntags: ["wayfinder:${tag}"]\nstatus: ${status}\n${parent ? `parent: "${parent}"\n` : ""}---\n${body}\n`);
+	}
+	const map = (fog = "<!-- formal fog -->") => record("001", "map", "Wayfinder: Export", "in-progress", `## Destination\nOffline export\n## Notes\nKeep ordering\n## Decisions So Far\nUse CSV\n## Not Yet Specified\n${fog}\n## Out of Scope\nNetworking`);
+	const ticket = (status: string, answer = "") => record("002", "research", "Which format?", status, `## Resolution\n${answer}`, "001");
+	map();
+	record("003", "setup", "Old experiment", "cancelled", "", "001");
+	record("004", "map", "Wayfinder: Previous", "completed", "");
+	record("005", "setup", "Unrelated", "pending", "", "004");
+	assert.equal(await h.event("input", { source: "interactive", text: "/wayfinder status" }), undefined);
+	for (const status of ["pending", "in-progress", "blocked"]) {
+		ticket(status);
+		assert.deepEqual(await submit(), { action: "handled" });
+		assert.ok(h.warnings.at(-1)?.includes(`Which format? (${status})`));
+	}
+	ticket("completed", "<!-- fill when resolved -->");
+	await submit();
+	assert.match(h.warnings.at(-1)!, /has no Resolution/);
+	ticket("completed", "CSV with UTF-8");
+	map("Decide retry policy");
+	await submit();
+	assert.match(h.warnings.at(-1)!, /Decide retry policy/);
+	assert.equal(readGoalState(h.cwd).status, "none");
+	assert.equal(h.messages.length, 0);
+	map("- 无待决事项");
+	// Pi may accept sendMessage and then fail asynchronously before emitting message_start.
+	await submit();
+	assert.equal(readGoalState(h.cwd).status, "drafting");
+	assert.match(fs.readFileSync(path.join(dir, "001.md"), "utf8"), /status: in-progress/);
+	assert.equal(h.messages.length, 1);
+	ticket("completed", "TSV with UTF-8 and the literal `<!-- export -->`");
+	await submit();
+	assert.equal(readGoalState(h.cwd).status, "drafting");
+	assert.equal(h.messages.length, 2);
+	const draft = h.messages[1]!;
+	assert.equal(draft.customType, "planning-files-runtime-goal-set");
+	for (const detail of ["Offline export", "Keep ordering", "Networking", "Which format?", "TSV with UTF-8", "`<!-- export -->`"]) {
+		assert.ok(draft.content.includes(detail));
+	}
+	assert.doesNotMatch(draft.content, /Old experiment|Unrelated\n|CSV with UTF-8/);
+	assert.match(fs.readFileSync(path.join(dir, "001.md"), "utf8"), /status: in-progress/);
+	// Interrupt Map closure after delivery, then restore the Map and revise its decision.
+	const mapFile = path.join(dir, "001.md");
+	const savedMap = path.join(h.cwd, "saved-map.md");
+	fs.renameSync(mapFile, savedMap);
+	await h.event("message_start", { message: { role: "custom", ...draft } });
+	assert.match(h.warnings.at(-1)!, /Retry \/wayfinder handoff/);
+	fs.renameSync(savedMap, mapFile);
+	ticket("completed", "Use JSON Lines");
+	await submit();
+	assert.equal(h.messages.length, 3);
+	const revised = h.messages[2]!;
+	assert.match(revised.content, /Use JSON Lines/);
+	assert.doesNotMatch(revised.content, /TSV with UTF-8/);
+	assert.match(fs.readFileSync(mapFile, "utf8"), /status: in-progress/);
+	await h.event("message_start", { message: { role: "custom", ...revised } });
+	assert.match(fs.readFileSync(path.join(dir, "001.md"), "utf8"), /status: completed/);
+	await h.event("input", { source: "interactive", text: "/wayfinder handoff Wayfinder: Export" });
+	assert.equal(h.messages.length, 3);
+	assert.match(h.infos.at(-1)!, /already has a planning goal/);
+});
+
+test("Wayfinder handoff isolates ordinary /plan-goal-set, survives sourceTopic edits, and protects non-drafting goals", {
+	skip: spawnSync("taskmd", ["--version"]).error?.message.includes("ENOENT") && "requires taskmd",
+}, async () => {
+	const h = harness("none");
+	const dir = path.join(h.cwd, ".pi/wayfinder/tickets");
+	const submit = (text = "/wayfinder handoff") => h.event("input", { source: "interactive", text });
+	const writeRecord = (id: string, tags: string[], title: string, status: string, body: string, parent = "") => {
+		writeText(
+			path.join(dir, `${id}.md`),
+			`---\nid: "${id}"\ntitle: "${title}"\ntags: ${JSON.stringify(tags)}\nstatus: ${status}\n${parent ? `parent: "${parent}"\n` : ""}---\n${body}\n`,
+		);
+	};
+	const mapFile = path.join(dir, "001.md");
+	const writeMap = (extra = "") => writeRecord(
+		"001",
+		["wayfinder:map"],
+		"Wayfinder: Export",
+		"in-progress",
+		`## Destination\nOffline export\n## Notes\n<domain notes; skills every session should consult; standing preferences>\n## Decisions So Far\n<!-- index only -->\n- Use CSV\n## Not Yet Specified\n<!-- formal fog -->\n## Out of Scope\n<!-- formal exclusions -->\nNetworking${extra}`,
+	);
+	writeMap();
+	writeRecord("002", ["wayfinder:research"], "Which format?", "completed", "## Resolution\n<!-- fill when done -->\nCSV", "001");
+
+	// Non-idle agent is rejected without mutating state.
+	h.setIdle(false);
+	await submit();
+	assert.match(h.warnings.at(-1)!, /Wait for the current run to settle/);
+	assert.equal(readGoalState(h.cwd).status, "none");
+	h.setIdle(true);
+
+	// 1. Undelivered handoff followed by ordinary /plan-goal-set must NOT close the Map.
+	await submit();
+	assert.equal(h.messages.length, 1);
+	assert.equal(h.messages[0]!.details?.wayfinderMapId, "001");
+	await h.command("plan-goal-set", "ordinary follow-up");
+	assert.equal(h.messages.length, 2);
+	assert.equal(h.messages[1]!.details, undefined);
+	await h.event("message_start", { message: { role: "custom", ...h.messages[1]! } });
+	assert.match(fs.readFileSync(mapFile, "utf8"), /status: in-progress/);
+	assert.equal(readGoalState(h.cwd).wayfinderHandoff?.delivered, false);
+
+	// 2. Template placeholder in Notes and template HTML comments are stripped from the handoff prompt.
+	assert.doesNotMatch(h.messages[0]!.content, /<domain notes; skills every session should consult; standing preferences>/);
+	assert.doesNotMatch(h.messages[0]!.content, /<!-- index only -->|<!-- formal exclusions -->|<!-- fill when done -->/);
+
+	// 3. Deliver the handoff message while Map closure fails, then have save_plan_goal_draft rewrite sourceTopic.
+	const savedMap = path.join(h.cwd, "saved-map.md");
+	fs.renameSync(mapFile, savedMap);
+	await h.event("message_start", { message: { role: "custom", ...h.messages[0]! } });
+	assert.match(h.warnings.at(-1)!, /Retry \/wayfinder handoff/);
+	assert.equal(readGoalState(h.cwd).wayfinderHandoff?.delivered, true);
+	await h.tool("save_plan_goal_draft", { sourceTopic: "Shortened title", draftingStage: "task" });
+	assert.equal(readGoalState(h.cwd).draft.sourceTopic, "Shortened title");
+
+	// Restoring the unchanged Map and retrying handoff closes it cleanly without re-sending drafting prompt.
+	fs.renameSync(savedMap, mapFile);
+	const warningsBefore = h.warnings.length;
+	await submit();
+	assert.equal(h.warnings.length, warningsBefore);
+	assert.equal(h.messages.length, 2);
+	assert.match(fs.readFileSync(mapFile, "utf8"), /status: completed/);
+	assert.match(h.infos.at(-1)!, /Finished Wayfinder Map/);
+
+	// 4. A different Map cannot overwrite an existing planning goal.
+	writeRecord("010", ["wayfinder:map"], "Wayfinder: Other", "in-progress", "## Destination\nOther goal\n## Not Yet Specified\n");
+	await submit("/wayfinder handoff Wayfinder: Other");
+	assert.match(h.warnings.at(-1)!, /different planning goal already exists/);
+	assert.match(fs.readFileSync(path.join(dir, "010.md"), "utf8"), /status: in-progress/);
+	assert.equal(h.messages.length, 2);
+});
+
+test("Wayfinder handoff validates structural edge cases and blocks post-implementation changes", {
+	skip: spawnSync("taskmd", ["--version"]).error?.message.includes("ENOENT") && "requires taskmd",
+}, async () => {
+	const h = harness("none");
+	const dir = path.join(h.cwd, ".pi/wayfinder/tickets");
+	const submit = (text = "/wayfinder handoff") => h.event("input", { source: "interactive", text });
+	const writeRecord = (id: string, tags: string[], title: string, status: string, body: string, parent = "") => {
+		writeText(
+			path.join(dir, `${id}.md`),
+			`---\nid: "${id}"\ntitle: "${title}"\ntags: ${JSON.stringify(tags)}\nstatus: ${status}\n${parent ? `parent: "${parent}"\n` : ""}---\n${body}\n`,
+		);
+	};
+
+	// Frontmatter containing a markdown heading must not fool Destination parsing; duplicate Not Yet Specified is rejected.
+	writeText(
+		path.join(dir, "001.md"),
+		`---\nid: "001"\ntitle: "Wayfinder: Edge"\ntags: ["wayfinder:map"]\nstatus: in-progress\ndescription: |\n  ## Destination\n  Fake frontmatter destination\n---\n## Destination\n<!-- comment -->\n<what reaching the end of this map looks like>\n## Not Yet Specified\n`,
+	);
+	await submit();
+	assert.match(h.warnings.at(-1)!, /needs a Destination/);
+
+	writeRecord("001", ["wayfinder:map"], "Wayfinder: Edge", "in-progress", "## Destination\nReal destination\n## Not Yet Specified\n\n## Not Yet Specified\nHidden fog");
+	await submit();
+	assert.match(h.warnings.at(-1)!, /duplicate "## Not Yet Specified"/);
+
+	// Untagged open child record must block handoff instead of being silently ignored.
+	writeRecord("001", ["wayfinder:map"], "Wayfinder: Edge", "in-progress", "## Destination\nReal destination\n## Not Yet Specified\n");
+	writeRecord("002", ["wayfinder"], "Typo tag ticket", "pending", "", "001");
+	await submit();
+	assert.match(h.warnings.at(-1)!, /without a Wayfinder ticket tag.*Typo tag ticket/);
+	fs.rmSync(path.join(dir, "002.md"));
+
+	// Multiple completed Maps without an Active Map require explicit title selection.
+	writeRecord("001", ["wayfinder:map"], "Wayfinder: Edge", "completed", "## Destination\nReal destination\n## Not Yet Specified\n");
+	writeRecord("003", ["wayfinder:map"], "Wayfinder: Second", "completed", "## Destination\nSecond destination\n## Not Yet Specified\n");
+	await submit();
+	assert.match(h.warnings.at(-1)!, /Choose a Map with \/wayfinder handoff <full Map title>/);
+	await submit("/wayfinder handoff Wayfinder: Second");
+	assert.equal(h.messages.length, 1);
+	assert.match(h.messages[0]!.content, /Second destination/);
+
+	// Undelivered handoff whose goal later moved to active must not be reset back to drafting.
+	const activeState = readGoalState(h.cwd);
+	activeState.status = "active";
+	activeState.goal = {
+		objective: "Ship second",
+		successCriteria: ["Done"],
+		constraints: ["None"],
+		outOfScope: ["Other"],
+		blockerRule: "Pause",
+	};
+	writeGoalState(h.cwd, activeState);
+	writeRecord("003", ["wayfinder:map"], "Wayfinder: Second", "in-progress", "## Destination\nChanged destination\n## Not Yet Specified\n");
+	await submit("/wayfinder handoff Wayfinder: Second");
+	assert.match(h.warnings.at(-1)!, /after implementation began \(active\)/);
+	assert.equal(readGoalState(h.cwd).status, "active");
+	assert.equal(h.messages.length, 1);
+});
 for (const toolName of ["replace_match", "copy", "move"]) {
 	test(`${toolName} nested tool events immediately refresh Blocker and enable continuation`, async () => {
 		const h = harness();

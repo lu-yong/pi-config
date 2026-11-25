@@ -269,9 +269,9 @@ Exit Wayfinder when all are true:
 
 Then:
 
-- finish the Active Map
 - summarize the route for the user
-- hand off to Planning Files Runtime / implementation if needed
+- for Planning Files Runtime, use `/wayfinder handoff` to check every Ticket and pass the Map to `/plan-goal-set` drafting
+- for other implementation workflows, finish the Active Map and pass on the route
 
 ## Invocation surface
 
@@ -287,6 +287,7 @@ Thin prompt shortcut: `/wayfinder` (see `pi/agent/prompts/wayfinder.md`).
 | `/wayfinder work` | Advance one Current Ticket |
 | `/wayfinder status` | Report state only; no mutation |
 | `/wayfinder ui` | Open taskmd Web UI in a dedicated Herdr pane for human inspection |
+| `/wayfinder handoff [full Map title]` | Start goal drafting from the Active Map, or select a completed Map by title |
 
 Smart entry routing:
 

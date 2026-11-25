@@ -3,6 +3,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
+	MESSAGE_TYPE_GOAL_SET,
 	MESSAGE_TYPE_PLAN_UPDATE,
 	WIDGET_KEY,
 } from "./types.ts";
@@ -19,6 +20,7 @@ import { buildPlanUpdatePrompt } from "./prompts.ts";
 import { buildWidgetLines, PlanningGoalDialog } from "./ui.ts";
 import { isLivePlanningMutation, isMeaningfulProgressToolCall, gateDraftingToolCall, redirectPlanningPath } from "./guards.ts";
 import { createSubagentUsageTracker } from "./subagent-usage.ts";
+import { finishWayfinderMap, readWayfinderHandoff } from "./wayfinder.ts";
 import {
 	createGoalLifecycle,
 	type GoalLifecycle,
@@ -45,6 +47,7 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	// Every event hands back a projection; only a changed one is worth a redraw.
 	let drawn: string | undefined;
 	let widget: { requestRender(): void } | undefined;
+	let handoffInFlight = false;
 
 	function lifecycleFor(cwd: string): GoalLifecycle {
 		let lifecycle = lifecycles.get(cwd);
@@ -346,6 +349,46 @@ export default function planningFilesRuntime(pi: ExtensionAPI): void {
 	});
 
 	// ---- events ----
+	pi.on("input", async (event, ctx) => {
+		const match = /^\/wayfinder[ \t]+handoff(?:[ \t]+(.+))?$/.exec(event.text.trim());
+		if (!match || event.source === "extension") return;
+		if (handoffInFlight) {
+			ctx.ui.notify("Wayfinder handoff: Another handoff is already in progress.", "warning");
+			return { action: "handled" };
+		}
+		handoffInFlight = true;
+		try {
+			if (!ctx.isIdle()) throw new Error("Wait for the current run to settle before handing off the Map.");
+			const handoff = await readWayfinderHandoff(ctx.cwd, match[1] ?? "");
+			if (!ctx.isIdle()) throw new Error("The agent started working during handoff. Retry once it settles.");
+			const result = dispatch(ctx, { type: "start-drafting", input: handoff.topic, wayfinderMap: { id: handoff.mapId, active: handoff.active } });
+			if (result.error) notifyRejection(ctx, result);
+			else if (handoff.active && result.projection.goalState.wayfinderHandoff?.delivered) {
+				await finishWayfinderMap(ctx.cwd, handoff.mapId);
+				ctx.ui.notify(`Finished Wayfinder Map; this Map already has a planning goal (${result.projection.goalState.status}).`, "info");
+			}
+		} catch (error) {
+			ctx.ui.notify(`Wayfinder handoff: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		} finally {
+			handoffInFlight = false;
+		}
+		return { action: "handled" };
+	});
+
+	// sendMessage returns before Pi starts the run. Only the delivered drafting message can close its Map.
+	pi.on("message_start", async ({ message }, ctx) => {
+		if (message.role !== "custom" || message.customType !== MESSAGE_TYPE_GOAL_SET) return;
+		const mapId = (message.details as { wayfinderMapId?: string } | undefined)?.wayfinderMapId;
+		if (!mapId) return;
+		const result = dispatch(ctx, { type: "wayfinder-draft-delivered", mapId });
+		if (result.error) return notifyRejection(ctx, result);
+		if (result.projection.goalState.wayfinderHandoff?.mapId !== mapId) return;
+		try {
+			await finishWayfinderMap(ctx.cwd, mapId);
+		} catch (error) {
+			ctx.ui.notify(`Goal drafting started. Retry /wayfinder handoff to finish the Map: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	});
 	pi.on("session_start", async (event, ctx) => {
 		const resumed = event.reason === "resume" || event.reason === "fork";
 		// A new session starts with no widget on the host side.

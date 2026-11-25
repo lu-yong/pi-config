@@ -202,6 +202,13 @@ ${initialLine}
 `);
 }
 
+/** Read all section bodies with the given heading name, preserving document order. */
+export function extractSections(text: string, heading: string): string[] {
+	return sectionsOf(text)
+		.filter((candidate) => candidate.name === heading)
+		.map((section) => text.slice(section.bodyStart, section.end).trim());
+}
+
 /** Read one section body, or undefined when the heading is absent or empty. */
 export function extractSection(text: string, heading: string): string | undefined {
 	const section = sectionsOf(text).find((candidate) => candidate.name === heading);

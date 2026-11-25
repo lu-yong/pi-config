@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
 	CommitGoalParams,
 	CompleteGoalParams,
@@ -56,6 +57,7 @@ import { buildGoalImplPrompt, buildGoalSetPrompt } from "./prompts.ts";
 // ---- public vocabulary (the only surface Pi hooks and tests use) ----
 
 export type OutgoingGoalMessage = {
+	details?: { wayfinderMapId: string };
 	customType: string;
 	content: string;
 	display: boolean;
@@ -111,7 +113,8 @@ export type GoalLifecycleEvent =
 	| { type: "archive-workspace"; agentIdle: boolean }
 	/** /plan-new: archive the whole workspace, then start a blank one with no goal. */
 	| { type: "new-workspace"; agentIdle: boolean }
-	| { type: "start-drafting"; input?: string }
+	| { type: "start-drafting"; input?: string; wayfinderMap?: { id: string; active: boolean } }
+	| { type: "wayfinder-draft-delivered"; mapId: string }
 	| { type: "save-draft"; params: SaveGoalDraftParams }
 	| { type: "commit"; params: CommitGoalParams }
 	| { type: "implementation-request"; supplementalInput?: string }
@@ -154,7 +157,7 @@ type GoalLifecycleEffect =
 	| { type: "ensure-implementation-workspace"; goal: GoalContract; runId: number }
 	| { type: "append-progress"; heading: ProgressHeading; message: string }
 	| { type: "finalize-goal-workspace"; completion: GoalCompletion }
-	| { type: "send-goal-set"; supplementalInput?: string }
+	| { type: "send-goal-set"; supplementalInput?: string; wayfinderMapId?: string }
 	| { type: "send-goal-impl"; mode: "start" | "resume"; supplementalInput?: string }
 	| { type: "emit-continuation" }
 	| { type: "send-continuation"; runId: number; supplementalInput?: string }
@@ -179,6 +182,10 @@ function sameGoalContract(a: GoalContract, b: GoalContract): boolean {
 		&& JSON.stringify(a.successCriteria) === JSON.stringify(b.successCriteria)
 		&& JSON.stringify(a.constraints) === JSON.stringify(b.constraints)
 		&& JSON.stringify(a.outOfScope) === JSON.stringify(b.outOfScope);
+}
+
+function hashTopic(topic: string): string {
+	return createHash("sha256").update(topic).digest("hex");
 }
 
 function reject(operation: string, reason: string): GoalLifecycleEffect[] {
@@ -381,7 +388,58 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 					return reject("plan-goal-set", "Provide a topic: /plan-goal-set <goal topic>");
 				}
 
-				if (state.status === "none") {
+				if (event.wayfinderMap) {
+					const handoff = state.wayfinderHandoff;
+					if (state.status !== "none" && handoff?.mapId !== event.wayfinderMap.id) {
+						return reject("wayfinder handoff", "A different planning goal already exists. Use /planning-goal to inspect it or /plan-archive to archive it before handoff.");
+					}
+					const topicHash = hashTopic(input);
+					const unchanged = handoff?.topicHash ? handoff.topicHash === topicHash : input === state.draft.sourceTopic;
+					if (handoff?.delivered && (!event.wayfinderMap.active || unchanged)) {
+						// When the Map is still active with unchanged decisions, the host closes it
+						// and emits the confirmation once taskmd succeeds.
+						if (event.wayfinderMap.active) return [];
+						return [{ type: "notify", level: "info", message: `This Map already has a planning goal (${state.status}).` }];
+					}
+					if (state.status !== "none" && state.status !== "drafting" && state.status !== "ready") {
+						return reject("wayfinder handoff", `Map decisions changed after implementation began (${state.status}). Review the goal with /planning-goal before revising it.`);
+					}
+					const mapId = event.wayfinderMap.id;
+					const revising = Boolean(handoff?.delivered);
+					const goal = state.goal;
+					mutate((current) => ({
+						...current,
+						status: "drafting",
+						wayfinderHandoff: { mapId, delivered: false, topicHash },
+						draft: current.status === "none"
+							? { ...defaultGoalDraft(), sourceTopic: input }
+							: {
+								...current.draft,
+								sourceTopic: input,
+								objective: goal?.objective || current.draft.objective,
+								successCriteria: goal?.successCriteria || current.draft.successCriteria,
+								constraints: goal?.constraints || current.draft.constraints,
+								outOfScope: goal?.outOfScope || current.draft.outOfScope,
+								blockerRule: goal?.blockerRule || current.draft.blockerRule,
+								draftingStage: "as-is",
+							},
+						impl: {
+							...current.impl,
+							...(current.status === "none" ? { planningResetRequired: false } : {}),
+							pausedReason: "",
+							pausedSuggestedAction: "",
+							completedSummary: "",
+						},
+					}));
+					return [
+						{ type: "ensure-goal-design" },
+						{
+							type: "send-goal-set",
+							wayfinderMapId: mapId,
+							...(revising ? { supplementalInput: "Wayfinder Map decisions were updated; reconcile the existing draft and goal-design.md with the updated source topic above." } : {}),
+						},
+					];
+				} else if (state.status === "none") {
 					mutate((current) => ({
 						...current,
 						status: "drafting",
@@ -427,6 +485,14 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 				];
 			}
 
+			case "wayfinder-draft-delivered":
+				if (state.wayfinderHandoff?.mapId === event.mapId && !state.wayfinderHandoff.delivered) {
+					mutate((current) => ({
+						...current,
+						wayfinderHandoff: { ...current.wayfinderHandoff!, mapId: event.mapId, delivered: true },
+					}));
+				}
+				return [];
 			case "save-draft":
 				if (state.status !== "drafting") {
 					return reject("save_plan_goal_draft", "save_plan_goal_draft rejected: goal drafting is not in progress.");
@@ -698,6 +764,7 @@ export function createGoalLifecycle(cwd: string, deps: GoalLifecycleDeps): GoalL
 						deps.sendMessage(
 							{
 								customType: MESSAGE_TYPE_GOAL_SET,
+								...(effect.wayfinderMapId ? { details: { wayfinderMapId: effect.wayfinderMapId } } : {}),
 								content: buildGoalSetPrompt(state, effect.supplementalInput),
 								display: false,
 							},

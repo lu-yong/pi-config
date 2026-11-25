@@ -99,6 +99,7 @@ Work   →  在已有 Map 上前进
 | `/wayfinder work [名字]` | 推进一张 Current Ticket（可点名） |
 | `/wayfinder status` | 只读状态，不改数据 |
 | `/wayfinder ui` | 在独立 Herdr pane 开 taskmd Web UI（给人看，不切走焦点） |
+| `/wayfinder handoff [Map 完整标题]` | 检查所有 Ticket，把决策交给 Planning Files Runtime 起草目标 |
 | `/wayfinder help` | 命令说明 |
 
 数据目录（本地，通常被 `.pi/` gitignore）：
@@ -157,7 +158,11 @@ Work   →  在已有 Map 上前进
 3. Frontier 上不再有「还得先决策」的 Ticket  
 4. 剩下主要是「怎么实现」  
 
-→ 关掉/完成这张 Map，切到实现侧（Planning 或直接开干）。
+在目标仓库运行 `/wayfinder handoff`。命令检查整张 Map。`pending`、`in-progress`、`blocked` 都会挡住交接；`completed` 必须写有 Resolution；`cancelled` 按已退出范围处理。`Not Yet Specified` 里还有待决事项时，命令会显示具体内容。
+
+没有待决事项时，`Not Yet Specified` 可以留空，也可以写 `无待决事项`。检查通过后，Planning Files Runtime 用 Destination、Notes、Decisions So Far、Out of Scope 和每张已完成 Ticket 的 Resolution 进入 `/plan-goal-set` 起草流程。Pi 收到起草消息后会完成 Map。如果启动中断，重新运行 `/wayfinder handoff` 会用最新决策继续同一份草稿。目标就绪后，由你运行 `/plan-goal-impl` 开始实现。
+
+默认选 Active Map；只有一张已完成的 Map 且没有 Active Map 时也可直接交接。有多张历史 Map 时用完整标题，例如 `/wayfinder handoff Wayfinder: 离线导出`。若当前仓库已有另一个 planning goal，可用 `/planning-goal` 查看。
 
 ---
 

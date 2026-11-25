@@ -79,8 +79,14 @@ export type GoalImplState = {
 	pausedSuggestedAction: string;
 	completedSummary: string;
 };
+export type WayfinderHandoffState = {
+	mapId: string;
+	delivered: boolean;
+	topicHash?: string;
+};
 
 export type GoalOverlayState = {
+	wayfinderHandoff?: WayfinderHandoffState;
 	version: 1;
 	status: GoalOverlayStatus;
 	updatedAt: string;

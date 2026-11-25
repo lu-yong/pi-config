@@ -88,6 +88,9 @@ export function normalizeGoalState(value: unknown): GoalOverlayState {
 	const status = normalizeString(raw.status);
 	const goal = normalizeGoalContract(raw.goal);
 	const implRaw = (raw.impl ?? {}) as Record<string, unknown>;
+	const handoff = raw.wayfinderHandoff as Partial<GoalOverlayState["wayfinderHandoff"]> | undefined;
+	const handoffMapId = normalizeString(handoff?.mapId);
+	const handoffTopicHash = normalizeString(handoff?.topicHash);
 	const normalizedStatus = ["none", "drafting", "ready", "active", "paused", "complete"].includes(status)
 		? (status as GoalOverlayStatus)
 		: goal
@@ -97,6 +100,15 @@ export function normalizeGoalState(value: unknown): GoalOverlayState {
 		version: 1,
 		status: normalizedStatus,
 		updatedAt: normalizeString(raw.updatedAt) || nowIso(),
+		...(handoffMapId
+			? {
+				wayfinderHandoff: {
+					mapId: handoffMapId,
+					delivered: handoff?.delivered === true,
+					...(handoffTopicHash ? { topicHash: handoffTopicHash } : {}),
+				},
+			}
+			: {}),
 		draft: normalizeGoalDraft(raw.draft),
 		goal,
 		impl: {

@@ -8,6 +8,7 @@ A single Pi extension that owns:
 
 ## Public commands
 
+- `/wayfinder handoff [full Map title]` — read the local Wayfinder Map and its resolved Tickets through the taskmd workspace, then enter `/plan-goal-set` drafting (see the [Wayfinder guide](../../skills/wayfinder/README.md))
 - `/plan-archive` — when the agent is idle, archive the complete current workspace at any goal status without creating replacement templates
 - `/plan-new` — archive then reset `.pi/planning/`, including goal-design.md + tasks/, and clear the goal overlay
 - `/plan-goal-set` — 4-stage goal drafting (as-is → design → story → task), outputs to goal-design.md

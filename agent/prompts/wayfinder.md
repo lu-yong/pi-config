@@ -1,7 +1,7 @@
 ---
 name: wayfinder
 description: Thin shortcut into the Personal Wayfinder skill. Quick commands only — methodology lives in the wayfinder skill.
-argument-hint: "[init|chart <topic>|work|status|ui|help] or free text for smart entry"
+argument-hint: "[init|chart <topic>|work|status|ui|handoff [Map title]|help] or free text for smart entry"
 ---
 
 You are invoking the **Personal Wayfinder** local skill.
@@ -59,6 +59,10 @@ Parse the user arguments (`$@`) as follows:
 - if Herdr is unavailable, provide the foreground command for the user's terminal instead of silently starting a background job
 - report the actual startup/readiness evidence, URL (default `http://localhost:8080`), pane ID, and how to stop it; command submission alone does not prove the server is ready
 - agent keeps using CLI for mutations
+
+### `handoff [full Map title]`
+- planning-files-runtime handles this input before template expansion. If it reaches this template, report that the runtime must be loaded and the command entered in Pi after `/reload`.
+- Leave both workspaces untouched in this fallback.
 
 ### `help`
 - print the command surface and one-paragraph when-to-use guidance
