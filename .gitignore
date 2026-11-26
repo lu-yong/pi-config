@@ -17,7 +17,8 @@ agent/extensions/extmgr/package-lock.json
 
 # 本地配置（不入库）
 agent/settings.json
-agent/pi-blackhole/
+agent/pi-blackhole/*
+!agent/pi-blackhole/pi-blackhole-config.json
 
 # hermes 配置文件（不入库）
 agent/.pi-hermes-locks*
@@ -37,6 +38,7 @@ agent/pi-web-access/
 agent/crashes.json
 agent/subagent-manager/*
 !agent/subagent-manager/agents/
+agent/subagent-manager/agents/*
 !agent/subagent-manager/agents/code-reviewer.md
 web-search-cache/
 
@@ -63,8 +65,6 @@ agent/skills/*
 !agent/skills/impl-with-spawn/
 !agent/skills/wayfinder/
 
-agent/subagent-manager/agents/
-!agent/subagent-manager/agents/code-reviewer.md
 
 agent/git
 
