@@ -10,8 +10,7 @@ models:
   - magpie/group/gpt-sol
   - magpie/group/glm
 modelSuggestions:
-  - glm-5.3
-  - gpt-6.1-sol
+  - gpt-6.2-sol
 thinkingLevel: high
 tools:
   allow:
